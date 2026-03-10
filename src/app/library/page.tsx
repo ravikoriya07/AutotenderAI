@@ -4,7 +4,6 @@ import { useState } from "react";
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
 import { PageContainer } from "@/components/layout/PageContainer";
 import { Card } from "@/components/ui/Card";
-import { SearchBar } from "@/components/ui/SearchBar";
 import { FolderTree, type FolderNode } from "@/components/ui/FolderTree";
 import {
   Table,

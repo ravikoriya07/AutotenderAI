@@ -4,7 +4,6 @@ import { DashboardLayout } from "@/components/layout/DashboardLayout";
 import { PageContainer } from "@/components/layout/PageContainer";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
-import { SearchBar } from "@/components/ui/SearchBar";
 import { Toolbar } from "@/components/ui/Toolbar";
 import {
   Table,
