@@ -15,6 +15,7 @@ import {
   Settings,
   ChevronLeft,
   ChevronRight,
+  LogOut,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -97,11 +98,15 @@ export function Sidebar() {
         </div>
       </nav>
 
-      {!collapsed && (
-        <div className="border-t border-sidebar-foreground/10 p-3 text-xs text-sidebar-foreground/60">
-          17°C Mostly cloudy
-        </div>
-      )}
+      <div className="border-t border-sidebar-foreground/10 p-3">
+        <Link
+          href="/login"
+          className="flex items-center gap-3 rounded-lg px-3 py-2 text-sm text-sidebar-foreground transition-colors hover:bg-sidebar-foreground/10"
+        >
+          <LogOut className="h-5 w-5 shrink-0" />
+          {!collapsed && <span>Logout</span>}
+        </Link>
+      </div>
     </aside>
     </>
   );
