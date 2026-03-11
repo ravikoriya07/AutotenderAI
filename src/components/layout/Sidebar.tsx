@@ -33,12 +33,6 @@ const bottomNav = [
   { href: "/settings", label: "Settings", icon: Settings },
 ];
 
-const recentItems = [
-  "how does L...",
-  "Document -...",
-  "Document -...",
-];
-
 export function Sidebar() {
   const pathname = usePathname();
   const { collapsed, setCollapsed } = useSidebar();
@@ -82,49 +76,7 @@ export function Sidebar() {
 
       <nav className="flex-1 overflow-y-auto p-3">
         <div className="space-y-1">
-          {mainNav.map((item) => {
-            const isActive = pathname === item.href;
-            return (
-              <Link
-                key={item.href}
-                href={item.href}
-                className={cn(
-                  "flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors",
-                  isActive
-                    ? "bg-primary text-primary-foreground"
-                    : "hover:bg-sidebar-foreground/10"
-                )}
-              >
-                <item.icon className="h-5 w-5 shrink-0" />
-                {!collapsed && <span>{item.label}</span>}
-              </Link>
-            );
-          })}
-        </div>
-
-        {!collapsed && (
-          <div className="mt-6">
-            <h3 className="mb-2 px-3 text-xs font-medium text-sidebar-foreground/70">
-              Recently opened
-            </h3>
-            <ul className="space-y-1">
-              {recentItems.map((item, i) => (
-                <li key={i}>
-                  <Link
-                    href="#"
-                    className="flex items-center gap-3 rounded-lg px-3 py-2 text-sm hover:bg-sidebar-foreground/10"
-                  >
-                    <FileText className="h-4 w-4 shrink-0" />
-                    <span className="truncate">{item}</span>
-                  </Link>
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-
-        <div className="mt-6 space-y-1">
-          {bottomNav.map((item) => {
+          {[...mainNav, ...bottomNav].map((item) => {
             const isActive = pathname === item.href;
             return (
               <Link
