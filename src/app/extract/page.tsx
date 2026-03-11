@@ -29,7 +29,6 @@ export default function ExtractPage() {
   return (
     <DashboardLayout
       title="Extract"
-      subtitle="Extract key information from one or more sources in your library, uploaded files, or text you already have into a single output. You can select or upload up to 20 files per extraction."
     >
       <PageContainer>
         <div className="grid gap-6 lg:grid-cols-2">
