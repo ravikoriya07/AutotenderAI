@@ -14,34 +14,48 @@ import {
   TableRow,
 } from "@/components/ui/Table";
 import { Plus, MoreVertical, LayoutList, LayoutGrid } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { Modal } from "@/components/ui/Modal";
+import { CreateProjectForm } from "@/components/CreateProjectForm";
+import { listProjects } from "@/services/projectService";
+import type { Project } from "@/types/project";
+import { toast } from "react-toastify";
 
-const mockProjects = [
-  {
-    id: "1",
-    opportunity: "SEC Fire Remedial Works Framework",
-    dueDate: "6/19/2025",
-    status: "Writing",
-    statusColor: "text-blue-600",
-  },
-  {
-    id: "2",
-    opportunity: "Project X",
-    dueDate: "6/17/2025",
-    status: "Preparing",
-    statusColor: "text-gray-600",
-  },
-  {
-    id: "3",
-    opportunity: "test",
-    dueDate: "6/11/2024",
-    status: "Writing",
-    statusColor: "text-blue-600",
-  },
-];
+function getStatusColor(status: string): string {
+  switch (status) {
+    case "Writing":
+      return "text-blue-600";
+    case "Preparing":
+      return "text-gray-600";
+    default:
+      return "text-muted-foreground";
+  }
+}
 
 export default function ProjectsPage() {
   const [viewMode, setViewMode] = useState<"list" | "grid">("list");
+  const [createModalOpen, setCreateModalOpen] = useState(false);
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [loading, setLoading] = useState(false);
+  const hasFetchedRef = useRef(false);
+
+  async function fetchProjects() {
+    setLoading(true);
+    try {
+      const data = await listProjects();
+      setProjects(data);
+    } catch (error) {
+      toast.error("Failed to load projects.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    if (hasFetchedRef.current) return;
+    hasFetchedRef.current = true;
+    void fetchProjects();
+  }, []);
 
   return (
     <DashboardLayout
@@ -73,19 +87,7 @@ export default function ProjectsPage() {
               </select>
             </div>
             <div className="ml-auto flex items-center gap-2">
-              <button
-                onClick={() => setViewMode("list")}
-                className={`rounded p-2 ${viewMode === "list" ? "bg-primary/20 text-primary" : "hover:bg-muted"}`}
-              >
-                <LayoutList className="h-4 w-4" />
-              </button>
-              <button
-                onClick={() => setViewMode("grid")}
-                className={`rounded p-2 ${viewMode === "grid" ? "bg-primary/20 text-primary" : "hover:bg-muted"}`}
-              >
-                <LayoutGrid className="h-4 w-4" />
-              </button>
-              <Button>
+              <Button onClick={() => setCreateModalOpen(true)}>
                 <Plus className="mr-2 h-4 w-4" />
                 NEW PROJECT
               </Button>
@@ -102,15 +104,17 @@ export default function ProjectsPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {mockProjects.map((project) => (
+                {projects.map((project) => (
                   <TableRow key={project.id}>
                     <TableCell className="font-medium">
                       {project.opportunity}
                     </TableCell>
-                    <TableCell>{project.dueDate}</TableCell>
+                    <TableCell>{project.dueDate ?? "N/A"}</TableCell>
                     <TableCell>
                       <span
-                        className={`inline-flex items-center gap-1.5 ${project.statusColor}`}
+                        className={`inline-flex items-center gap-1.5 ${getStatusColor(
+                          project.status
+                        )}`}
                       >
                         <span className="h-2 w-2 rounded-full bg-current" />
                         {project.status}
@@ -123,10 +127,29 @@ export default function ProjectsPage() {
                     </TableCell>
                   </TableRow>
                 ))}
+                {projects.length === 0 && !loading && (
+                  <TableRow>
+                    <TableCell colSpan={4} className="text-center text-sm text-muted-foreground">
+                      No projects found.
+                    </TableCell>
+                  </TableRow>
+                )}
               </TableBody>
             </Table>
           </div>
         </Card>
+        <Modal
+          open={createModalOpen}
+          onClose={() => setCreateModalOpen(false)}
+          title="Create project"
+        >
+          <CreateProjectForm
+            onSuccess={() => {
+              setCreateModalOpen(false);
+              void fetchProjects();
+            }}
+          />
+        </Modal>
       </PageContainer>
     </DashboardLayout>
   );
