@@ -13,7 +13,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/Table";
-import { Plus, MoreVertical, LayoutList, LayoutGrid } from "lucide-react";
+import { Plus, MoreVertical } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Modal } from "@/components/ui/Modal";
 import { CreateProjectForm } from "@/components/CreateProjectForm";
@@ -33,7 +33,6 @@ function getStatusColor(status: string): string {
 }
 
 export default function ProjectsPage() {
-  const [viewMode, setViewMode] = useState<"list" | "grid">("list");
   const [createModalOpen, setCreateModalOpen] = useState(false);
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(false);
@@ -44,7 +43,7 @@ export default function ProjectsPage() {
     try {
       const data = await listProjects();
       setProjects(data);
-    } catch (error) {
+    } catch {
       toast.error("Failed to load projects.");
     } finally {
       setLoading(false);
