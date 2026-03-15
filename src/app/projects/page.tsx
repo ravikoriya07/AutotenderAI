@@ -42,7 +42,7 @@ export default function ProjectsPage() {
     setLoading(true);
     try {
       const data = await listProjects();
-      setProjects(data);
+      setProjects(Array.isArray(data) ? data : []);
     } catch {
       toast.error("Failed to load projects.");
     } finally {
@@ -55,6 +55,8 @@ export default function ProjectsPage() {
     hasFetchedRef.current = true;
     void fetchProjects();
   }, []);
+
+  const projectList = Array.isArray(projects) ? projects : [];
 
   return (
     <DashboardLayout
@@ -103,7 +105,7 @@ export default function ProjectsPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {projects.map((project) => (
+                {projectList.map((project) => (
                   <TableRow key={project.id}>
                     <TableCell className="font-medium">
                       {project.opportunity}
@@ -126,7 +128,7 @@ export default function ProjectsPage() {
                     </TableCell>
                   </TableRow>
                 ))}
-                {projects.length === 0 && !loading && (
+                {projectList.length === 0 && !loading && (
                   <TableRow>
                     <TableCell colSpan={4} className="text-center text-sm text-muted-foreground">
                       No projects found.

@@ -20,6 +20,10 @@ export async function createProject(
 }
 
 export async function listProjects(): Promise<ListProjectsResponse> {
-  const { data } = await apiClient.get<ListProjectsResponse>("/projects");
-  return data;
+  const { data } = await apiClient.get<unknown>("/projects");
+  if (Array.isArray(data)) return data as ListProjectsResponse;
+  if (data && typeof data === "object" && "projects" in data && Array.isArray((data as { projects: unknown }).projects)) {
+    return (data as { projects: ListProjectsResponse }).projects;
+  }
+  return [];
 }
