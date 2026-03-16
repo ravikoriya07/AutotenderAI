@@ -4,13 +4,13 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useSidebar } from "@/contexts/SidebarContext";
 import {
-  Search,
+  // Search,
   Briefcase,
   FileText,
-  Lightbulb,
+  // Lightbulb,
   FileDown,
   FlaskConical,
-  BookOpen,
+  // BookOpen,
   Library,
   Settings,
   ChevronLeft,
@@ -20,16 +20,16 @@ import {
 import { cn } from "@/lib/utils";
 
 const mainNav = [
-  { href: "/search", label: "Search", icon: Search },
+  // { href: "/search", label: "Search", icon: Search },
   { href: "/projects", label: "Projects", icon: Briefcase },
   { href: "/my-drafts", label: "My Drafts", icon: FileText },
-  { href: "/ideator", label: "Ideator", icon: Lightbulb },
+  // { href: "/ideator", label: "Ideator", icon: Lightbulb },
   { href: "/extract", label: "Extract", icon: FileDown },
   { href: "/research", label: "Research", icon: FlaskConical },
 ];
 
 const bottomNav = [
-  { href: "/answer-bank", label: "Answer Bank", icon: BookOpen },
+  // { href: "/answer-bank", label: "Answer Bank", icon: BookOpen },
   { href: "/library", label: "Library", icon: Library },
   { href: "/settings", label: "Settings", icon: Settings },
 ];
