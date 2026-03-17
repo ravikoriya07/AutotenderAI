@@ -1,26 +1,49 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import axios from "axios";
 import { toast } from "react-toastify";
 import { Input } from "@/components/ui/Input";
 import { Button } from "@/components/ui/Button";
 import { SingleDatePicker } from "@/components/SingleDatePicker";
-import { createProject } from "@/services/projectService";
+import { editProject } from "@/services/projectService";
 import type { ApiErrorResponse } from "@/types/project";
+import type { Project } from "@/types/project";
 
 const STATUS_OPTIONS = ["Preparing", "In Progress", "Completed"];
 
-interface CreateProjectFormProps {
+/** Normalize API due_date to Y-m-d for <input type="date">. Returns "" for N/A or unparseable. */
+function dueDateToYmd(value: string | undefined | null): string {
+  if (value == null || !value.trim() || value.trim().toUpperCase() === "N/A")
+    return "";
+  const t = value.trim();
+  const d = new Date(t);
+  if (!Number.isNaN(d.getTime())) return d.toISOString().slice(0, 10);
+  const match = t.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})$/);
+  if (match) {
+    const [, day, month, year] = match;
+    return `${year}-${month.padStart(2, "0")}-${day.padStart(2, "0")}`;
+  }
+  return "";
+}
+
+interface EditProjectFormProps {
+  project: Project;
   onSuccess: () => void;
 }
 
-export function CreateProjectForm({ onSuccess }: CreateProjectFormProps) {
-  const [opportunity, setOpportunity] = useState("");
-  const [dueDate, setDueDate] = useState("");
-  const [status, setStatus] = useState("");
+export function EditProjectForm({ project, onSuccess }: EditProjectFormProps) {
+  const [opportunity, setOpportunity] = useState(project.opportunity);
+  const [dueDate, setDueDate] = useState(() => dueDateToYmd(project.dueDate));
+  const [status, setStatus] = useState(project.status);
   const [loading, setLoading] = useState(false);
   const [errors, setErrors] = useState<{ opportunity?: string; status?: string }>({});
+
+  useEffect(() => {
+    setOpportunity(project.opportunity);
+    setDueDate(dueDateToYmd(project.dueDate));
+    setStatus(project.status);
+  }, [project]);
 
   function validate(): boolean {
     const next: { opportunity?: string; status?: string } = {};
@@ -30,13 +53,6 @@ export function CreateProjectForm({ onSuccess }: CreateProjectFormProps) {
     return Object.keys(next).length === 0;
   }
 
-  function resetForm() {
-    setOpportunity("");
-    setDueDate("");
-    setStatus("");
-    setErrors({});
-  }
-
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setErrors({});
@@ -44,22 +60,21 @@ export function CreateProjectForm({ onSuccess }: CreateProjectFormProps) {
 
     setLoading(true);
     try {
-      await createProject({
+      await editProject(project.id, {
         opportunity: opportunity.trim(),
         due_date: dueDate.trim() ? dueDate.trim() : "N/A",
         status,
       });
-      toast.success("Project created successfully.");
-      resetForm();
+      toast.success("Project updated successfully.");
       onSuccess();
     } catch (err) {
       if (axios.isAxiosError(err) && err.response?.status === 422) {
         const data = err.response.data as ApiErrorResponse | undefined;
         const first = data?.detail?.[0];
-        const message = first?.msg ?? "Could not create project. Check your input.";
+        const message = first?.msg ?? "Could not update project. Check your input.";
         toast.error(message);
       } else {
-        toast.error("Failed to create project.");
+        toast.error("Failed to update project.");
       }
     } finally {
       setLoading(false);
@@ -70,13 +85,13 @@ export function CreateProjectForm({ onSuccess }: CreateProjectFormProps) {
     <form className="space-y-4" onSubmit={handleSubmit}>
       <div className="space-y-2">
         <label
-          htmlFor="create-opportunity"
+          htmlFor="edit-opportunity"
           className="text-sm font-medium text-foreground"
         >
           Opportunity <span className="text-destructive">*</span>
         </label>
         <Input
-          id="create-opportunity"
+          id="edit-opportunity"
           type="text"
           placeholder="e.g. Test Project"
           value={opportunity}
@@ -90,13 +105,13 @@ export function CreateProjectForm({ onSuccess }: CreateProjectFormProps) {
       </div>
       <div className="space-y-2">
         <label
-          htmlFor="create-due-date"
+          htmlFor="edit-due-date"
           className="text-sm font-medium text-foreground"
         >
           Due date <span className="text-muted-foreground">(optional)</span>
         </label>
         <SingleDatePicker
-          id="create-due-date"
+          id="edit-due-date"
           value={dueDate}
           onChange={setDueDate}
           disabled={loading}
@@ -105,13 +120,13 @@ export function CreateProjectForm({ onSuccess }: CreateProjectFormProps) {
       </div>
       <div className="space-y-2">
         <label
-          htmlFor="create-status"
+          htmlFor="edit-status"
           className="text-sm font-medium text-foreground"
         >
           Status <span className="text-destructive">*</span>
         </label>
         <select
-          id="create-status"
+          id="edit-status"
           value={status}
           onChange={(e) => setStatus(e.target.value)}
           disabled={loading}
@@ -132,7 +147,7 @@ export function CreateProjectForm({ onSuccess }: CreateProjectFormProps) {
       </div>
       <div className="flex gap-2 pt-2">
         <Button type="submit" className="flex-1" disabled={loading}>
-          {loading ? "Creating…" : "Create project"}
+          {loading ? "Saving…" : "Save changes"}
         </Button>
       </div>
     </form>
