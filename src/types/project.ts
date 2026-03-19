@@ -17,9 +17,31 @@ export type CreateProjectResponse = {
 
 export type Project = {
   id: string;
+  job_id?: string;
   opportunity: string;
   dueDate: string;
   status: string;
+};
+
+export type ExtractZipResponse = {
+  job_id: string;
+  status: string;
+  zip_path: string;
+  extracted_dir: string;
+};
+
+export type ListedFile = {
+  name: string;
+  type?: string;
+  path: string;
+  size?: number;
+};
+
+export type ListFilesResponse = {
+  status: string;
+  job_id: string;
+  current_path?: string;
+  items: ListedFile[];
 };
 
 export type Pagination = {

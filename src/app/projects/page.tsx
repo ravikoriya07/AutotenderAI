@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
 import { PageContainer } from "@/components/layout/PageContainer";
 import { Card } from "@/components/ui/Card";
@@ -14,7 +15,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/Table";
-import { Plus, MoreVertical, ChevronLeft, ChevronRight, Pencil, Trash2 } from "lucide-react";
+import { Plus, MoreVertical, ChevronLeft, ChevronRight, Pencil, Trash2, FileDown } from "lucide-react";
 import { Modal } from "@/components/ui/Modal";
 import { CreateProjectForm } from "@/components/CreateProjectForm";
 import { EditProjectForm } from "@/components/EditProjectForm";
@@ -156,15 +157,15 @@ function PaginationControls({
 }
 
 function ProjectActionsCell({
-  project,
   onEdit,
+  onExtract,
   onDelete,
   open,
   onToggle,
   onClose,
 }: {
-  project: Project;
   onEdit: () => void;
+  onExtract: () => void;
   onDelete: () => void;
   open: boolean;
   onToggle: () => void;
@@ -216,6 +217,19 @@ function ProjectActionsCell({
             type="button"
             role="menuitem"
             onClick={() => {
+              onExtract();
+              onClose();
+            }}
+            className="flex w-full items-center gap-2.5 px-3 py-2.5 text-left text-sm text-foreground transition-colors hover:bg-primary/10 focus:bg-primary/10 focus:outline-none"
+          >
+            <FileDown className="h-4 w-4 shrink-0 text-primary" />
+            Extract
+          </button>
+          <div className="border-t border-border" />
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
               onDelete();
               onClose();
             }}
@@ -231,6 +245,7 @@ function ProjectActionsCell({
 }
 
 export default function ProjectsPage() {
+  const router = useRouter();
   const [createModalOpen, setCreateModalOpen] = useState(false);
   const [editModalOpen, setEditModalOpen] = useState(false);
   const [projectToEdit, setProjectToEdit] = useState<Project | null>(null);
@@ -376,7 +391,6 @@ export default function ProjectsPage() {
                         </TableCell>
                         <TableCell>
                           <ProjectActionsCell
-                            project={project}
                             open={openActionId === project.id}
                             onToggle={() =>
                               setOpenActionId((id) =>
@@ -387,6 +401,12 @@ export default function ProjectsPage() {
                             onEdit={() => {
                               setProjectToEdit(project);
                               setEditModalOpen(true);
+                            }}
+                            onExtract={() => {
+                              const jobId = project.job_id ?? project.id;
+                              router.push(
+                                `/extract?job_id=${encodeURIComponent(jobId)}`
+                              );
                             }}
                             onDelete={() => handleDelete(project)}
                           />

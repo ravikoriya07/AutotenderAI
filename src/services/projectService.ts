@@ -2,6 +2,8 @@ import { apiClient } from "@/lib/apiClient";
 import type {
   CreateProjectPayload,
   CreateProjectResponse,
+  ExtractZipResponse,
+  ListFilesResponse,
   ListProjectsParams,
   ListProjectsResponse,
   Pagination,
@@ -73,4 +75,47 @@ export async function listProjects(
     return { projects: data as Project[], pagination: null };
   }
   return { projects: [], pagination: null };
+}
+
+export async function extractZip(
+  file: File,
+  jobId: string
+): Promise<ExtractZipResponse> {
+  const formData = new FormData();
+  formData.append("file", file);
+  formData.append("job_id", jobId);
+
+  const { data } = await apiClient.post<ExtractZipResponse>(
+    "/extract-zip",
+    formData,
+    {
+      headers: {
+        "Content-Type": "multipart/form-data",
+      },
+    }
+  );
+
+  return data;
+}
+
+export async function listFiles(jobId: string): Promise<ListFilesResponse> {
+  const { data } = await apiClient.get<ListFilesResponse>(`/list-files/${jobId}`);
+  return {
+    ...data,
+    items: Array.isArray(data.items) ? data.items : [],
+  };
+}
+
+export async function viewFile(
+  jobId: string,
+  filePath: string
+): Promise<Blob> {
+  const { data } = await apiClient.get<Blob>(`/view-file/${jobId}`, {
+    params: { file_path: filePath },
+    responseType: "blob",
+    headers: {
+      Accept: "*/*",
+    },
+  });
+  return data;
 }

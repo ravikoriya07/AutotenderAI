@@ -3,6 +3,7 @@ import { Inter } from "next/font/google";
 import "./globals.css";
 import { SidebarProvider } from "@/contexts/SidebarContext";
 import { ToastProvider } from "@/components/ToastProvider";
+import { GlobalLoader } from "@/components/GlobalLoader";
 
 const inter = Inter({ subsets: ["latin"], variable: "--font-sans" });
 
@@ -20,6 +21,7 @@ export default function RootLayout({
     <html lang="en">
       <body className={`${inter.variable} font-sans antialiased`}>
         <SidebarProvider>{children}</SidebarProvider>
+        <GlobalLoader />
         <ToastProvider />
       </body>
     </html>

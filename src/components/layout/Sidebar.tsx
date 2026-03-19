@@ -1,5 +1,6 @@
 "use client";
 
+import { useCallback, useEffect } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useSidebar } from "@/contexts/SidebarContext";
@@ -8,7 +9,6 @@ import {
   Briefcase,
   FileText,
   // Lightbulb,
-  FileDown,
   FlaskConical,
   // BookOpen,
   Library,
@@ -24,7 +24,6 @@ const mainNav = [
   { href: "/projects", label: "Projects", icon: Briefcase },
   { href: "/my-drafts", label: "My Drafts", icon: FileText },
   // { href: "/ideator", label: "Ideator", icon: Lightbulb },
-  { href: "/extract", label: "Extract", icon: FileDown },
   { href: "/research", label: "Research", icon: FlaskConical },
 ];
 
@@ -37,6 +36,15 @@ const bottomNav = [
 export function Sidebar() {
   const pathname = usePathname();
   const { collapsed, setCollapsed } = useSidebar();
+  const closeOnMobile = useCallback(() => {
+    if (typeof window !== "undefined" && window.matchMedia("(max-width: 1023px)").matches) {
+      setCollapsed(true);
+    }
+  }, [setCollapsed]);
+
+  useEffect(() => {
+    closeOnMobile();
+  }, [pathname, closeOnMobile]);
 
   return (
     <>
@@ -83,6 +91,7 @@ export function Sidebar() {
               <Link
                 key={item.href}
                 href={item.href}
+                onClick={closeOnMobile}
                 className={cn(
                   "flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors",
                   isActive
@@ -101,6 +110,7 @@ export function Sidebar() {
       <div className="border-t border-sidebar-foreground/10 p-3">
         <Link
           href="/login"
+          onClick={closeOnMobile}
           className="flex items-center gap-3 rounded-lg px-3 py-2 text-sm text-sidebar-foreground transition-colors hover:bg-sidebar-foreground/10"
         >
           <LogOut className="h-5 w-5 shrink-0" />
