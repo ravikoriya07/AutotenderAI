@@ -12,6 +12,7 @@ import axios from "axios";
 import { toast } from "react-toastify";
 import { extractZip } from "@/services/projectService";
 import { ProcessingPipeline } from "@/components/extract/pipeline/ProcessingPipeline";
+import { cn } from "@/lib/utils";
 
 const extractionOptions = [
   "Critical Bid Decision Information",
@@ -77,6 +78,10 @@ export function ExtractPageContent({ jobId }: { jobId: string }) {
       setUploaded(true);
       setActiveJobId(result.job_id ?? jobId);
       setExtractedDir(result.extracted_dir ?? null);
+      // Lock upload UI before the pipeline effect runs (avoids a gap after uploading ends).
+      if (result.extracted_dir) {
+        setPipelineBusy(true);
+      }
       setPipelineAutoRunToken((t) => t + 1);
       toast.success("File extracted successfully.");
     } catch (err) {
@@ -295,8 +300,17 @@ export function ExtractPageContent({ jobId }: { jobId: string }) {
                               <button
                                 type="button"
                                 onClick={clearSelectedFile}
-                                className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+                                className={cn(
+                                  "rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground",
+                                  "disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
+                                )}
                                 disabled={uploadLocked}
+                                aria-label="Remove file"
+                                title={
+                                  uploadLocked
+                                    ? "Unavailable while uploading or processing"
+                                    : "Remove file"
+                                }
                               >
                                 <Trash2 className="h-4 w-4" />
                               </button>

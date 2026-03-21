@@ -145,6 +145,11 @@ export function ProcessingPipeline({
     void executePipeline();
   }, [autoRunToken, extractedDir, jobId, executePipeline]);
 
+  const showApiDebug =
+    Boolean(lastApiLog) &&
+    !isProcessing &&
+    (pipelineComplete || Boolean(errorMessage));
+
   const showAutoHint = autoRunToken > 0;
   const uploadBlockedHint =
     isProcessing && showAutoHint ? (
@@ -190,11 +195,15 @@ export function ProcessingPipeline({
         </Button>
       ) : null}
 
-      {lastApiLog ? (
+      {showApiDebug && lastApiLog ? (
         <details className="rounded-lg border border-dashed border-muted-foreground/40 bg-muted/20 p-3 text-sm">
           <summary className="cursor-pointer font-medium text-foreground">
             Last API call (debug)
           </summary>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Shown after the pipeline stops (success or error). This is the
+            final request from that run.
+          </p>
           <p className="mt-2 text-xs text-muted-foreground">
             Step {lastApiLog.stepId}: {lastApiLog.stepName} —{" "}
             <span
