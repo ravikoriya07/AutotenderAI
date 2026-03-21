@@ -30,20 +30,6 @@ export type ExtractZipResponse = {
   extracted_dir: string;
 };
 
-export type ListedFile = {
-  name: string;
-  type?: string;
-  path: string;
-  size?: number;
-};
-
-export type ListFilesResponse = {
-  status: string;
-  job_id: string;
-  current_path?: string;
-  items: ListedFile[];
-};
-
 export type Pagination = {
   total_items: number;
   total_pages: number;

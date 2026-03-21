@@ -10,8 +10,8 @@ import { Tabs } from "@/components/ui/Tabs";
 import { Upload, Trash2, Check } from "lucide-react";
 import axios from "axios";
 import { toast } from "react-toastify";
-import type { ListedFile } from "@/types/project";
-import { extractZip, listFiles, viewFile } from "@/services/projectService";
+import { extractZip } from "@/services/projectService";
+import { ProcessingPipeline } from "@/components/extract/pipeline/ProcessingPipeline";
 
 const extractionOptions = [
   "Critical Bid Decision Information",
@@ -36,31 +36,34 @@ export function ExtractPageContent({ jobId }: { jobId: string }) {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
   const [uploaded, setUploaded] = useState(false);
-  const [files, setFiles] = useState<ListedFile[]>([]);
-  const [filesLoading, setFilesLoading] = useState(false);
-  const [viewingPath, setViewingPath] = useState<string | null>(null);
-  const [extractingPath, setExtractingPath] = useState<string | null>(null);
-
-  const loadFiles = useCallback(async () => {
-    if (!jobId) {
-      setFiles([]);
-      return;
-    }
-    setFilesLoading(true);
-    try {
-      const data = await listFiles(jobId);
-      setFiles(Array.isArray(data.items) ? data.items : []);
-    } catch {
-      setFiles([]);
-      toast.error("Failed to load uploaded files.");
-    } finally {
-      setFilesLoading(false);
-    }
-  }, [jobId]);
+  const [extractedDir, setExtractedDir] = useState<string | null>(null);
+  /** From `/extract-zip` when returned; falls back to page `jobId` */
+  const [activeJobId, setActiveJobId] = useState(jobId);
+  const [pipelineAutoRunToken, setPipelineAutoRunToken] = useState(0);
+  const [pipelineBusy, setPipelineBusy] = useState(false);
+  const prevJobIdRef = useRef<string | null>(null);
 
   useEffect(() => {
-    void loadFiles();
-  }, [loadFiles]);
+    if (prevJobIdRef.current === null) {
+      prevJobIdRef.current = jobId;
+      return;
+    }
+    if (prevJobIdRef.current === jobId) return;
+    prevJobIdRef.current = jobId;
+    setActiveJobId(jobId);
+    setExtractedDir(null);
+    setSelectedFile(null);
+    setUploaded(false);
+    setPipelineAutoRunToken(0);
+    setPipelineBusy(false);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  }, [jobId]);
+
+  const handlePipelineProcessingChange = useCallback((busy: boolean) => {
+    setPipelineBusy(busy);
+  }, []);
+
+  const uploadLocked = uploading || pipelineBusy;
 
   async function handleFileUpload(file: File) {
     if (!jobId) {
@@ -70,10 +73,12 @@ export function ExtractPageContent({ jobId }: { jobId: string }) {
     setUploading(true);
     setUploaded(false);
     try {
-      await extractZip(file, jobId);
+      const result = await extractZip(file, jobId);
       setUploaded(true);
+      setActiveJobId(result.job_id ?? jobId);
+      setExtractedDir(result.extracted_dir ?? null);
+      setPipelineAutoRunToken((t) => t + 1);
       toast.success("File extracted successfully.");
-      void loadFiles();
     } catch (err) {
       if (axios.isAxiosError(err) && err.response?.data?.detail) {
         toast.error(String(err.response.data.detail));
@@ -98,11 +103,15 @@ export function ExtractPageContent({ jobId }: { jobId: string }) {
     if (!file) return;
     setSelectedFile(file);
     setUploaded(false);
+    setExtractedDir(null);
+    setPipelineAutoRunToken(0);
   }
 
   function clearSelectedFile() {
     setSelectedFile(null);
     setUploaded(false);
+    setExtractedDir(null);
+    setPipelineAutoRunToken(0);
     if (fileInputRef.current) fileInputRef.current.value = "";
   }
 
@@ -118,47 +127,88 @@ export function ExtractPageContent({ jobId }: { jobId: string }) {
     await handleFileUpload(selectedFile);
   }
 
-  async function handleViewFile(file: ListedFile) {
-    if (!jobId) {
-      toast.error("Missing project job id. Open Extract from Project listing.");
-      return;
-    }
-    setViewingPath(file.path);
-    try {
-      const blob = await viewFile(jobId, file.path || file.name);
-      const blobUrl = URL.createObjectURL(blob);
-      window.open(blobUrl, "_blank", "noopener,noreferrer");
-      setTimeout(() => URL.revokeObjectURL(blobUrl), 60_000);
-    } catch {
-      toast.error("Failed to open file.");
-    } finally {
-      setViewingPath(null);
-    }
-  }
-
-  async function handleExtractFromList(file: ListedFile) {
-    if (!jobId) {
-      toast.error("Missing project job id. Open Extract from Project listing.");
-      return;
-    }
-    setExtractingPath(file.path);
-    try {
-      if (selectedFile && selectedFile.name === file.name) {
-        await handleFileUpload(selectedFile);
-      } else {
-        const blob = await viewFile(jobId, file.path || file.name);
-        const reusableFile = new File([blob], file.name, {
-          type: blob.type || "application/octet-stream",
-        });
-        setSelectedFile(reusableFile);
-        await handleFileUpload(reusableFile);
-      }
-    } catch {
-      toast.error("Failed to extract selected file.");
-    } finally {
-      setExtractingPath(null);
-    }
-  }
+  const actionsHistoryTabs = (
+    <Tabs
+      tabs={[
+        {
+          id: "actions",
+          label: "Actions",
+          content: (
+            <div className="space-y-6">
+              <div>
+                <h3 className="mb-3 text-sm font-medium">Choose Extraction</h3>
+                <p className="mb-4 text-xs text-muted-foreground">
+                  Select which type of extraction you would like to perform on
+                  your text.
+                </p>
+                <div className="mb-4">
+                  <p className="mb-2 text-xs font-medium text-muted-foreground">
+                    Key Information
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    {extractionOptions.map((opt) => (
+                      <button
+                        key={opt}
+                        type="button"
+                        className="flex items-center gap-1 rounded-full border bg-card px-3 py-1.5 text-xs transition-colors hover:border-primary hover:bg-primary/5"
+                      >
+                        <Check className="h-3 w-3 text-green-600" />
+                        {opt}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="mb-4">
+                  <p className="mb-2 text-xs font-medium text-muted-foreground">
+                    Summaries
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    {summaryOptions.map((opt) => (
+                      <button
+                        key={opt}
+                        type="button"
+                        className="rounded-full border bg-card px-3 py-1.5 text-xs transition-colors hover:border-primary hover:bg-primary/5"
+                      >
+                        {opt}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <p className="mb-2 text-xs font-medium text-muted-foreground">
+                    Key Terms
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      className="flex items-center gap-1 rounded-full border bg-card px-3 py-1.5 text-xs"
+                    >
+                      <Check className="h-3 w-3 text-green-600" />
+                      Default Shred
+                    </button>
+                    <button
+                      type="button"
+                      className="rounded-full border bg-card px-3 py-1.5 text-xs"
+                    >
+                      Custom Shred
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          ),
+        },
+        {
+          id: "history",
+          label: "History",
+          content: (
+            <p className="text-sm text-muted-foreground">Extraction history</p>
+          ),
+        },
+      ]}
+      defaultTab="actions"
+    />
+  );
 
   return (
     <DashboardLayout title="Extract">
@@ -173,6 +223,7 @@ export function ExtractPageContent({ jobId }: { jobId: string }) {
           <span className="text-muted-foreground">{">"}</span>
           <span className="font-medium text-foreground">Extract</span>
         </div>
+
         <div className="grid gap-6 lg:grid-cols-2">
           <Card className="p-6">
             <Tabs
@@ -196,6 +247,7 @@ export function ExtractPageContent({ jobId }: { jobId: string }) {
                         type="file"
                         className="hidden"
                         onChange={handleFileChange}
+                        disabled={uploadLocked}
                       />
                       <div className="flex min-h-[200px] flex-col items-center justify-center rounded-lg border-2 border-dashed border-muted-foreground/30 bg-muted/30 p-8">
                         <Upload className="mb-4 h-12 w-12 text-muted-foreground" />
@@ -208,10 +260,14 @@ export function ExtractPageContent({ jobId }: { jobId: string }) {
                         </p>
                         <Button
                           onClick={handleBrowseClick}
-                          disabled={uploading || !jobId}
+                          disabled={uploadLocked || !jobId}
                         >
                           <Upload className="mr-2 h-4 w-4" />
-                          {uploading ? "UPLOADING..." : "BROWSE FILES"}
+                          {uploading
+                            ? "UPLOADING..."
+                            : pipelineBusy
+                              ? "PROCESSING…"
+                              : "BROWSE FILES"}
                         </Button>
                       </div>
                       {selectedFile && (
@@ -240,7 +296,7 @@ export function ExtractPageContent({ jobId }: { jobId: string }) {
                                 type="button"
                                 onClick={clearSelectedFile}
                                 className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
-                                disabled={uploading}
+                                disabled={uploadLocked}
                               >
                                 <Trash2 className="h-4 w-4" />
                               </button>
@@ -257,59 +313,15 @@ export function ExtractPageContent({ jobId }: { jobId: string }) {
                       <div className="flex justify-end">
                         <Button
                           onClick={handleSubmit}
-                          disabled={uploading || !jobId}
+                          disabled={uploadLocked || !jobId}
                         >
-                          {uploading ? "SUBMITTING..." : "SUBMIT"}
+                          {uploading
+                            ? "SUBMITTING..."
+                            : pipelineBusy
+                              ? "PROCESSING…"
+                              : "SUBMIT"}
                         </Button>
                       </div>
-                      {filesLoading && (
-                        <p className="text-sm text-muted-foreground">
-                          Loading uploaded files...
-                        </p>
-                      )}
-                      {!filesLoading && files.length > 0 && (
-                        <div className="rounded-lg border bg-card p-4">
-                          <p className="mb-3 text-sm font-medium">Uploaded files</p>
-                          <div className="space-y-2">
-                            {files.map((file) => (
-                              <div
-                                key={file.path || file.name}
-                                className="flex items-center justify-between rounded-md border bg-background px-3 py-2"
-                              >
-                                <div className="min-w-0">
-                                  <p className="truncate text-sm font-medium">
-                                    {file.name}
-                                  </p>
-                                  <p className="text-xs text-muted-foreground">
-                                    {typeof file.size === "number"
-                                      ? `${Math.max(1, Math.round(file.size / 1024))} KB`
-                                      : "Size not available"}
-                                  </p>
-                                </div>
-                                <div className="ml-3 flex items-center gap-2">
-                                  <Button
-                                    type="button"
-                                    size="sm"
-                                    variant="outline"
-                                    onClick={() => void handleViewFile(file)}
-                                    disabled={viewingPath === file.path || uploading}
-                                  >
-                                    {viewingPath === file.path ? "Opening..." : "View File"}
-                                  </Button>
-                                  <Button
-                                    type="button"
-                                    size="sm"
-                                    onClick={() => void handleExtractFromList(file)}
-                                    disabled={uploading || extractingPath === file.path}
-                                  >
-                                    {extractingPath === file.path ? "Extracting..." : "Extract"}
-                                  </Button>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
                     </div>
                   ),
                 },
@@ -320,6 +332,7 @@ export function ExtractPageContent({ jobId }: { jobId: string }) {
                     <textarea
                       placeholder="Paste your text here..."
                       className="min-h-[200px] w-full rounded-md border bg-background p-3 text-sm"
+                      disabled={uploadLocked}
                     />
                   ),
                 },
@@ -329,84 +342,16 @@ export function ExtractPageContent({ jobId }: { jobId: string }) {
           </Card>
 
           <Card className="p-6">
-            <Tabs
-              tabs={[
-                {
-                  id: "actions",
-                  label: "Actions",
-                  content: (
-                    <div className="space-y-6">
-                      <div>
-                        <h3 className="mb-3 text-sm font-medium">
-                          Choose Extraction
-                        </h3>
-                        <p className="mb-4 text-xs text-muted-foreground">
-                          Select which type of extraction you would like to
-                          perform on your text.
-                        </p>
-                        <div className="mb-4">
-                          <p className="mb-2 text-xs font-medium text-muted-foreground">
-                            Key Information
-                          </p>
-                          <div className="flex flex-wrap gap-2">
-                            {extractionOptions.map((opt) => (
-                              <button
-                                key={opt}
-                                className="flex items-center gap-1 rounded-full border bg-card px-3 py-1.5 text-xs transition-colors hover:border-primary hover:bg-primary/5"
-                              >
-                                <Check className="h-3 w-3 text-green-600" />
-                                {opt}
-                              </button>
-                            ))}
-                          </div>
-                        </div>
-                        <div className="mb-4">
-                          <p className="mb-2 text-xs font-medium text-muted-foreground">
-                            Summaries
-                          </p>
-                          <div className="flex flex-wrap gap-2">
-                            {summaryOptions.map((opt) => (
-                              <button
-                                key={opt}
-                                className="rounded-full border bg-card px-3 py-1.5 text-xs transition-colors hover:border-primary hover:bg-primary/5"
-                              >
-                                {opt}
-                              </button>
-                            ))}
-                          </div>
-                        </div>
-                        <div>
-                          <p className="mb-2 text-xs font-medium text-muted-foreground">
-                            Key Terms
-                          </p>
-                          <div className="flex flex-wrap gap-2">
-                            <button className="flex items-center gap-1 rounded-full border bg-card px-3 py-1.5 text-xs">
-                              <Check className="h-3 w-3 text-green-600" />
-                              Default Shred
-                            </button>
-                            <button className="rounded-full border bg-card px-3 py-1.5 text-xs">
-                              Custom Shred
-                            </button>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  ),
-                },
-                {
-                  id: "history",
-                  label: "History",
-                  content: (
-                    <p className="text-sm text-muted-foreground">
-                      Extraction history
-                    </p>
-                  ),
-                },
-              ]}
-              defaultTab="actions"
+            <ProcessingPipeline
+              jobId={activeJobId}
+              extractedDir={extractedDir}
+              autoRunToken={pipelineAutoRunToken}
+              onProcessingChange={handlePipelineProcessingChange}
             />
           </Card>
         </div>
+
+        <Card className="mt-6 p-6">{actionsHistoryTabs}</Card>
       </PageContainer>
     </DashboardLayout>
   );

@@ -3,7 +3,6 @@ import type {
   CreateProjectPayload,
   CreateProjectResponse,
   ExtractZipResponse,
-  ListFilesResponse,
   ListProjectsParams,
   ListProjectsResponse,
   Pagination,
@@ -95,27 +94,5 @@ export async function extractZip(
     }
   );
 
-  return data;
-}
-
-export async function listFiles(jobId: string): Promise<ListFilesResponse> {
-  const { data } = await apiClient.get<ListFilesResponse>(`/list-files/${jobId}`);
-  return {
-    ...data,
-    items: Array.isArray(data.items) ? data.items : [],
-  };
-}
-
-export async function viewFile(
-  jobId: string,
-  filePath: string
-): Promise<Blob> {
-  const { data } = await apiClient.get<Blob>(`/view-file/${jobId}`, {
-    params: { file_path: filePath },
-    responseType: "blob",
-    headers: {
-      Accept: "*/*",
-    },
-  });
   return data;
 }
