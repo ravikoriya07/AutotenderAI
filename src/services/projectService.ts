@@ -1,4 +1,9 @@
+import type { AxiosRequestConfig } from "axios";
 import { apiClient } from "@/lib/apiClient";
+
+type ProjectRequestConfig = AxiosRequestConfig & {
+  skipGlobalLoader?: boolean;
+};
 import type {
   CreateProjectPayload,
   CreateProjectResponse,
@@ -18,13 +23,15 @@ export type EditProjectPayload = {
 export async function createProject(
   payload: CreateProjectPayload
 ): Promise<CreateProjectResponse> {
+  const config: ProjectRequestConfig = { skipGlobalLoader: true };
   const { data } = await apiClient.post<CreateProjectResponse>(
     "/create-project",
     {
       opportunity: payload.opportunity.trim(),
       due_date: payload.due_date?.trim() || "N/A",
       status: payload.status,
-    }
+    },
+    config
   );
   return data;
 }
@@ -33,11 +40,16 @@ export async function editProject(
   jobId: string,
   payload: EditProjectPayload
 ): Promise<unknown> {
-  const { data } = await apiClient.put<unknown>(`/edit-project/${jobId}`, {
-    opportunity: payload.opportunity.trim(),
-    due_date: payload.due_date?.trim() ?? "N/A",
-    status: payload.status,
-  });
+  const config: ProjectRequestConfig = { skipGlobalLoader: true };
+  const { data } = await apiClient.put<unknown>(
+    `/edit-project/${jobId}`,
+    {
+      opportunity: payload.opportunity.trim(),
+      due_date: payload.due_date?.trim() ?? "N/A",
+      status: payload.status,
+    },
+    config
+  );
   return data;
 }
 

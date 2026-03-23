@@ -1,4 +1,5 @@
 import axios from "axios";
+import { getAuthToken } from "@/lib/authStorage";
 import { globalLoaderStore } from "@/lib/globalLoaderStore";
 
 const baseURL =
@@ -14,6 +15,10 @@ export const apiClient = axios.create({
 
 apiClient.interceptors.request.use(
   (config) => {
+    const token = getAuthToken();
+    if (token) {
+      config.headers.Authorization = `Bearer ${token}`;
+    }
     const skipLoader = Boolean((config as { skipGlobalLoader?: boolean }).skipGlobalLoader);
     if (!skipLoader) {
       globalLoaderStore.begin();

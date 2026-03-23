@@ -8,9 +8,6 @@ import {
 } from "@/lib/processingPipelineConfig";
 import { startPipeline } from "@/lib/runProcessingPipeline";
 import { ProcessingStatus } from "./ProcessingStatus";
-import type { PipelineApiLog } from "./pipelineApi";
-
-const LOG_PREFIX = "[ProcessingPipeline]";
 
 type ProcessingPipelineProps = {
   /** Effective job id (from page or `/extract-zip` response) */
@@ -31,7 +28,6 @@ export function ProcessingPipeline({
   const [isProcessing, setIsProcessing] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [pipelineComplete, setPipelineComplete] = useState(false);
-  const [lastApiLog, setLastApiLog] = useState<PipelineApiLog | null>(null);
 
   const rootRef = useRef<HTMLDivElement>(null);
   const runIdRef = useRef(0);
@@ -46,7 +42,6 @@ export function ProcessingPipeline({
     setSteps(initialStepRuntimes());
     setErrorMessage(null);
     setPipelineComplete(false);
-    setLastApiLog(null);
     setIsProcessing(false);
     onProcessingChangeRef.current?.(false);
   }, [extractedDir, jobId]);
@@ -58,7 +53,6 @@ export function ProcessingPipeline({
     setSteps(initialStepRuntimes());
     setErrorMessage(null);
     setPipelineComplete(false);
-    setLastApiLog(null);
     setIsProcessing(true);
     onProcessingChangeRef.current?.(true);
 
@@ -95,12 +89,6 @@ export function ProcessingPipeline({
                   : s
               )
             );
-          },
-          onApiLog: (log) => {
-            if (runId !== runIdRef.current) return;
-            setLastApiLog(log);
-            console.log(`${LOG_PREFIX} Last API call`, log);
-            console.log(`${LOG_PREFIX} Parsed response JSON`, log.responseJson);
           },
           onPipelineComplete: () => {
             if (runId !== runIdRef.current) return;
@@ -145,11 +133,6 @@ export function ProcessingPipeline({
     void executePipeline();
   }, [autoRunToken, extractedDir, jobId, executePipeline]);
 
-  const showApiDebug =
-    Boolean(lastApiLog) &&
-    !isProcessing &&
-    (pipelineComplete || Boolean(errorMessage));
-
   const showAutoHint = autoRunToken > 0;
   const uploadBlockedHint =
     isProcessing && showAutoHint ? (
@@ -193,48 +176,6 @@ export function ProcessingPipeline({
         >
           Retry pipeline
         </Button>
-      ) : null}
-
-      {showApiDebug && lastApiLog ? (
-        <details className="rounded-lg border border-dashed border-muted-foreground/40 bg-muted/20 p-3 text-sm">
-          <summary className="cursor-pointer font-medium text-foreground">
-            Last API call (debug)
-          </summary>
-          <p className="mt-1 text-xs text-muted-foreground">
-            Shown after the pipeline stops (success or error). This is the
-            final request from that run.
-          </p>
-          <p className="mt-2 text-xs text-muted-foreground">
-            Step {lastApiLog.stepId}: {lastApiLog.stepName} —{" "}
-            <span
-              className={
-                lastApiLog.ok ? "text-green-700 dark:text-green-400" : "text-destructive"
-              }
-            >
-              HTTP {lastApiLog.httpStatus}
-            </span>
-            {" · "}
-            <code className="text-[11px]">{lastApiLog.endpoint}</code>
-          </p>
-          <p className="mt-1 text-xs text-muted-foreground">
-            Open the browser console for the same object logged as{" "}
-            <code className="rounded bg-muted px-1">{LOG_PREFIX} Last API call</code>.
-          </p>
-          <pre className="mt-3 max-h-64 overflow-auto rounded-md border bg-background p-3 text-[11px] leading-relaxed">
-            {JSON.stringify(
-              {
-                at: lastApiLog.at,
-                url: lastApiLog.url,
-                payload: lastApiLog.payload,
-                httpStatus: lastApiLog.httpStatus,
-                ok: lastApiLog.ok,
-                response: lastApiLog.responseJson ?? lastApiLog.rawBodyPreview,
-              },
-              null,
-              2
-            )}
-          </pre>
-        </details>
       ) : null}
     </div>
   );

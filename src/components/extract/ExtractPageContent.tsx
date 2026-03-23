@@ -14,6 +14,9 @@ import { extractZip } from "@/services/projectService";
 import { ProcessingPipeline } from "@/components/extract/pipeline/ProcessingPipeline";
 import { cn } from "@/lib/utils";
 
+/** Set to true to show the Actions / History card (Choose Extraction, etc.). */
+const SHOW_ACTIONS_HISTORY_SECTION = false;
+
 const extractionOptions = [
   "Critical Bid Decision Information",
   "Commissioner's Priorities (Requirements)",
@@ -131,89 +134,6 @@ export function ExtractPageContent({ jobId }: { jobId: string }) {
     }
     await handleFileUpload(selectedFile);
   }
-
-  const actionsHistoryTabs = (
-    <Tabs
-      tabs={[
-        {
-          id: "actions",
-          label: "Actions",
-          content: (
-            <div className="space-y-6">
-              <div>
-                <h3 className="mb-3 text-sm font-medium">Choose Extraction</h3>
-                <p className="mb-4 text-xs text-muted-foreground">
-                  Select which type of extraction you would like to perform on
-                  your text.
-                </p>
-                <div className="mb-4">
-                  <p className="mb-2 text-xs font-medium text-muted-foreground">
-                    Key Information
-                  </p>
-                  <div className="flex flex-wrap gap-2">
-                    {extractionOptions.map((opt) => (
-                      <button
-                        key={opt}
-                        type="button"
-                        className="flex items-center gap-1 rounded-full border bg-card px-3 py-1.5 text-xs transition-colors hover:border-primary hover:bg-primary/5"
-                      >
-                        <Check className="h-3 w-3 text-green-600" />
-                        {opt}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-                <div className="mb-4">
-                  <p className="mb-2 text-xs font-medium text-muted-foreground">
-                    Summaries
-                  </p>
-                  <div className="flex flex-wrap gap-2">
-                    {summaryOptions.map((opt) => (
-                      <button
-                        key={opt}
-                        type="button"
-                        className="rounded-full border bg-card px-3 py-1.5 text-xs transition-colors hover:border-primary hover:bg-primary/5"
-                      >
-                        {opt}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-                <div>
-                  <p className="mb-2 text-xs font-medium text-muted-foreground">
-                    Key Terms
-                  </p>
-                  <div className="flex flex-wrap gap-2">
-                    <button
-                      type="button"
-                      className="flex items-center gap-1 rounded-full border bg-card px-3 py-1.5 text-xs"
-                    >
-                      <Check className="h-3 w-3 text-green-600" />
-                      Default Shred
-                    </button>
-                    <button
-                      type="button"
-                      className="rounded-full border bg-card px-3 py-1.5 text-xs"
-                    >
-                      Custom Shred
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </div>
-          ),
-        },
-        {
-          id: "history",
-          label: "History",
-          content: (
-            <p className="text-sm text-muted-foreground">Extraction history</p>
-          ),
-        },
-      ]}
-      defaultTab="actions"
-    />
-  );
 
   return (
     <DashboardLayout title="Extract">
@@ -365,7 +285,94 @@ export function ExtractPageContent({ jobId }: { jobId: string }) {
           </Card>
         </div>
 
-        <Card className="mt-6 p-6">{actionsHistoryTabs}</Card>
+        {SHOW_ACTIONS_HISTORY_SECTION ? (
+          <Card className="mt-6 p-6">
+            <Tabs
+              tabs={[
+                {
+                  id: "actions",
+                  label: "Actions",
+                  content: (
+                    <div className="space-y-6">
+                      <div>
+                        <h3 className="mb-3 text-sm font-medium">
+                          Choose Extraction
+                        </h3>
+                        <p className="mb-4 text-xs text-muted-foreground">
+                          Select which type of extraction you would like to
+                          perform on your text.
+                        </p>
+                        <div className="mb-4">
+                          <p className="mb-2 text-xs font-medium text-muted-foreground">
+                            Key Information
+                          </p>
+                          <div className="flex flex-wrap gap-2">
+                            {extractionOptions.map((opt) => (
+                              <button
+                                key={opt}
+                                type="button"
+                                className="flex items-center gap-1 rounded-full border bg-card px-3 py-1.5 text-xs transition-colors hover:border-primary hover:bg-primary/5"
+                              >
+                                <Check className="h-3 w-3 text-green-600" />
+                                {opt}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                        <div className="mb-4">
+                          <p className="mb-2 text-xs font-medium text-muted-foreground">
+                            Summaries
+                          </p>
+                          <div className="flex flex-wrap gap-2">
+                            {summaryOptions.map((opt) => (
+                              <button
+                                key={opt}
+                                type="button"
+                                className="rounded-full border bg-card px-3 py-1.5 text-xs transition-colors hover:border-primary hover:bg-primary/5"
+                              >
+                                {opt}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                        <div>
+                          <p className="mb-2 text-xs font-medium text-muted-foreground">
+                            Key Terms
+                          </p>
+                          <div className="flex flex-wrap gap-2">
+                            <button
+                              type="button"
+                              className="flex items-center gap-1 rounded-full border bg-card px-3 py-1.5 text-xs"
+                            >
+                              <Check className="h-3 w-3 text-green-600" />
+                              Default Shred
+                            </button>
+                            <button
+                              type="button"
+                              className="rounded-full border bg-card px-3 py-1.5 text-xs"
+                            >
+                              Custom Shred
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  ),
+                },
+                {
+                  id: "history",
+                  label: "History",
+                  content: (
+                    <p className="text-sm text-muted-foreground">
+                      Extraction history
+                    </p>
+                  ),
+                },
+              ]}
+              defaultTab="actions"
+            />
+          </Card>
+        ) : null}
       </PageContainer>
     </DashboardLayout>
   );

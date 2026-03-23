@@ -34,7 +34,7 @@ export type StartPipelineInput = {
 export type StartPipelineHandlers = {
   onStepProcessing: (stepId: number) => void;
   onStepCompleted: (stepId: number) => void;
-  onApiLog: (log: PipelineApiLog) => void;
+  onApiLog?: (log: PipelineApiLog) => void;
   onPipelineComplete: () => void;
   /** `stepId` when a specific step failed; `null` for unexpected errors */
   onPipelineError: (message: string, stepId: number | null) => void;
@@ -62,7 +62,7 @@ export async function startPipeline(
       const payload = getPayloadForStep(step, jobId, outputs);
       const result = await postPipelineStep(step, payload);
 
-      handlers.onApiLog(result.log);
+      handlers.onApiLog?.(result.log);
 
       if (!result.ok) {
         handlers.onPipelineError(result.errorMessage, step.id);

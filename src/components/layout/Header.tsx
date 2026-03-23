@@ -1,7 +1,11 @@
 "use client";
 
+import { useEffect, useState } from "react";
+import { usePathname } from "next/navigation";
 import { Search, Bell, HelpCircle, Menu } from "lucide-react";
 import { useSidebar } from "@/contexts/SidebarContext";
+import { getAuthUserEmail, getAuthUserName } from "@/lib/authStorage";
+import { getShortDisplayName, getUserInitials } from "@/lib/userDisplay";
 
 interface HeaderProps {
   title?: string;
@@ -15,6 +19,17 @@ export function Header({
   searchPlaceholder = "Search...",
 }: HeaderProps) {
   const { collapsed, setCollapsed } = useSidebar();
+  const pathname = usePathname();
+  const [displayName, setDisplayName] = useState<string | null>(null);
+  const [email, setEmail] = useState<string | null>(null);
+
+  useEffect(() => {
+    setDisplayName(getAuthUserName());
+    setEmail(getAuthUserEmail());
+  }, [pathname]);
+
+  const initials = getUserInitials(displayName, email);
+  const shortName = getShortDisplayName(displayName, email);
 
   return (
     <header className="sticky top-0 z-30 border-b bg-background">
@@ -57,13 +72,32 @@ export function Header({
         <button className="rounded p-2 hover:bg-muted" aria-label="Help">
           <HelpCircle className="h-5 w-5" />
         </button>
-        <div className="flex items-center gap-2 pl-2">
-          <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary/20 text-sm font-medium text-primary">
-            JS
+        <div
+          className="flex min-w-0 items-center gap-2 pl-2"
+          aria-label={
+            email
+              ? `${shortName}, ${email}`
+              : displayName
+                ? shortName
+                : "Account"
+          }
+        >
+          <div
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary/20 text-sm font-medium text-primary"
+            aria-hidden
+          >
+            {initials}
           </div>
-          <span className="hidden text-sm text-muted-foreground sm:inline">
-            joe.sessions@thedck.com
-          </span>
+          <div className="hidden min-w-0 flex-col sm:flex">
+            <span className="truncate text-sm font-medium leading-tight">
+              {shortName}
+            </span>
+            {email ? (
+              <span className="truncate text-xs text-muted-foreground" title={email}>
+                {email}
+              </span>
+            ) : null}
+          </div>
         </div>
         </div>
       </div>

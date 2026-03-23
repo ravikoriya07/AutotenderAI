@@ -1,16 +1,23 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useEffect, useState } from "react";
 import axios from "axios";
+import { useForm, Controller, type Resolver } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
 import { toast } from "react-toastify";
+import { Loader2 } from "lucide-react";
 import { Input } from "@/components/ui/Input";
 import { Button } from "@/components/ui/Button";
 import { SingleDatePicker } from "@/components/SingleDatePicker";
 import { editProject } from "@/services/projectService";
-import type { ApiErrorResponse } from "@/types/project";
 import type { Project } from "@/types/project";
-
-const STATUS_OPTIONS = ["Preparing", "In Progress", "Completed"];
+import {
+  projectFormSchema,
+  PROJECT_STATUS_VALUES,
+  type ProjectFormValues,
+} from "@/lib/validations/projectFormSchema";
+import { getApiErrorDetailMessage } from "@/lib/apiErrorMessage";
+import { cn } from "@/lib/utils";
 
 /** Normalize API due_date to Y-m-d for <input type="date">. Returns "" for N/A or unparseable. */
 function dueDateToYmd(value: string | undefined | null): string {
@@ -33,56 +40,56 @@ interface EditProjectFormProps {
 }
 
 export function EditProjectForm({ project, onSuccess }: EditProjectFormProps) {
-  const [opportunity, setOpportunity] = useState(project.opportunity);
-  const [dueDate, setDueDate] = useState(() => dueDateToYmd(project.dueDate));
-  const [status, setStatus] = useState(project.status);
-  const [loading, setLoading] = useState(false);
-  const [errors, setErrors] = useState<{ opportunity?: string; status?: string }>({});
+  const [formError, setFormError] = useState<string | null>(null);
+
+  const {
+    register,
+    control,
+    handleSubmit,
+    reset,
+    formState: { errors, isSubmitting },
+  } = useForm<ProjectFormValues>({
+    resolver: zodResolver(
+      projectFormSchema
+    ) as Resolver<ProjectFormValues>,
+    defaultValues: {
+      opportunity: project.opportunity,
+      dueDate: dueDateToYmd(project.dueDate),
+      status: project.status,
+    },
+  });
 
   useEffect(() => {
-    setOpportunity(project.opportunity);
-    setDueDate(dueDateToYmd(project.dueDate));
-    setStatus(project.status);
-  }, [project]);
+    reset({
+      opportunity: project.opportunity,
+      dueDate: dueDateToYmd(project.dueDate),
+      status: project.status,
+    });
+  }, [project, reset]);
 
-  function validate(): boolean {
-    const next: { opportunity?: string; status?: string } = {};
-    if (!opportunity.trim()) next.opportunity = "Opportunity is required.";
-    if (!status) next.status = "Status is required.";
-    setErrors(next);
-    return Object.keys(next).length === 0;
-  }
-
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    setErrors({});
-    if (!validate()) return;
-
-    setLoading(true);
+  async function onSubmit(values: ProjectFormValues) {
+    setFormError(null);
     try {
       await editProject(project.id, {
-        opportunity: opportunity.trim(),
-        due_date: dueDate.trim() ? dueDate.trim() : "N/A",
-        status,
+        opportunity: values.opportunity.trim(),
+        due_date: values.dueDate.trim() ? values.dueDate.trim() : "N/A",
+        status: values.status,
       });
       toast.success("Project updated successfully.");
       onSuccess();
     } catch (err) {
-      if (axios.isAxiosError(err) && err.response?.status === 422) {
-        const data = err.response.data as ApiErrorResponse | undefined;
-        const first = data?.detail?.[0];
-        const message = first?.msg ?? "Could not update project. Check your input.";
-        toast.error(message);
-      } else {
-        toast.error("Failed to update project.");
-      }
-    } finally {
-      setLoading(false);
+      const fallback =
+        axios.isAxiosError(err) && err.response?.status === 422
+          ? "Could not update project. Check your input."
+          : "Failed to update project.";
+      const message = getApiErrorDetailMessage(err, fallback);
+      setFormError(message);
+      toast.error(message);
     }
   }
 
   return (
-    <form className="space-y-4" onSubmit={handleSubmit}>
+    <form className="space-y-4" onSubmit={handleSubmit(onSubmit)} noValidate>
       <div className="space-y-2">
         <label
           htmlFor="edit-opportunity"
@@ -94,13 +101,18 @@ export function EditProjectForm({ project, onSuccess }: EditProjectFormProps) {
           id="edit-opportunity"
           type="text"
           placeholder="e.g. Test Project"
-          value={opportunity}
-          onChange={(e) => setOpportunity(e.target.value)}
-          disabled={loading}
-          className={errors.opportunity ? "border-destructive" : ""}
+          autoComplete="off"
+          disabled={isSubmitting}
+          aria-invalid={Boolean(errors.opportunity)}
+          className={cn(
+            errors.opportunity && "border-destructive focus-visible:ring-destructive"
+          )}
+          {...register("opportunity")}
         />
         {errors.opportunity && (
-          <p className="text-sm text-destructive">{errors.opportunity}</p>
+          <p className="text-sm text-destructive" role="alert">
+            {errors.opportunity.message}
+          </p>
         )}
       </div>
       <div className="space-y-2">
@@ -110,12 +122,18 @@ export function EditProjectForm({ project, onSuccess }: EditProjectFormProps) {
         >
           Due date <span className="text-muted-foreground">(optional)</span>
         </label>
-        <SingleDatePicker
-          id="edit-due-date"
-          value={dueDate}
-          onChange={setDueDate}
-          disabled={loading}
-          placeholder="Select date"
+        <Controller
+          name="dueDate"
+          control={control}
+          render={({ field }) => (
+            <SingleDatePicker
+              id="edit-due-date"
+              value={field.value}
+              onChange={field.onChange}
+              disabled={isSubmitting}
+              placeholder="Select date"
+            />
+          )}
         />
       </div>
       <div className="space-y-2">
@@ -127,27 +145,44 @@ export function EditProjectForm({ project, onSuccess }: EditProjectFormProps) {
         </label>
         <select
           id="edit-status"
-          value={status}
-          onChange={(e) => setStatus(e.target.value)}
-          disabled={loading}
-          className={`flex h-9 w-full rounded-md border bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 ${
-            errors.status ? "border-destructive" : "border-input"
-          }`}
+          disabled={isSubmitting}
+          aria-invalid={Boolean(errors.status)}
+          className={cn(
+            "flex h-9 w-full rounded-md border bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50",
+            errors.status
+              ? "border-destructive focus-visible:ring-destructive"
+              : "border-input"
+          )}
+          {...register("status")}
         >
           <option value="">Select status</option>
-          {STATUS_OPTIONS.map((opt) => (
+          {PROJECT_STATUS_VALUES.map((opt) => (
             <option key={opt} value={opt}>
               {opt}
             </option>
           ))}
         </select>
         {errors.status && (
-          <p className="text-sm text-destructive">{errors.status}</p>
+          <p className="text-sm text-destructive" role="alert">
+            {errors.status.message}
+          </p>
         )}
       </div>
+      {formError && (
+        <p className="rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          {formError}
+        </p>
+      )}
       <div className="flex gap-2 pt-2">
-        <Button type="submit" className="flex-1" disabled={loading}>
-          {loading ? "Saving…" : "Save changes"}
+        <Button type="submit" className="flex-1 gap-2" disabled={isSubmitting}>
+          {isSubmitting ? (
+            <>
+              <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+              Saving…
+            </>
+          ) : (
+            "Save changes"
+          )}
         </Button>
       </div>
     </form>
