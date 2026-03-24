@@ -30,6 +30,16 @@ export type ExtractZipResponse = {
   extracted_dir: string;
 };
 
+/** GET /resume-info/{job_id} */
+export type ResumeInfoResponse = {
+  status: string;
+  job_id: string;
+  job_status: string;
+  last_recorded_step: string;
+  next_step_to_trigger: string | null;
+  outputs: Record<string, unknown> | null;
+};
+
 export type Pagination = {
   total_items: number;
   total_pages: number;

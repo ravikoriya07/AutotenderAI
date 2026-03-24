@@ -1,21 +1,29 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { toast } from "react-toastify";
+import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
-import {
-  type StepRuntime,
-  initialStepRuntimes,
-} from "@/lib/processingPipelineConfig";
+import { initialStepRuntimes } from "@/lib/processingPipelineConfig";
 import { startPipeline } from "@/lib/runProcessingPipeline";
+import { getResumeInfo } from "@/services/projectService";
+import {
+  buildStepsFromResumeInfo,
+  getPipelineStartIndexFromTrigger,
+  isPipelineFullyCompleteFromResume,
+  isResumeCaseA,
+  normalizeResumeOutputsToStepOutputs,
+} from "@/lib/resumePipeline";
 import { ProcessingStatus } from "./ProcessingStatus";
 
 type ProcessingPipelineProps = {
-  /** Effective job id (from page or `/extract-zip` response) */
   jobId: string;
   extractedDir: string | null;
-  /** Increment after each successful extract to auto-run the pipeline */
+  /** Increment after each successful extract to auto-run the pipeline from step 2 */
   autoRunToken: number;
   onProcessingChange?: (processing: boolean) => void;
+  /** True when job is fully complete (server or local) — parent should disable extract/upload */
+  onExtractLockChange?: (locked: boolean) => void;
 };
 
 export function ProcessingPipeline({
@@ -23,104 +31,196 @@ export function ProcessingPipeline({
   extractedDir,
   autoRunToken,
   onProcessingChange,
+  onExtractLockChange,
 }: ProcessingPipelineProps) {
-  const [steps, setSteps] = useState<StepRuntime[]>(initialStepRuntimes);
+  const [steps, setSteps] = useState(() => initialStepRuntimes());
   const [isProcessing, setIsProcessing] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  /** Local run finished all steps successfully */
   const [pipelineComplete, setPipelineComplete] = useState(false);
+  /** GET /resume-info reports final step done — no further processing */
+  const [terminalFromServer, setTerminalFromServer] = useState(false);
+  const [resumeInfoLoading, setResumeInfoLoading] = useState(false);
+  const [resumeActionPending, setResumeActionPending] = useState(false);
+  const [resumeHint, setResumeHint] = useState<string | null>(null);
+  /** Case A: initialized + no next step — hide Resume (nothing to resume yet) */
+  const [resumeCaseA, setResumeCaseA] = useState(false);
 
   const rootRef = useRef<HTMLDivElement>(null);
   const runIdRef = useRef(0);
-  /** Prevents duplicate auto-starts for the same token (e.g. React Strict Mode). */
   const lastAutoStartedTokenRef = useRef<number | null>(null);
   const onProcessingChangeRef = useRef(onProcessingChange);
+  const onExtractLockChangeRef = useRef(onExtractLockChange);
   onProcessingChangeRef.current = onProcessingChange;
+  onExtractLockChangeRef.current = onExtractLockChange;
+
+  const extractLocked = terminalFromServer || pipelineComplete;
 
   useEffect(() => {
-    if (extractedDir && jobId) return;
-    runIdRef.current += 1;
-    setSteps(initialStepRuntimes());
-    setErrorMessage(null);
-    setPipelineComplete(false);
-    setIsProcessing(false);
-    onProcessingChangeRef.current?.(false);
-  }, [extractedDir, jobId]);
+    onExtractLockChangeRef.current?.(extractLocked);
+  }, [extractLocked]);
 
-  const executePipeline = useCallback(async () => {
-    if (!jobId || !extractedDir) return;
-
-    const runId = ++runIdRef.current;
-    setSteps(initialStepRuntimes());
-    setErrorMessage(null);
-    setPipelineComplete(false);
-    setIsProcessing(true);
-    onProcessingChangeRef.current?.(true);
-
-    requestAnimationFrame(() => {
-      rootRef.current?.scrollIntoView({
-        behavior: "smooth",
-        block: "start",
+  /** Step 1 (Extract zip): sync with local `extractedDir` without clobbering server-resumed state. */
+  useEffect(() => {
+    setSteps((prev) => {
+      if (!prev.some((s) => s.id === 1)) return prev;
+      return prev.map((s) => {
+        if (s.id !== 1) return s;
+        if (extractedDir) {
+          return { ...s, status: "completed" as const, message: "Completed" };
+        }
+        const pipelineStarted = prev.some(
+          (x) => x.id >= 2 && x.id <= 12 && x.status !== "pending"
+        );
+        if (pipelineStarted) return s;
+        return { ...s, status: "pending" as const, message: undefined };
       });
     });
+  }, [extractedDir]);
 
-    try {
-      await startPipeline(
-        {
-          jobId,
-          initialOutputs: { extracted_dir: extractedDir },
-        },
-        {
-          onStepProcessing: (stepId) => {
-            if (runId !== runIdRef.current) return;
-            setSteps((prev) =>
-              prev.map((s) =>
-                s.id === stepId
-                  ? { ...s, status: "processing", message: undefined }
-                  : s
-              )
-            );
-          },
-          onStepCompleted: (stepId) => {
-            if (runId !== runIdRef.current) return;
-            setSteps((prev) =>
-              prev.map((s) =>
-                s.id === stepId
-                  ? { ...s, status: "completed", message: "Completed" }
-                  : s
-              )
-            );
-          },
-          onPipelineComplete: () => {
-            if (runId !== runIdRef.current) return;
-            setPipelineComplete(true);
-          },
-          onPipelineError: (message, stepId) => {
-            if (runId !== runIdRef.current) return;
-            setErrorMessage(message);
-            setSteps((prev) => {
-              if (stepId != null) {
-                return prev.map((s) =>
-                  s.id === stepId
-                    ? { ...s, status: "error", message }
-                    : s
-                );
-              }
-              const idx = prev.findIndex((s) => s.status === "processing");
-              if (idx === -1) return prev;
-              return prev.map((s, i) =>
-                i === idx ? { ...s, status: "error", message } : s
-              );
-            });
-          },
-        }
-      );
-    } finally {
-      if (runId === runIdRef.current) {
-        setIsProcessing(false);
-        onProcessingChangeRef.current?.(false);
-      }
+  const applyResumeInfoToState = useCallback((info: Awaited<ReturnType<typeof getResumeInfo>>) => {
+    const done = isPipelineFullyCompleteFromResume(info);
+    const caseA = isResumeCaseA(info);
+    setTerminalFromServer(done);
+    setPipelineComplete(done);
+    setSteps(buildStepsFromResumeInfo(info));
+    setResumeCaseA(caseA);
+    setResumeHint(caseA ? "No processing started yet." : null);
+  }, []);
+
+  useEffect(() => {
+    if (!jobId) {
+      runIdRef.current += 1;
+      setSteps(initialStepRuntimes());
+      setErrorMessage(null);
+      setPipelineComplete(false);
+      setTerminalFromServer(false);
+      setResumeHint(null);
+      setResumeCaseA(false);
+      setIsProcessing(false);
+      onProcessingChangeRef.current?.(false);
+      onExtractLockChangeRef.current?.(false);
+      return;
     }
-  }, [jobId, extractedDir]);
+
+    let cancelled = false;
+    setResumeInfoLoading(true);
+    void getResumeInfo(jobId)
+      .then((info) => {
+        if (cancelled) return;
+        applyResumeInfoToState(info);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setSteps(initialStepRuntimes());
+        setTerminalFromServer(false);
+        setPipelineComplete(false);
+        setResumeHint(null);
+        setResumeCaseA(false);
+      })
+      .finally(() => {
+        if (!cancelled) setResumeInfoLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [jobId, applyResumeInfoToState]);
+
+  const runPipelineWithOutputs = useCallback(
+    async (
+      startIdx: number,
+      outputs: Record<string, string>,
+      resetStepsBeforeRun: boolean
+    ) => {
+      if (!jobId) return;
+
+      const runId = ++runIdRef.current;
+      if (resetStepsBeforeRun) {
+        setSteps(initialStepRuntimes());
+      }
+      setErrorMessage(null);
+      setResumeHint(null);
+      setResumeCaseA(false);
+      setTerminalFromServer(false);
+      setPipelineComplete(false);
+      setIsProcessing(true);
+      onProcessingChangeRef.current?.(true);
+
+      requestAnimationFrame(() => {
+        rootRef.current?.scrollIntoView({
+          behavior: "smooth",
+          block: "start",
+        });
+      });
+
+      try {
+        await startPipeline(
+          {
+            jobId,
+            initialOutputs: outputs,
+            startIndex: startIdx,
+          },
+          {
+            onStepProcessing: (stepId) => {
+              if (runId !== runIdRef.current) return;
+              setSteps((prev) =>
+                prev.map((s) =>
+                  s.id === stepId
+                    ? { ...s, status: "processing", message: undefined }
+                    : s
+                )
+              );
+            },
+            onStepCompleted: (stepId) => {
+              if (runId !== runIdRef.current) return;
+              setSteps((prev) =>
+                prev.map((s) =>
+                  s.id === stepId
+                    ? { ...s, status: "completed", message: "Completed" }
+                    : s
+                )
+              );
+            },
+            onPipelineComplete: () => {
+              if (runId !== runIdRef.current) return;
+              setPipelineComplete(true);
+            },
+            onPipelineError: (message, stepId) => {
+              if (runId !== runIdRef.current) return;
+              setErrorMessage(message);
+              setSteps((prev) => {
+                if (stepId != null) {
+                  return prev.map((s) =>
+                    s.id === stepId
+                      ? { ...s, status: "error", message }
+                      : s
+                  );
+                }
+                const idx = prev.findIndex((s) => s.status === "processing");
+                if (idx === -1) return prev;
+                return prev.map((s, i) =>
+                  i === idx ? { ...s, status: "error", message } : s
+                );
+              });
+            },
+          }
+        );
+      } finally {
+        if (runId === runIdRef.current) {
+          setIsProcessing(false);
+          onProcessingChangeRef.current?.(false);
+        }
+      }
+    },
+    [jobId]
+  );
+
+  /** Full run from step 2 after successful ZIP extract (same session). */
+  const executePipelineFromExtract = useCallback(async () => {
+    if (!jobId || !extractedDir) return;
+    await runPipelineWithOutputs(0, { extracted_dir: extractedDir }, true);
+  }, [jobId, extractedDir, runPipelineWithOutputs]);
 
   useEffect(() => {
     if (autoRunToken === 0) {
@@ -130,8 +230,51 @@ export function ProcessingPipeline({
     if (!extractedDir || !jobId) return;
     if (lastAutoStartedTokenRef.current === autoRunToken) return;
     lastAutoStartedTokenRef.current = autoRunToken;
-    void executePipeline();
-  }, [autoRunToken, extractedDir, jobId, executePipeline]);
+    void executePipelineFromExtract();
+  }, [autoRunToken, extractedDir, jobId, executePipelineFromExtract]);
+
+  const handleResume = useCallback(async () => {
+    if (!jobId || extractLocked || isProcessing || resumeActionPending) return;
+    setResumeActionPending(true);
+    try {
+      const info = await getResumeInfo(jobId);
+      applyResumeInfoToState(info);
+
+      if (isResumeCaseA(info)) {
+        toast.info("No processing started yet.");
+        return;
+      }
+      if (isPipelineFullyCompleteFromResume(info)) {
+        toast.info("Processing is already complete for this job.");
+        return;
+      }
+
+      const startIdx = getPipelineStartIndexFromTrigger(info.next_step_to_trigger);
+      if (startIdx == null) {
+        toast.error("Could not determine the next pipeline step from the server.");
+        return;
+      }
+
+      const outputs = normalizeResumeOutputsToStepOutputs(info.outputs ?? undefined);
+      if (Object.keys(outputs).length === 0) {
+        toast.error("Resume response has no output paths. Cannot continue.");
+        return;
+      }
+
+      await runPipelineWithOutputs(startIdx, outputs, false);
+    } catch {
+      toast.error("Failed to load resume information.");
+    } finally {
+      setResumeActionPending(false);
+    }
+  }, [
+    jobId,
+    extractLocked,
+    isProcessing,
+    resumeActionPending,
+    applyResumeInfoToState,
+    runPipelineWithOutputs,
+  ]);
 
   const showAutoHint = autoRunToken > 0;
   const uploadBlockedHint =
@@ -142,28 +285,84 @@ export function ProcessingPipeline({
       </p>
     ) : null;
 
+  const showCompleteBanner = terminalFromServer || pipelineComplete;
+  const showResumeButton =
+    Boolean(jobId) && !extractLocked && !resumeCaseA;
+  const resumeDisabled =
+    !jobId ||
+    extractLocked ||
+    isProcessing ||
+    resumeInfoLoading ||
+    resumeActionPending;
+
+  const resumeInfoFetching = resumeInfoLoading || resumeActionPending;
+
   return (
     <div ref={rootRef} className="space-y-4">
       <div>
-        <h3 className="text-sm font-medium">Processing pipeline</h3>
-        <p className="text-xs text-muted-foreground">
-          Steps 2–12 run in order after ZIP extraction. Each step waits for the
-          previous one to complete.
-        </p>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h3 className="text-sm font-medium">Processing pipeline</h3>
+            <p className="text-xs text-muted-foreground">
+              Step 1 is Extract zip on the left. After a successful upload, steps
+              2–12 run once automatically in this session. If you leave and
+              return, use Resume to continue from the server state.
+            </p>
+          </div>
+          <div className="flex shrink-0 flex-wrap gap-2">
+            {showResumeButton ? (
+              <Button
+                type="button"
+                size="sm"
+                variant="default"
+                disabled={resumeDisabled}
+                onClick={() => void handleResume()}
+              >
+                {resumeInfoFetching ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden />
+                    Loading…
+                  </>
+                ) : (
+                  "Resume processing"
+                )}
+              </Button>
+            ) : null}
+          </div>
+        </div>
         {uploadBlockedHint}
+        {resumeHint ? (
+          <p className="mt-2 text-xs text-muted-foreground">{resumeHint}</p>
+        ) : null}
+        {resumeInfoFetching && jobId ? (
+          <div
+            className="mt-3 flex items-center gap-2 text-xs font-medium text-primary"
+            role="status"
+            aria-live="polite"
+            aria-busy="true"
+          >
+            <Loader2 className="h-4 w-4 shrink-0 animate-spin" aria-hidden />
+            <span>Loading job status…</span>
+          </div>
+        ) : null}
       </div>
 
-      {!jobId || !extractedDir ? (
+      {!jobId ? (
         <p className="text-sm text-muted-foreground">
-          Submit a ZIP on the left. When extraction succeeds, the pipeline will
-          start automatically.
+          Open this page from a project with a job id to run the pipeline.
+        </p>
+      ) : !extractedDir && !terminalFromServer && !pipelineComplete ? (
+        <p className="text-sm text-muted-foreground">
+          Submit a ZIP on the left. After extraction succeeds, the pipeline runs
+          once automatically in this session. Use Resume after refresh to
+          continue from the server state.
         </p>
       ) : null}
 
       <ProcessingStatus
         steps={steps}
         errorMessage={errorMessage}
-        pipelineComplete={pipelineComplete}
+        pipelineComplete={showCompleteBanner}
         isProcessing={isProcessing}
       />
 
@@ -172,7 +371,12 @@ export function ProcessingPipeline({
           type="button"
           variant="outline"
           size="sm"
-          onClick={() => void executePipeline()}
+          onClick={() => {
+            if (extractedDir && jobId) {
+              void runPipelineWithOutputs(0, { extracted_dir: extractedDir }, true);
+            }
+          }}
+          disabled={!extractedDir || !jobId}
         >
           Retry pipeline
         </Button>

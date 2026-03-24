@@ -27,8 +27,10 @@ function formatDetailForPayload(
 
 export type StartPipelineInput = {
   jobId: string;
-  /** Initial paths after `/extract-zip`, e.g. `{ extracted_dir }` */
+  /** Initial paths after `/extract-zip` or normalized resume `outputs` */
   initialOutputs: StepOutputs;
+  /** Index into `PROCESSING_STEPS` (0 = first pipeline step). Default 0. */
+  startIndex?: number;
 };
 
 export type StartPipelineHandlers = {
@@ -44,13 +46,28 @@ export type StartPipelineHandlers = {
  * Runs processing steps 2–12 sequentially. Mutates a local copy of outputs from API responses.
  */
 export async function startPipeline(
-  { jobId, initialOutputs }: StartPipelineInput,
+  { jobId, initialOutputs, startIndex = 0 }: StartPipelineInput,
   handlers: StartPipelineHandlers
 ): Promise<{ ok: boolean }> {
   const outputs: StepOutputs = { ...initialOutputs };
 
   try {
-    for (const step of PROCESSING_STEPS) {
+    const safeStart = Math.max(
+      0,
+      Math.min(startIndex, PROCESSING_STEPS.length)
+    );
+
+    for (let i = 0; i < safeStart; i++) {
+      handlers.onStepCompleted(PROCESSING_STEPS[i].id);
+    }
+
+    const stepsToRun = PROCESSING_STEPS.slice(safeStart);
+    if (stepsToRun.length === 0) {
+      handlers.onPipelineComplete();
+      return { ok: true };
+    }
+
+    for (const step of stepsToRun) {
       const missing = formatDetailForPayload(step, outputs);
       if (missing) {
         handlers.onPipelineError(missing, step.id);

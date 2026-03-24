@@ -89,4 +89,27 @@
   body {
     @apply bg-background text-foreground font-light;
   }
+
+  /* Clickable controls: pointer cursor app-wide */
+  button:not(:disabled),
+  [role="button"]:not([aria-disabled="true"]) {
+    cursor: pointer;
+  }
+  button:disabled,
+  [role="button"][aria-disabled="true"] {
+    cursor: not-allowed;
+  }
+  input[type="button"]:not(:disabled),
+  input[type="submit"]:not(:disabled),
+  input[type="reset"]:not(:disabled) {
+    cursor: pointer;
+  }
+  input[type="button"]:disabled,
+  input[type="submit"]:disabled,
+  input[type="reset"]:disabled {
+    cursor: not-allowed;
+  }
+  a[href] {
+    cursor: pointer;
+  }
 }

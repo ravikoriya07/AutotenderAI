@@ -12,6 +12,7 @@ import type {
   ListProjectsResponse,
   Pagination,
   Project,
+  ResumeInfoResponse,
 } from "@/types/project";
 
 export type EditProjectPayload = {
@@ -106,5 +107,14 @@ export async function extractZip(
     }
   );
 
+  return data;
+}
+
+export async function getResumeInfo(jobId: string): Promise<ResumeInfoResponse> {
+  const config: ProjectRequestConfig = { skipGlobalLoader: true };
+  const { data } = await apiClient.get<ResumeInfoResponse>(
+    `/resume-info/${jobId}`,
+    config
+  );
   return data;
 }

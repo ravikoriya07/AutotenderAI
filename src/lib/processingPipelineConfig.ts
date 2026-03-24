@@ -16,6 +16,17 @@ export type StepRuntime = ProcessingStepDef & {
   message?: string;
 };
 
+/**
+ * Step 1 is `/extract-zip` (shown in UI only). Steps 2–12 are run by `startPipeline`.
+ */
+export const EXTRACT_ZIP_STEP: ProcessingStepDef = {
+  id: 1,
+  name: "Extract zip",
+  endpoint: "/extract-zip",
+  input: "input_folder",
+  output_key: "extracted_dir",
+};
+
 /** Steps 2–12 after `/extract-zip` (step 1) */
 export const PROCESSING_STEPS: ProcessingStepDef[] = [
   {
@@ -131,5 +142,8 @@ export function getPayloadForStep(
 }
 
 export function initialStepRuntimes(): StepRuntime[] {
-  return PROCESSING_STEPS.map((s) => ({ ...s, status: "pending" as StepStatus }));
+  return [
+    { ...EXTRACT_ZIP_STEP, status: "pending" as StepStatus },
+    ...PROCESSING_STEPS.map((s) => ({ ...s, status: "pending" as StepStatus })),
+  ];
 }

@@ -12,6 +12,7 @@ import axios from "axios";
 import { toast } from "react-toastify";
 import { extractZip } from "@/services/projectService";
 import { ProcessingPipeline } from "@/components/extract/pipeline/ProcessingPipeline";
+import { persistExtractSnapshot } from "@/lib/extractJobStorage";
 import { cn } from "@/lib/utils";
 
 /** Set to true to show the Actions / History card (Choose Extraction, etc.). */
@@ -45,6 +46,8 @@ export function ExtractPageContent({ jobId }: { jobId: string }) {
   const [activeJobId, setActiveJobId] = useState(jobId);
   const [pipelineAutoRunToken, setPipelineAutoRunToken] = useState(0);
   const [pipelineBusy, setPipelineBusy] = useState(false);
+  /** Server or local pipeline fully complete — disables new ZIP upload */
+  const [extractLocked, setExtractLocked] = useState(false);
   const prevJobIdRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -60,6 +63,7 @@ export function ExtractPageContent({ jobId }: { jobId: string }) {
     setUploaded(false);
     setPipelineAutoRunToken(0);
     setPipelineBusy(false);
+    setExtractLocked(false);
     if (fileInputRef.current) fileInputRef.current.value = "";
   }, [jobId]);
 
@@ -67,7 +71,7 @@ export function ExtractPageContent({ jobId }: { jobId: string }) {
     setPipelineBusy(busy);
   }, []);
 
-  const uploadLocked = uploading || pipelineBusy;
+  const uploadLocked = uploading || pipelineBusy || extractLocked;
 
   async function handleFileUpload(file: File) {
     if (!jobId) {
@@ -86,6 +90,9 @@ export function ExtractPageContent({ jobId }: { jobId: string }) {
         setPipelineBusy(true);
       }
       setPipelineAutoRunToken((t) => t + 1);
+      persistExtractSnapshot(result.job_id ?? jobId, {
+        extracted_dir: result.extracted_dir,
+      });
       toast.success("File extracted successfully.");
     } catch (err) {
       if (axios.isAxiosError(err) && err.response?.data?.detail) {
@@ -244,6 +251,11 @@ export function ExtractPageContent({ jobId }: { jobId: string }) {
                           Listing using the Extract action.
                         </p>
                       )}
+                      {extractLocked && jobId ? (
+                        <p className="text-sm text-muted-foreground">
+                          Processing already completed for this job.
+                        </p>
+                      ) : null}
                       <div className="flex justify-end">
                         <Button
                           onClick={handleSubmit}
@@ -281,6 +293,7 @@ export function ExtractPageContent({ jobId }: { jobId: string }) {
               extractedDir={extractedDir}
               autoRunToken={pipelineAutoRunToken}
               onProcessingChange={handlePipelineProcessingChange}
+              onExtractLockChange={setExtractLocked}
             />
           </Card>
         </div>
