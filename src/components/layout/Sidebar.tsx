@@ -1,8 +1,8 @@
 "use client";
 
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useSidebar } from "@/contexts/SidebarContext";
 import {
   // Search,
@@ -17,6 +17,9 @@ import {
   ChevronRight,
   LogOut,
 } from "lucide-react";
+import { toast } from "react-toastify";
+import { clearAuthSession } from "@/lib/authStorage";
+import { logoutUser } from "@/services/authService";
 import { cn } from "@/lib/utils";
 
 const mainNav = [
@@ -35,7 +38,9 @@ const bottomNav = [
 
 export function Sidebar() {
   const pathname = usePathname();
+  const router = useRouter();
   const { collapsed, setCollapsed } = useSidebar();
+  const [isLoggingOut, setIsLoggingOut] = useState(false);
   const closeOnMobile = useCallback(() => {
     if (typeof window !== "undefined" && window.matchMedia("(max-width: 1023px)").matches) {
       setCollapsed(true);
@@ -45,6 +50,21 @@ export function Sidebar() {
   useEffect(() => {
     closeOnMobile();
   }, [pathname, closeOnMobile]);
+
+  const handleLogout = useCallback(async () => {
+    if (isLoggingOut) return;
+    setIsLoggingOut(true);
+    try {
+      await logoutUser();
+    } catch {
+      toast.error("Logout request failed. Clearing local session.");
+    } finally {
+      clearAuthSession();
+      closeOnMobile();
+      router.replace("/login");
+      setIsLoggingOut(false);
+    }
+  }, [isLoggingOut, closeOnMobile, router]);
 
   return (
     <>
@@ -108,14 +128,15 @@ export function Sidebar() {
       </nav>
 
       <div className="border-t border-sidebar-foreground/10 p-3">
-        <Link
-          href="/login"
-          onClick={closeOnMobile}
-          className="flex items-center gap-3 rounded-lg px-3 py-2 text-sm text-sidebar-foreground transition-colors hover:bg-sidebar-foreground/10"
+        <button
+          type="button"
+          onClick={() => void handleLogout()}
+          disabled={isLoggingOut}
+          className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm text-sidebar-foreground transition-colors hover:bg-sidebar-foreground/10 disabled:opacity-60"
         >
           <LogOut className="h-5 w-5 shrink-0" />
-          {!collapsed && <span>Logout</span>}
-        </Link>
+          {!collapsed && <span>{isLoggingOut ? "Logging out..." : "Logout"}</span>}
+        </button>
       </div>
     </aside>
     </>

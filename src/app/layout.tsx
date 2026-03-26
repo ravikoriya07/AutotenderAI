@@ -4,6 +4,7 @@ import "./globals.css";
 import { SidebarProvider } from "@/contexts/SidebarContext";
 import { ToastProvider } from "@/components/ToastProvider";
 import { GlobalLoader } from "@/components/GlobalLoader";
+import { AuthGate } from "@/components/AuthGate";
 
 const inter = Inter({ subsets: ["latin"], variable: "--font-sans" });
 
@@ -20,7 +21,9 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className={`${inter.variable} font-sans antialiased`}>
-        <SidebarProvider>{children}</SidebarProvider>
+        <SidebarProvider>
+          <AuthGate>{children}</AuthGate>
+        </SidebarProvider>
         <GlobalLoader />
         <ToastProvider />
       </body>

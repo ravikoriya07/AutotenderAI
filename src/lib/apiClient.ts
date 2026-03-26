@@ -1,5 +1,5 @@
 import axios from "axios";
-import { getAuthToken } from "@/lib/authStorage";
+import { clearAuthSession, getAuthToken } from "@/lib/authStorage";
 import { globalLoaderStore } from "@/lib/globalLoaderStore";
 
 const baseURL =
@@ -40,6 +40,17 @@ apiClient.interceptors.response.use(
   (error) => {
     const tracked = Boolean((error.config as { _loaderTracked?: boolean } | undefined)?._loaderTracked);
     if (tracked) globalLoaderStore.end();
+
+    const status = error?.response?.status;
+    if (status === 401 && typeof window !== "undefined") {
+      const token = getAuthToken();
+      const pathname = window.location.pathname;
+      const isPublicAuthPage = pathname === "/login" || pathname === "/register";
+      if (token && !isPublicAuthPage) {
+        clearAuthSession();
+        window.location.replace("/login");
+      }
+    }
     return Promise.reject(error);
   }
 );

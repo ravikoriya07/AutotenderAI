@@ -143,6 +143,9 @@ export function RegisterForm() {
         >
           Password
         </label>
+        <p className="text-xs text-muted-foreground">
+          Use at least 8 characters with uppercase, lowercase, and a number.
+        </p>
         <div className="relative">
           <Input
             id="register-password"
