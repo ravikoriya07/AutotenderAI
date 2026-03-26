@@ -44,6 +44,17 @@ type JobChatStore = {
 
 const STORAGE_KEY = "autotender_research_sessions_v1";
 
+function generateClientId(prefix: string): string {
+  if (
+    typeof globalThis !== "undefined" &&
+    globalThis.crypto &&
+    typeof globalThis.crypto.randomUUID === "function"
+  ) {
+    return `${prefix}-${globalThis.crypto.randomUUID()}`;
+  }
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
 function readStoredChats(): JobChatStore {
   if (typeof window === "undefined") return { jobIds: [], chats: {} };
   try {
@@ -482,8 +493,8 @@ export function ResearchChatPage() {
     const prompt = inputValue.trim();
     if (!prompt || isTyping) return;
 
-    const userId = crypto.randomUUID();
-    const assistantId = crypto.randomUUID();
+    const userId = generateClientId("user");
+    const assistantId = generateClientId("assistant");
 
     setMessages((prev) => [
       ...prev,
