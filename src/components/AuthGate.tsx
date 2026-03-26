@@ -65,7 +65,7 @@ export function AuthGate({ children }: AuthGateProps) {
     return () => {
       cancelled = true;
     };
-  }, [isPublicRoute, router, pathname]);
+  }, [isPublicRoute, router]);
 
   if (checking) {
     return (

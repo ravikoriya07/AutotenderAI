@@ -1,5 +1,6 @@
 import type { AxiosRequestConfig } from "axios";
 import { apiClient } from "@/lib/apiClient";
+import { getAuthToken } from "@/lib/authStorage";
 
 type AuthRequestConfig = AxiosRequestConfig & {
   skipGlobalLoader?: boolean;
@@ -88,4 +89,25 @@ export async function registerUser(payload: RegisterPayload): Promise<unknown> {
     password: payload.password,
   }, config);
   return data;
+}
+
+export async function logoutUser(): Promise<unknown> {
+  const token = getAuthToken();
+  const config: AuthRequestConfig = {
+    skipGlobalLoader: true,
+    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+  };
+  const { data } = await apiClient.post<unknown>("/logout", {}, config);
+  return data;
+}
+
+export async function verifyToken(token: string): Promise<boolean> {
+  const config: AuthRequestConfig = {
+    skipGlobalLoader: true,
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  };
+  await apiClient.get("/verify-token", config);
+  return true;
 }
