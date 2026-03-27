@@ -15,7 +15,16 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/Table";
-import { Plus, MoreVertical, ChevronLeft, ChevronRight, Pencil, Trash2, FileDown } from "lucide-react";
+import {
+  Plus,
+  MoreVertical,
+  ChevronLeft,
+  ChevronRight,
+  Pencil,
+  Trash2,
+  FileDown,
+  Library,
+} from "lucide-react";
 import { Modal } from "@/components/ui/Modal";
 import { CreateProjectForm } from "@/components/CreateProjectForm";
 import { EditProjectForm } from "@/components/EditProjectForm";
@@ -160,6 +169,7 @@ function PaginationControls({
 function ProjectActionsCell({
   onEdit,
   onExtract,
+  onLibrary,
   onDelete,
   open,
   onToggle,
@@ -167,6 +177,7 @@ function ProjectActionsCell({
 }: {
   onEdit: () => void;
   onExtract: () => void;
+  onLibrary: () => void;
   onDelete: () => void;
   open: boolean;
   onToggle: () => void;
@@ -225,6 +236,19 @@ function ProjectActionsCell({
           >
             <FileDown className="h-4 w-4 shrink-0 text-primary" />
             Extract
+          </button>
+          <div className="border-t border-border" />
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              onLibrary();
+              onClose();
+            }}
+            className="flex w-full items-center gap-2.5 px-3 py-2.5 text-left text-sm text-foreground transition-colors hover:bg-primary/10 focus:bg-primary/10 focus:outline-none"
+          >
+            <Library className="h-4 w-4 shrink-0 text-primary" />
+            Library
           </button>
           <div className="border-t border-border" />
           <button
@@ -446,6 +470,12 @@ export default function ProjectsPage() {
                               const jobId = project.job_id ?? project.id;
                               router.push(
                                 `/extract?job_id=${encodeURIComponent(jobId)}`
+                              );
+                            }}
+                            onLibrary={() => {
+                              const jobId = project.job_id ?? project.id;
+                              router.push(
+                                `/libraries?job_id=${encodeURIComponent(jobId)}`
                               );
                             }}
                             onDelete={() => handleDelete(project)}
