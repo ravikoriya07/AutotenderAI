@@ -129,3 +129,19 @@ export async function getResumeInfo(
   );
   return data;
 }
+
+/** GET /project-tree/{job_id} — raw JSON; UI uses `tree[3]` (extract_zip_output). */
+export async function fetchProjectTree(
+  jobId: string,
+  signal?: AbortSignal
+): Promise<unknown> {
+  const config: ProjectRequestConfig = {
+    skipGlobalLoader: true,
+    ...(signal ? { signal } : {}),
+  };
+  const { data } = await apiClient.get<unknown>(
+    `/project-tree/${jobId}`,
+    config
+  );
+  return data;
+}

@@ -1,13 +1,23 @@
 "use client";
 
-import { ChevronRight, ChevronDown, Folder, FolderOpen } from "lucide-react";
-import { useState } from "react";
+import {
+  ChevronRight,
+  ChevronDown,
+  Folder,
+  FolderOpen,
+  File,
+} from "lucide-react";
+import { memo, useState } from "react";
 import { cn } from "@/lib/utils";
 
 export interface FolderNode {
   id: string;
   label: string;
   children?: FolderNode[];
+  /** When set to `file`, node is a leaf file. */
+  kind?: "folder" | "file";
+  /** Byte size for files when known. */
+  size?: number;
 }
 
 interface FolderTreeProps {
@@ -17,7 +27,7 @@ interface FolderTreeProps {
   className?: string;
 }
 
-function TreeNode({
+const TreeNode = memo(function TreeNode({
   node,
   selectedId,
   onSelect,
@@ -28,30 +38,39 @@ function TreeNode({
   onSelect?: (id: string) => void;
   level?: number;
 }) {
-  const [open, setOpen] = useState(true);
-  const hasChildren = node.children && node.children.length > 0;
+  const isFile = node.kind === "file";
+  const hasChildren = Boolean(node.children && node.children.length > 0);
+  const expandable = !isFile && hasChildren;
+  const [open, setOpen] = useState(false);
   const isSelected = selectedId === node.id;
 
+  const handleChevronClick = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    onSelect?.(node.id);
+    if (expandable) setOpen((o) => !o);
+  };
+
+  const handleRowClick = () => {
+    onSelect?.(node.id);
+    if (expandable) setOpen((o) => !o);
+  };
+
   return (
-    <div className="select-none">
+    <div className="w-full min-w-0 max-w-full select-none">
       <div
         className={cn(
-          "flex items-center gap-1 rounded px-2 py-1.5 text-sm cursor-pointer hover:bg-sidebar-foreground/10",
+          "flex w-full min-w-0 max-w-full cursor-pointer items-center gap-1 overflow-hidden rounded px-2 py-1.5 text-sm hover:bg-sidebar-foreground/10",
           isSelected && "bg-primary/20 text-primary"
         )}
         style={{ paddingLeft: `${level * 12 + 8}px` }}
-        onClick={() => {
-          if (hasChildren) setOpen(!open);
-          onSelect?.(node.id);
-        }}
+        onClick={handleRowClick}
       >
-        {hasChildren ? (
+        {expandable ? (
           <button
-            onClick={(e) => {
-              e.stopPropagation();
-              setOpen(!open);
-            }}
-            className="p-0.5"
+            type="button"
+            onClick={handleChevronClick}
+            className="shrink-0 rounded p-0.5 hover:bg-sidebar-foreground/10"
+            aria-label={open ? "Collapse" : "Expand"}
           >
             {open ? (
               <ChevronDown className="h-4 w-4" />
@@ -60,17 +79,24 @@ function TreeNode({
             )}
           </button>
         ) : (
-          <span className="w-4" />
+          <span className="w-4 shrink-0" aria-hidden />
         )}
-        {open && hasChildren ? (
-          <FolderOpen className="h-4 w-4 shrink-0" />
+        {isFile ? (
+          <File className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
+        ) : open && hasChildren ? (
+          <FolderOpen className="h-4 w-4 shrink-0" aria-hidden />
         ) : (
-          <Folder className="h-4 w-4 shrink-0" />
+          <Folder className="h-4 w-4 shrink-0" aria-hidden />
         )}
-        <span className="truncate">{node.label}</span>
+        <span
+          className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap"
+          title={node.label}
+        >
+          {node.label}
+        </span>
       </div>
       {open && hasChildren && (
-        <div>
+        <div className="min-w-0 max-w-full overflow-hidden">
           {node.children!.map((child) => (
             <TreeNode
               key={child.id}
@@ -84,7 +110,7 @@ function TreeNode({
       )}
     </div>
   );
-}
+});
 
 export function FolderTree({
   nodes,
@@ -93,7 +119,7 @@ export function FolderTree({
   className,
 }: FolderTreeProps) {
   return (
-    <div className={cn("space-y-0.5", className)}>
+    <div className={cn("w-full min-w-0 max-w-full space-y-0.5", className)}>
       {nodes.map((node) => (
         <TreeNode
           key={node.id}
