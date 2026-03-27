@@ -65,7 +65,8 @@ export type ListProjectsResult = {
 };
 
 export async function listProjects(
-  params?: ListProjectsParams
+  params?: ListProjectsParams,
+  signal?: AbortSignal
 ): Promise<ListProjectsResult> {
   const searchParams = new URLSearchParams();
   if (params?.page != null) searchParams.set("page", String(params.page));
@@ -75,7 +76,11 @@ export async function listProjects(
   if (params?.status) searchParams.set("status", params.status);
   const query = searchParams.toString();
   const url = query ? `/projects?${query}` : "/projects";
-  const { data } = await apiClient.get<unknown>(url);
+  const config: ProjectRequestConfig = {
+    skipGlobalLoader: true,
+    ...(signal ? { signal } : {}),
+  };
+  const { data } = await apiClient.get<unknown>(url, config);
   if (data && typeof data === "object" && "projects" in data) {
     const obj = data as { projects: Project[]; pagination?: Pagination };
     return {
@@ -110,8 +115,14 @@ export async function extractZip(
   return data;
 }
 
-export async function getResumeInfo(jobId: string): Promise<ResumeInfoResponse> {
-  const config: ProjectRequestConfig = { skipGlobalLoader: true };
+export async function getResumeInfo(
+  jobId: string,
+  signal?: AbortSignal
+): Promise<ResumeInfoResponse> {
+  const config: ProjectRequestConfig = {
+    skipGlobalLoader: true,
+    ...(signal ? { signal } : {}),
+  };
   const { data } = await apiClient.get<ResumeInfoResponse>(
     `/resume-info/${jobId}`,
     config

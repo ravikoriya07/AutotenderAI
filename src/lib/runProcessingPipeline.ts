@@ -17,6 +17,16 @@ function formatDetailForPayload(
   step: ProcessingStepDef,
   outputs: StepOutputs
 ): string | null {
+  if (step.input === "main_output_dir") {
+    const has =
+      (outputs.main_output_dir && outputs.main_output_dir.length > 0) ||
+      (outputs.all_class_classifier_dir &&
+        outputs.all_class_classifier_dir.length > 0);
+    if (!has) {
+      return `Missing path for main_output_dir (need all_class_classifier_dir from step 12 or main_output_dir in outputs).`;
+    }
+    return null;
+  }
   const key = STEP_INPUT_MAPPING[step.input];
   if (!key) return null;
   if (!outputs[key]) {
@@ -43,7 +53,7 @@ export type StartPipelineHandlers = {
 };
 
 /**
- * Runs processing steps 2–12 sequentially. Mutates a local copy of outputs from API responses.
+ * Runs processing steps 2–13 sequentially. Mutates a local copy of outputs from API responses.
  */
 export async function startPipeline(
   { jobId, initialOutputs, startIndex = 0 }: StartPipelineInput,
@@ -86,9 +96,21 @@ export async function startPipeline(
         return { ok: false };
       }
 
-      const outVal = result.data[step.output_key];
+      const responseData =
+        typeof result.data === "object" &&
+        result.data !== null &&
+        !Array.isArray(result.data)
+          ? result.data
+          : {};
+      const outVal = responseData[step.output_key];
       if (typeof outVal === "string" && outVal.length > 0) {
         outputs[step.output_key] = outVal;
+      } else if (
+        step.id === 13 &&
+        outputs.all_class_classifier_dir &&
+        !outputs.main_output_dir
+      ) {
+        outputs.main_output_dir = outputs.all_class_classifier_dir;
       }
 
       handlers.onStepCompleted(step.id);

@@ -19,6 +19,7 @@ import { Plus, MoreVertical, ChevronLeft, ChevronRight, Pencil, Trash2, FileDown
 import { Modal } from "@/components/ui/Modal";
 import { CreateProjectForm } from "@/components/CreateProjectForm";
 import { EditProjectForm } from "@/components/EditProjectForm";
+import axios from "axios";
 import { listProjects, deleteProject } from "@/services/projectService";
 import Swal from "sweetalert2";
 import type { Project, Pagination } from "@/types/project";
@@ -259,14 +260,13 @@ export default function ProjectsPage() {
   const [endDate, setEndDate] = useState("");
   const [status, setStatus] = useState("");
 
+  /** Manual refresh after create/edit/delete (not tied to effect abort). */
   const fetchProjects = useCallback(async () => {
-    setLoading(true);
     try {
       const start = formatDateForApi(startDate);
       const end = formatDateForApi(endDate);
       if (start && end && start > end) {
         toast.error("End date must be on or after start date.");
-        setLoading(false);
         return;
       }
       const result = await listProjects({
@@ -280,16 +280,51 @@ export default function ProjectsPage() {
       setPagination(result.pagination);
     } catch {
       toast.error("Failed to load projects.");
-      setProjects([]);
-      setPagination(null);
-    } finally {
-      setLoading(false);
     }
   }, [page, limit, startDate, endDate, status]);
 
   useEffect(() => {
-    void fetchProjects();
-  }, [fetchProjects]);
+    const controller = new AbortController();
+    let cancelled = false;
+
+    (async () => {
+      setLoading(true);
+      try {
+        const start = formatDateForApi(startDate);
+        const end = formatDateForApi(endDate);
+        if (start && end && start > end) {
+          toast.error("End date must be on or after start date.");
+          if (!cancelled) setLoading(false);
+          return;
+        }
+        const result = await listProjects(
+          {
+            page,
+            limit,
+            start_date: start,
+            end_date: end,
+            status: status || undefined,
+          },
+          controller.signal
+        );
+        if (cancelled) return;
+        setProjects(result.projects);
+        setPagination(result.pagination);
+      } catch (e) {
+        if (cancelled || axios.isCancel(e)) return;
+        toast.error("Failed to load projects.");
+        setProjects([]);
+        setPagination(null);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [page, limit, startDate, endDate, status]);
 
   const handleReset = () => {
     setStartDate("");
@@ -321,10 +356,6 @@ export default function ProjectsPage() {
     });
   };
 
-  useEffect(() => {
-    setPage(1);
-  }, [startDate, endDate, status]);
-
   const projectList = Array.isArray(projects) ? projects : [];
 
   return (
@@ -340,9 +371,18 @@ export default function ProjectsPage() {
               startDate={startDate}
               endDate={endDate}
               status={status}
-              onStartDateChange={setStartDate}
-              onEndDateChange={setEndDate}
-              onStatusChange={setStatus}
+              onStartDateChange={(v) => {
+                setStartDate(v);
+                setPage(1);
+              }}
+              onEndDateChange={(v) => {
+                setEndDate(v);
+                setPage(1);
+              }}
+              onStatusChange={(v) => {
+                setStatus(v);
+                setPage(1);
+              }}
               onReset={handleReset}
             />
             <Button

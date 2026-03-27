@@ -17,7 +17,7 @@ export type StepRuntime = ProcessingStepDef & {
 };
 
 /**
- * Step 1 is `/extract-zip` (shown in UI only). Steps 2–12 are run by `startPipeline`.
+ * Step 1 is `/extract-zip` (shown in UI only). Steps 2–13 are run by `startPipeline`.
  */
 export const EXTRACT_ZIP_STEP: ProcessingStepDef = {
   id: 1,
@@ -27,7 +27,7 @@ export const EXTRACT_ZIP_STEP: ProcessingStepDef = {
   output_key: "extracted_dir",
 };
 
-/** Steps 2–12 after `/extract-zip` (step 1) */
+/** Steps 2–13 after `/extract-zip` (step 1) */
 export const PROCESSING_STEPS: ProcessingStepDef[] = [
   {
     id: 2,
@@ -106,6 +106,13 @@ export const PROCESSING_STEPS: ProcessingStepDef[] = [
     input: "text_dir",
     output_key: "all_class_classifier_dir",
   },
+  {
+    id: 13,
+    name: "Upload to Neo4j",
+    endpoint: "/upload-to-neo4j",
+    input: "main_output_dir",
+    output_key: "main_output_dir",
+  },
 ];
 
 export const STEP_INPUT_MAPPING: Record<string, string> = {
@@ -117,6 +124,8 @@ export const STEP_INPUT_MAPPING: Record<string, string> = {
   csvs_dir: "csvs_dir",
   drawing_pdfs_dir: "extracted_dir",
   text_dir: "extracted_texts_dir",
+  /** Prefer explicit path; `getPayloadForStep` falls back to `all_class_classifier_dir` */
+  main_output_dir: "main_output_dir",
 };
 
 export type StepOutputs = Record<string, string>;
@@ -131,11 +140,22 @@ export function getPayloadForStep(
   if (step.input) {
     const outputKey = STEP_INPUT_MAPPING[step.input];
     if (outputKey) {
-      const pathValue = outputs[outputKey];
+      let pathValue = outputs[outputKey];
+      if (
+        step.input === "main_output_dir" &&
+        (!pathValue || pathValue.length === 0) &&
+        outputs.all_class_classifier_dir
+      ) {
+        pathValue = outputs.all_class_classifier_dir;
+      }
       if (pathValue) {
         payload[step.input] = pathValue;
       }
     }
+  }
+
+  if (step.endpoint === "/upload-to-neo4j") {
+    payload.database = "neo4j";
   }
 
   return payload;

@@ -19,6 +19,7 @@ export const BACKEND_PIPELINE_STEP_TRIGGER: Record<string, number> = {
   generate_direct_drawing_json: 8,
   run_index_classifier: 9,
   run_all_class_classifier: 10,
+  upload_to_neo4j: 11,
 };
 
 export function getPipelineStartIndexFromTrigger(
@@ -30,10 +31,24 @@ export function getPipelineStartIndexFromTrigger(
 }
 
 export function isPipelineFullyCompleteFromResume(info: ResumeInfoResponse): boolean {
-  return (
-    info.last_recorded_step === "run_all_class_classifier" &&
-    (info.next_step_to_trigger == null || info.next_step_to_trigger === "")
-  );
+  /** Backend may set `job_status` when the whole job is done. */
+  if (
+    typeof info.job_status === "string" &&
+    info.job_status.toLowerCase() === "completed"
+  ) {
+    return true;
+  }
+  /**
+   * Final pipeline step finished. Do not require `next_step_to_trigger` to be
+   * empty — some APIs incorrectly send e.g. `extract_zip` after completion.
+   */
+  if (info.last_recorded_step === "upload_to_neo4j") {
+    return true;
+  }
+  const noNext =
+    info.next_step_to_trigger == null || info.next_step_to_trigger === "";
+  if (!noNext) return false;
+  return info.last_recorded_step === "run_all_class_classifier";
 }
 
 export function isResumeCaseA(info: ResumeInfoResponse): boolean {
@@ -85,6 +100,15 @@ function buildStep1FromResume(info: ResumeInfoResponse | null): StepRuntime {
   }
   if (isResumeCaseA(info)) {
     return { ...EXTRACT_ZIP_STEP, status: "pending" };
+  }
+  /**
+   * Only treat extract as done when we have paths OR the server names a known
+   * next step. Do not infer from last_recorded_step alone — that caused step 1
+   * to show "Completed" while resume still failed (no mappable trigger).
+   */
+  const nextIdx = getPipelineStartIndexFromTrigger(info.next_step_to_trigger);
+  if (nextIdx !== null) {
+    return { ...EXTRACT_ZIP_STEP, status: "completed", message: "Completed" };
   }
   const out = info.outputs;
   const extracted =

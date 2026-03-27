@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import axios from "axios";
 import { toast } from "react-toastify";
 import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
@@ -45,8 +46,11 @@ export function ProcessingPipeline({
   const [resumeHint, setResumeHint] = useState<string | null>(null);
   /** Case A: initialized + no next step — hide Resume (nothing to resume yet) */
   const [resumeCaseA, setResumeCaseA] = useState(false);
+  /** True only when server provides a mappable next step + output paths (same as handleResume needs). */
+  const [resumePathReady, setResumePathReady] = useState(false);
 
   const rootRef = useRef<HTMLDivElement>(null);
+  const extractedDirRef = useRef<string | null>(null);
   const runIdRef = useRef(0);
   const lastAutoStartedTokenRef = useRef<number | null>(null);
   const onProcessingChangeRef = useRef(onProcessingChange);
@@ -56,36 +60,77 @@ export function ProcessingPipeline({
 
   const extractLocked = terminalFromServer || pipelineComplete;
 
+  extractedDirRef.current = extractedDir;
+
   useEffect(() => {
     onExtractLockChangeRef.current?.(extractLocked);
   }, [extractLocked]);
 
-  /** Step 1 (Extract zip): sync with local `extractedDir` without clobbering server-resumed state. */
+  /**
+   * Step 1 (Extract zip): keep in sync with local `extractedDir`, pipeline progress,
+   * and resume data. Depends on `steps` so when step 2+ update, we mark step 1
+   * complete (extract success implies step 1 done; resume fetch may omit step 1).
+   */
   useEffect(() => {
     setSteps((prev) => {
-      if (!prev.some((s) => s.id === 1)) return prev;
-      return prev.map((s) => {
-        if (s.id !== 1) return s;
-        if (extractedDir) {
-          return { ...s, status: "completed" as const, message: "Completed" };
-        }
+      const step1 = prev.find((s) => s.id === 1);
+      if (!step1) return prev;
+
+      let nextStatus = step1.status;
+      let nextMessage = step1.message;
+
+      if (extractedDir) {
+        nextStatus = "completed";
+        nextMessage = "Completed";
+      } else {
         const pipelineStarted = prev.some(
-          (x) => x.id >= 2 && x.id <= 12 && x.status !== "pending"
+          (x) => x.id >= 2 && x.id <= 13 && x.status !== "pending"
         );
-        if (pipelineStarted) return s;
-        return { ...s, status: "pending" as const, message: undefined };
-      });
+        if (pipelineStarted) {
+          nextStatus = "completed";
+          nextMessage = "Completed";
+        }
+      }
+
+      if (nextStatus === step1.status && nextMessage === step1.message) return prev;
+      return prev.map((s) =>
+        s.id === 1
+          ? { ...s, status: nextStatus, message: nextMessage }
+          : s
+      );
     });
-  }, [extractedDir]);
+  }, [extractedDir, steps]);
 
   const applyResumeInfoToState = useCallback((info: Awaited<ReturnType<typeof getResumeInfo>>) => {
     const done = isPipelineFullyCompleteFromResume(info);
     const caseA = isResumeCaseA(info);
     setTerminalFromServer(done);
     setPipelineComplete(done);
-    setSteps(buildStepsFromResumeInfo(info));
+    let nextSteps = buildStepsFromResumeInfo(info);
+    if (extractedDirRef.current) {
+      nextSteps = nextSteps.map((s) =>
+        s.id === 1
+          ? { ...s, status: "completed" as const, message: "Completed" }
+          : s
+      );
+    }
+    setSteps(nextSteps);
     setResumeCaseA(caseA);
-    setResumeHint(caseA ? "No processing started yet." : null);
+    const startIdx = getPipelineStartIndexFromTrigger(info.next_step_to_trigger);
+    const outputs = normalizeResumeOutputsToStepOutputs(info.outputs ?? undefined);
+    const canResume =
+      !done &&
+      !caseA &&
+      startIdx !== null &&
+      Object.keys(outputs).length > 0;
+    setResumePathReady(canResume);
+    setResumeHint(
+      caseA
+        ? "No processing started yet."
+        : !done && !canResume
+          ? "Resume is unavailable until the server reports a next step and output paths."
+          : null
+    );
   }, []);
 
   useEffect(() => {
@@ -97,26 +142,29 @@ export function ProcessingPipeline({
       setTerminalFromServer(false);
       setResumeHint(null);
       setResumeCaseA(false);
+      setResumePathReady(false);
       setIsProcessing(false);
       onProcessingChangeRef.current?.(false);
       onExtractLockChangeRef.current?.(false);
       return;
     }
 
+    const controller = new AbortController();
     let cancelled = false;
     setResumeInfoLoading(true);
-    void getResumeInfo(jobId)
+    void getResumeInfo(jobId, controller.signal)
       .then((info) => {
         if (cancelled) return;
         applyResumeInfoToState(info);
       })
-      .catch(() => {
-        if (cancelled) return;
+      .catch((e) => {
+        if (cancelled || axios.isCancel(e)) return;
         setSteps(initialStepRuntimes());
         setTerminalFromServer(false);
         setPipelineComplete(false);
         setResumeHint(null);
         setResumeCaseA(false);
+        setResumePathReady(false);
       })
       .finally(() => {
         if (!cancelled) setResumeInfoLoading(false);
@@ -124,6 +172,7 @@ export function ProcessingPipeline({
 
     return () => {
       cancelled = true;
+      controller.abort();
     };
   }, [jobId, applyResumeInfoToState]);
 
@@ -288,12 +337,18 @@ export function ProcessingPipeline({
   const showCompleteBanner = terminalFromServer || pipelineComplete;
   const showResumeButton =
     Boolean(jobId) && !extractLocked && !resumeCaseA;
+  /** No server/local extract yet — nothing to resume past step 1 */
+  const isStep1ExtractPending = steps.some(
+    (s) => s.id === 1 && s.status === "pending"
+  );
   const resumeDisabled =
     !jobId ||
     extractLocked ||
     isProcessing ||
     resumeInfoLoading ||
-    resumeActionPending;
+    resumeActionPending ||
+    isStep1ExtractPending ||
+    !resumePathReady;
 
   const resumeInfoFetching = resumeInfoLoading || resumeActionPending;
 
@@ -305,7 +360,7 @@ export function ProcessingPipeline({
             <h3 className="text-sm font-medium">Processing pipeline</h3>
             <p className="text-xs text-muted-foreground">
               Step 1 is Extract zip on the left. After a successful upload, steps
-              2–12 run once automatically in this session. If you leave and
+              2–13 run once automatically in this session. If you leave and
               return, use Resume to continue from the server state.
             </p>
           </div>
