@@ -33,15 +33,15 @@ export default function AnswerBankPage() {
       <PageContainer>
         <Card>
           <Toolbar className="flex-wrap gap-4">
-            <Button variant="outline" size="sm">
+            <Button variant="outline" size="sm" className="w-full sm:w-auto">
               <Download className="mr-2 h-4 w-4" />
               DOWNLOAD ANSWER BANK
             </Button>
-            <Button size="sm">
+            <Button size="sm" className="w-full sm:w-auto">
               <FileText className="mr-2 h-4 w-4" />
               Document Manager
             </Button>
-            <div className="ml-auto flex items-center gap-2">
+            <div className="flex w-full items-center justify-between gap-2 sm:ml-auto sm:w-auto sm:justify-end">
               <span className="text-sm">EDIT MODE</span>
               <button
                 onClick={() => setEditMode(!editMode)}

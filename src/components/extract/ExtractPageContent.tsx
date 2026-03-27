@@ -145,15 +145,15 @@ export function ExtractPageContent({ jobId }: { jobId: string }) {
   return (
     <DashboardLayout title="Extract">
       <PageContainer>
-        <div className="mb-4 flex items-center gap-2 text-sm">
+        <div className="mb-4 flex min-w-0 flex-wrap items-center gap-2 text-sm">
           <Link
             href="/projects"
-            className="text-muted-foreground hover:text-foreground hover:underline"
+            className="shrink-0 text-muted-foreground hover:text-foreground hover:underline"
           >
             Projects
           </Link>
-          <span className="text-muted-foreground">{">"}</span>
-          <span className="font-medium text-foreground">Extract</span>
+          <span className="shrink-0 text-muted-foreground">{">"}</span>
+          <span className="min-w-0 font-medium text-foreground">Extract</span>
         </div>
 
         <div className="grid gap-6 lg:grid-cols-2">

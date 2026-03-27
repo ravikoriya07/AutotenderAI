@@ -14,7 +14,7 @@ import {
   TableRow,
 } from "@/components/ui/Table";
 import { Button } from "@/components/ui/Button";
-import { Move, Trash2, Pencil, Eye, Download } from "lucide-react";
+import { Trash2, Eye, Download } from "lucide-react";
 
 const libraryTree: FolderNode[] = [
   {
@@ -47,8 +47,8 @@ export default function LibraryPage() {
       searchPlaceholder="Search your library..."
     >
       <PageContainer>
-        <div className="flex gap-6">
-          <div className="w-64 shrink-0">
+        <div className="flex min-w-0 flex-col gap-6 lg:flex-row">
+          <div className="w-full shrink-0 lg:w-64">
             <Card className="bg-sidebar/5 p-4">
               <h3 className="mb-3 text-sm font-medium">AutotenderAI Libraries</h3>
               <FolderTree
@@ -61,29 +61,23 @@ export default function LibraryPage() {
             </Card>
           </div>
           <div className="min-w-0 flex-1">
-            <div className="mb-4 flex items-center justify-between">
-              <p className="text-sm text-muted-foreground">
+            <div className="mb-4 flex items-center justify-between gap-3">
+              <p className="min-w-0 text-sm text-muted-foreground">
                 Total Size: 1237 MB · Files: 620
               </p>
-              <Button size="sm">New</Button>
+              <Button size="sm" className="shrink-0">
+                New
+              </Button>
             </div>
-            <Card>
+            <Card className="min-w-0 overflow-hidden">
               <div className="border-b p-4">
                 <p className="mb-3 text-sm text-muted-foreground">
                   Select items to:
                 </p>
                 <div className="flex flex-wrap gap-2">
                   <Button variant="outline" size="sm">
-                    <Move className="mr-2 h-4 w-4" />
-                    Move
-                  </Button>
-                  <Button variant="outline" size="sm">
                     <Trash2 className="mr-2 h-4 w-4" />
                     Delete
-                  </Button>
-                  <Button variant="outline" size="sm">
-                    <Pencil className="mr-2 h-4 w-4" />
-                    Rename
                   </Button>
                   <Button variant="outline" size="sm">
                     <Eye className="mr-2 h-4 w-4" />
@@ -93,12 +87,9 @@ export default function LibraryPage() {
                     <Download className="mr-2 h-4 w-4" />
                     Download File
                   </Button>
-                  <Button variant="outline" size="sm">
-                    <Download className="mr-2 h-4 w-4" />
-                    Download Raw Text
-                  </Button>
                 </div>
               </div>
+              <div className="overflow-x-auto">
               <Table>
                 <TableHeader>
                   <TableRow>
@@ -125,6 +116,7 @@ export default function LibraryPage() {
                   ))}
                 </TableBody>
               </Table>
+              </div>
             </Card>
           </div>
         </div>

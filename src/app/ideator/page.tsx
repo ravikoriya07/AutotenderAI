@@ -24,7 +24,7 @@ export default function IdeatorPage() {
               placeholder="What do you want to write about?"
               className="min-h-[140px] resize-none"
             />
-            <div className="mt-4 flex gap-4">
+            <div className="mt-4 flex flex-wrap gap-4">
               <button className="flex items-center gap-2 text-sm text-primary hover:underline">
                 <FilePlus className="h-4 w-4" />
                 Add Context
@@ -36,7 +36,7 @@ export default function IdeatorPage() {
             </div>
             <div className="mt-6">
               <p className="mb-2 text-sm text-muted-foreground">Use:</p>
-              <div className="flex gap-6">
+              <div className="flex flex-wrap gap-x-6 gap-y-3">
                 <label className="flex cursor-pointer items-center gap-2">
                   <input
                     type="checkbox"

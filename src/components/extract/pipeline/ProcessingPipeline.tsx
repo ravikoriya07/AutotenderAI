@@ -353,7 +353,7 @@ export function ProcessingPipeline({
   const resumeInfoFetching = resumeInfoLoading || resumeActionPending;
 
   return (
-    <div ref={rootRef} className="space-y-4">
+    <div ref={rootRef} className="min-w-0 space-y-4">
       <div>
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>

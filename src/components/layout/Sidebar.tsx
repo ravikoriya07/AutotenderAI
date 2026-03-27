@@ -84,9 +84,9 @@ export function Sidebar() {
           collapsed ? "max-lg:-translate-x-full lg:w-16" : "max-lg:translate-x-0 lg:w-64"
         )}
       >
-      <div className="flex h-14 items-center justify-between border-b border-sidebar-foreground/10 px-4">
+      <div className="flex h-14 min-w-0 items-center justify-between border-b border-sidebar-foreground/10 px-4">
         {!collapsed && (
-          <Link href="/" className="font-semibold text-lg">
+          <Link href="/" className="min-w-0 flex-1 truncate font-semibold text-lg">
             AutotenderAI
           </Link>
         )}

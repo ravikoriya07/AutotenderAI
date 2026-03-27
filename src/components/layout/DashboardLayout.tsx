@@ -20,11 +20,11 @@ export function DashboardLayout({
 }: DashboardLayoutProps) {
   const { collapsed } = useSidebar();
   return (
-    <div className="min-h-screen">
+    <div className="min-h-screen min-w-0 overflow-x-hidden">
       <Sidebar />
       <div
         className={cn(
-          "transition-all duration-300",
+          "min-w-0 transition-all duration-300",
           "max-lg:pl-0",
           collapsed ? "lg:pl-16" : "lg:pl-64"
         )}

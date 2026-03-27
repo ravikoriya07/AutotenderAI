@@ -82,6 +82,7 @@
 @layer base {
   html {
     font-size: 14px;
+    overflow-x: hidden;
   }
   * {
     @apply border-border;

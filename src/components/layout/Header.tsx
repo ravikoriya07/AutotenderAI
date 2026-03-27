@@ -33,31 +33,33 @@ export function Header({
 
   return (
     <header className="sticky top-0 z-30 border-b bg-background">
-      <div className="flex h-12 items-center justify-between bg-sidebar px-4">
+      <div className="flex h-12 min-w-0 items-center justify-between gap-2 bg-sidebar px-4">
         <button
-          className="rounded p-2 text-sidebar-foreground hover:bg-sidebar-foreground/10 lg:hidden"
+          className="shrink-0 rounded p-2 text-sidebar-foreground hover:bg-sidebar-foreground/10 lg:hidden"
           onClick={() => setCollapsed(!collapsed)}
           aria-label="Toggle menu"
         >
           <Menu className="h-6 w-6" />
         </button>
-        <span className="text-lg font-semibold text-sidebar-foreground">
+        <span className="min-w-0 flex-1 truncate text-center text-lg font-semibold text-sidebar-foreground lg:flex-none lg:text-left">
           AutotenderAI
         </span>
-        <div className="w-10 lg:hidden" />
+        <div className="w-10 shrink-0 lg:hidden" aria-hidden />
       </div>
-      <div className="flex min-h-14 items-center justify-between gap-3 px-3 py-2 sm:px-6">
-        <div className="flex flex-1 items-center gap-4">
+      <div className="flex min-h-14 min-w-0 items-center justify-between gap-3 px-3 py-2 sm:px-6">
+        <div className="flex min-w-0 flex-1 items-center gap-4">
           {title && (
-            <div>
-              <h1 className="text-lg font-semibold">{title}</h1>
+            <div className="min-w-0">
+              <h1 className="truncate text-lg font-semibold">{title}</h1>
               {subtitle && (
-                <p className="text-sm text-muted-foreground">{subtitle}</p>
+                <p className="line-clamp-2 text-sm text-muted-foreground sm:line-clamp-none">
+                  {subtitle}
+                </p>
               )}
             </div>
           )}
         </div>
-        <div className="flex items-center gap-2 sm:gap-4">
+        <div className="flex shrink-0 items-center gap-2 sm:gap-4">
         <div className="relative hidden md:block">
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <input

@@ -37,15 +37,15 @@ export default function SettingsPage() {
                 <label className="text-sm font-medium text-foreground">
                   Company name
                 </label>
-                <div className="flex items-center gap-2">
+                <div className="flex min-w-0 flex-wrap items-center gap-2">
                   <Input
                     value={companyName}
                     onChange={(e) => setCompanyName(e.target.value)}
-                    className="flex-1"
+                    className="min-w-0 flex-1"
                   />
                   <button
                     type="button"
-                    className="rounded p-2 text-muted-foreground hover:bg-muted hover:text-foreground"
+                    className="shrink-0 rounded p-2 text-muted-foreground hover:bg-muted hover:text-foreground"
                     aria-label="Edit company name"
                   >
                     <Pencil className="h-4 w-4" />
@@ -58,15 +58,15 @@ export default function SettingsPage() {
                 <label className="text-sm font-medium text-foreground">
                   Language
                 </label>
-                <div className="flex items-center gap-2">
+                <div className="flex min-w-0 flex-wrap items-center gap-2">
                   <Input
                     value={language}
                     onChange={(e) => setLanguage(e.target.value)}
-                    className="flex-1"
+                    className="min-w-0 flex-1"
                   />
                   <button
                     type="button"
-                    className="rounded p-2 text-muted-foreground hover:bg-muted hover:text-foreground"
+                    className="shrink-0 rounded p-2 text-muted-foreground hover:bg-muted hover:text-foreground"
                     aria-label="Edit language"
                   >
                     <Pencil className="h-4 w-4" />
@@ -80,8 +80,8 @@ export default function SettingsPage() {
                   Editor Settings
                 </h4>
                 <div className="space-y-3">
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm text-foreground">
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                    <span className="min-w-0 text-sm text-foreground">
                       Show word count in the editor
                     </span>
                     <Switch
@@ -98,8 +98,8 @@ export default function SettingsPage() {
                       onCheckedChange={setShowWordCountDiff}
                     />
                   </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm text-foreground">
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                    <span className="min-w-0 text-sm text-foreground">
                       Show word count for selections
                     </span>
                     <Switch
@@ -115,8 +115,8 @@ export default function SettingsPage() {
                 <h4 className="text-sm font-semibold text-foreground">
                   Internet AI
                 </h4>
-                <div className="flex items-center justify-between">
-                  <span className="text-sm text-foreground">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <span className="min-w-0 text-sm text-foreground">
                     Enable Internet AI
                   </span>
                   <Switch
@@ -157,8 +157,8 @@ export default function SettingsPage() {
                 <h4 className="text-sm font-semibold text-foreground">
                   Cookie Preferences
                 </h4>
-                <div className="flex items-center justify-between">
-                  <span className="text-sm text-foreground">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <span className="min-w-0 text-sm text-foreground">
                     Allow essential and analytics cookies
                   </span>
                   <Switch
@@ -194,8 +194,8 @@ export default function SettingsPage() {
                 <h4 className="text-sm font-semibold text-foreground">
                   Library AI
                 </h4>
-                <div className="flex items-center justify-between">
-                  <span className="text-sm text-foreground">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <span className="min-w-0 text-sm text-foreground">
                     Generate using all Library Documents
                   </span>
                   <Switch

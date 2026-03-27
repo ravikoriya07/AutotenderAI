@@ -386,7 +386,7 @@ export default function ProjectsPage() {
               onReset={handleReset}
             />
             <Button
-              className="ml-auto"
+              className="w-full sm:ml-auto sm:w-auto"
               onClick={() => setCreateModalOpen(true)}
             >
               <Plus className="mr-2 h-4 w-4" />

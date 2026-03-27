@@ -22,15 +22,15 @@ export default function MyDraftsPage() {
       subtitle="Your private space to keep personal documents secure, and only accessible to you."
     >
       <PageContainer>
-        <div className="mb-6 flex gap-4">
-          <button className="flex h-32 w-40 flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed border-muted-foreground/30 bg-card transition-colors hover:border-primary hover:bg-primary/5">
+        <div className="mb-6 flex flex-wrap gap-4">
+          <button className="flex h-32 w-full max-w-[10rem] flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed border-muted-foreground/30 bg-card transition-colors hover:border-primary hover:bg-primary/5 sm:w-40 sm:max-w-none">
             <Plus className="h-8 w-8 text-muted-foreground" />
             <span className="text-sm font-medium">Document</span>
           </button>
           {mockDrafts.map((draft) => (
             <Card
               key={draft.id}
-              className="flex h-32 w-40 flex-col justify-between p-4 transition-shadow hover:shadow-md"
+              className="flex h-32 w-full max-w-[10rem] flex-col justify-between p-4 transition-shadow hover:shadow-md sm:w-40 sm:max-w-none"
             >
               <div className="flex items-start justify-between">
                 <FileText className="h-8 w-8 text-muted-foreground" />
