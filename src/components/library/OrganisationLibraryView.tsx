@@ -1,21 +1,16 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Loader2, PanelLeft } from "lucide-react";
 import { Card } from "@/components/ui/Card";
-import { FolderTree } from "@/components/ui/FolderTree";
+import { FolderTree, FolderNode } from "@/components/ui/FolderTree";
 import { Button } from "@/components/ui/Button";
 import { fetchProjectTree } from "@/services/projectService";
-import {
-  collectTreeStats,
-  folderNodesFromProjectTreeResponse,
-  formatBytes,
-} from "@/lib/projectTreeNormalize";
+import { folderNodesFromProjectTreeResponse } from "@/lib/projectTreeNormalize";
 import { toast } from "react-toastify";
 import axios from "axios";
 import { cn } from "@/lib/utils";
 import { LibraryFileListing } from "@/components/library/LibraryFileListing";
-import type { FolderNode } from "@/components/ui/FolderTree";
 
 function treeLoadErrorMessage(e: unknown): string {
   let message = "Could not load project library.";
@@ -50,8 +45,6 @@ export function OrganisationLibraryView({ jobId }: OrganisationLibraryViewProps)
   const [loadError, setLoadError] = useState<string | null>(null);
   const [treeLoading, setTreeLoading] = useState(true);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
-
-  const stats = useMemo(() => collectTreeStats(treeNodes), [treeNodes]);
 
   useEffect(() => {
     const trimmed = jobId.trim();
@@ -106,13 +99,6 @@ export function OrganisationLibraryView({ jobId }: OrganisationLibraryViewProps)
     setSelectedId(id);
     setMobileSidebarOpen(false);
   }, []);
-
-  const sizeLine =
-    stats.fileCount > 0
-      ? `Total Size: ${formatBytes(stats.totalBytes)} · Files: ${stats.fileCount}`
-      : treeLoading
-        ? "Total Size: — · Files: —"
-        : "Total Size: 0 B · Files: 0";
 
   const sidebarBody = (
     <>
@@ -180,17 +166,16 @@ export function OrganisationLibraryView({ jobId }: OrganisationLibraryViewProps)
             Libraries
           </button>
 
-          <div className="mb-4 flex items-center justify-between gap-3">
-            <p className="min-w-0 text-sm text-muted-foreground">{sizeLine}</p>
-            <Button size="sm" className="shrink-0">
-              New
-            </Button>
-          </div>
           <Card className="min-w-0 overflow-hidden">
             <LibraryFileListing
               jobId={jobId.trim()}
               selectedId={selectedId}
               onSelectedIdChange={handleListingSelectedIdChange}
+              newButton={
+                <Button size="sm" className="shrink-0">
+                  New
+                </Button>
+              }
               sharedTree={{
                 nodes: treeNodes,
                 loading: treeLoading,

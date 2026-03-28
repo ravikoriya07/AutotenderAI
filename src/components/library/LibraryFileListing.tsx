@@ -6,6 +6,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type ReactNode,
 } from "react";
 import {
   Table,
@@ -54,6 +55,8 @@ export type LibraryFileListingProps = {
   onSelectedIdChange?: (id: string | null) => void;
   /** When set, listing does not fetch; uses data from OrganisationLibraryView. */
   sharedTree?: LibrarySharedTreeState;
+  /** Shown on the top toolbar right, before bulk actions (e.g. Organisation Library "New"). */
+  newButton?: ReactNode;
 };
 
 export function LibraryFileListing({
@@ -62,6 +65,7 @@ export function LibraryFileListing({
   selectedId: selectedIdProp,
   onSelectedIdChange,
   sharedTree,
+  newButton,
 }: LibraryFileListingProps) {
   const controlled = onSelectedIdChange != null;
   const useSharedTree = sharedTree !== undefined;
@@ -233,56 +237,118 @@ export function LibraryFileListing({
 
   const canNavigateBack = Boolean(breadcrumbPath && breadcrumbPath.length > 1);
 
-  const breadcrumbBar =
+  const showBreadcrumbRow =
+    !treeLoading &&
+    !loadError &&
+    Boolean(selectedNode && breadcrumbPath && breadcrumbPath.length > 0);
+
+  const selectItemsLabel = (
+    <p className="text-sm text-muted-foreground">
+      Select items to:
+      {tableSelectedIds.size > 0 ? (
+        <span className="ml-2 font-medium text-foreground">
+          {tableSelectedIds.size} selected
+        </span>
+      ) : null}
+    </p>
+  );
+
+  const bulkActionButtons = (
+    <>
+      <Button
+        variant="outline"
+        size="sm"
+        disabled={tableSelectedIds.size === 0}
+        onClick={() =>
+          console.log("bulk download", Array.from(tableSelectedIds))
+        }
+      >
+        <Download className="mr-2 h-4 w-4" />
+        Bulk Download
+      </Button>
+      <Button
+        variant="outline"
+        size="sm"
+        disabled={tableSelectedIds.size === 0}
+        onClick={() => console.log("archive", Array.from(tableSelectedIds))}
+      >
+        <Archive className="mr-2 h-4 w-4" />
+        Archive
+      </Button>
+      <Button
+        variant="outline"
+        size="sm"
+        disabled={tableSelectedIds.size === 0}
+        onClick={() => console.log("delete", Array.from(tableSelectedIds))}
+      >
+        <Trash2 className="mr-2 h-4 w-4" />
+        Delete
+      </Button>
+    </>
+  );
+
+  const topToolbarRight = (
+    <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+      {bulkActionButtons}
+      {newButton}
+    </div>
+  );
+
+  const selectRowToolbar = (
+    <div className="flex flex-wrap items-center justify-between gap-3">
+      <div className="min-w-0 flex-1">{selectItemsLabel}</div>
+      {topToolbarRight}
+    </div>
+  );
+
+  const breadcrumbNav =
     breadcrumbPath && breadcrumbPath.length > 0 ? (
-      <div className="border-b border-border/80 px-4 py-2.5">
-        <div className="flex flex-wrap items-center gap-2">
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            className="h-8 shrink-0 gap-1 px-2 text-muted-foreground hover:text-foreground"
-            disabled={!canNavigateBack}
-            onClick={handleBack}
-            aria-label="Go to parent folder"
-          >
-            <ChevronLeft className="h-4 w-4 shrink-0" />
-            Back
-          </Button>
-          <nav
-            className="flex min-w-0 flex-1 flex-wrap items-center text-sm"
-            aria-label="Library path"
-          >
-            {breadcrumbPath.map((node, i) => (
-              <span
-                key={node.id}
-                className="flex min-w-0 max-w-full items-center"
-              >
-                {i > 0 ? (
-                  <span
-                    className="mx-1.5 shrink-0 text-muted-foreground/60"
-                    aria-hidden
-                  >
-                    /
-                  </span>
-                ) : null}
-                <button
-                  type="button"
-                  className={cn(
-                    "min-w-0 truncate rounded px-0.5 text-left transition-colors hover:text-foreground hover:underline",
-                    i === breadcrumbPath.length - 1
-                      ? "font-medium text-foreground"
-                      : "text-muted-foreground"
-                  )}
-                  onClick={() => handleSelect(node.id)}
-                  title={node.label}
+      <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="h-8 shrink-0 gap-1 px-2 text-muted-foreground hover:text-foreground"
+          disabled={!canNavigateBack}
+          onClick={handleBack}
+          aria-label="Go to parent folder"
+        >
+          <ChevronLeft className="h-4 w-4 shrink-0" />
+          Back
+        </Button>
+        <nav
+          className="flex min-w-0 flex-1 flex-wrap items-center text-sm"
+          aria-label="Library path"
+        >
+          {breadcrumbPath.map((node, i) => (
+            <span
+              key={node.id}
+              className="flex min-w-0 max-w-full items-center"
+            >
+              {i > 0 ? (
+                <span
+                  className="mx-1.5 shrink-0 text-muted-foreground/60"
+                  aria-hidden
                 >
-                  {node.label}
-                </button>
-              </span>
-            ))}
-          </nav>
-        </div>
+                  /
+                </span>
+              ) : null}
+              <button
+                type="button"
+                className={cn(
+                  "min-w-0 truncate rounded px-0.5 text-left transition-colors hover:text-foreground hover:underline",
+                  i === breadcrumbPath.length - 1
+                    ? "font-medium text-foreground"
+                    : "text-muted-foreground"
+                )}
+                onClick={() => handleSelect(node.id)}
+                title={node.label}
+              >
+                {node.label}
+              </button>
+            </span>
+          ))}
+        </nav>
       </div>
     ) : null;
 
@@ -294,48 +360,15 @@ export function LibraryFileListing({
 
   return (
     <>
-      <div className="border-b p-4">
-        <div className="min-w-0">
-          <p className="text-sm text-muted-foreground">
-            Select items to:
-            {tableSelectedIds.size > 0 ? (
-              <span className="ml-2 font-medium text-foreground">
-                {tableSelectedIds.size} selected
-              </span>
-            ) : null}
-          </p>
-          <div className="mt-3 flex flex-wrap gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={tableSelectedIds.size === 0}
-              onClick={() =>
-                console.log("bulk download", Array.from(tableSelectedIds))
-              }
-            >
-              <Download className="mr-2 h-4 w-4" />
-              Bulk Download
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={tableSelectedIds.size === 0}
-              onClick={() => console.log("archive", Array.from(tableSelectedIds))}
-            >
-              <Archive className="mr-2 h-4 w-4" />
-              Archive
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={tableSelectedIds.size === 0}
-              onClick={() => console.log("delete", Array.from(tableSelectedIds))}
-            >
-              <Trash2 className="mr-2 h-4 w-4" />
-              Delete
-            </Button>
-          </div>
-        </div>
+      <div className="border-b border-border/80 p-4">
+        {showBreadcrumbRow ? (
+          <>
+            <div className="mb-3 min-w-0">{selectRowToolbar}</div>
+            <div className="min-w-0">{breadcrumbNav}</div>
+          </>
+        ) : (
+          selectRowToolbar
+        )}
       </div>
 
       {treeLoading ? (
@@ -357,7 +390,6 @@ export function LibraryFileListing({
         </div>
       ) : isFileSelected ? (
         <div>
-          {breadcrumbBar}
           <div className="space-y-4 p-6">
             <div>
               <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
@@ -384,7 +416,6 @@ export function LibraryFileListing({
         </div>
       ) : (
         <div>
-          {breadcrumbBar}
           <div className="min-w-0 overflow-x-auto">
             <Table className="table-fixed">
               <TableHeader>
