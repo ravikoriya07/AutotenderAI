@@ -36,15 +36,36 @@ function treeLoadErrorMessage(e: unknown): string {
 
 export type OrganisationLibraryViewProps = {
   jobId: string;
+  /** Set false on `/libraries?job_id=` — project dropdown is org-library only. */
+  showProjectDropdown?: boolean;
+  /** `/library` passes this so the project dropdown drives `jobId` and tree fetch. */
+  onProjectJobIdChange?: (jobId: string) => void;
 };
 
 /** Shared tree + listing layout used by `/library` and `/libraries?job_id=`. */
-export function OrganisationLibraryView({ jobId }: OrganisationLibraryViewProps) {
+export function OrganisationLibraryView({
+  jobId,
+  showProjectDropdown = true,
+  onProjectJobIdChange,
+}: OrganisationLibraryViewProps) {
   const [treeNodes, setTreeNodes] = useState<FolderNode[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [treeLoading, setTreeLoading] = useState(true);
+  const [treeLoading, setTreeLoading] = useState(() =>
+    Boolean(jobId.trim()) || !showProjectDropdown
+  );
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const [projectPickerLoading, setProjectPickerLoading] = useState(
+    () => showProjectDropdown
+  );
+  const [projectCatalogEmpty, setProjectCatalogEmpty] = useState(false);
+
+  useEffect(() => {
+    if (!showProjectDropdown) {
+      setProjectPickerLoading(false);
+      setProjectCatalogEmpty(false);
+    }
+  }, [showProjectDropdown]);
 
   useEffect(() => {
     const trimmed = jobId.trim();
@@ -59,6 +80,8 @@ export function OrganisationLibraryView({ jobId }: OrganisationLibraryViewProps)
     const ac = new AbortController();
     let cancelled = false;
 
+    setSelectedId(null);
+
     (async () => {
       setTreeLoading(true);
       setLoadError(null);
@@ -68,7 +91,7 @@ export function OrganisationLibraryView({ jobId }: OrganisationLibraryViewProps)
         const nodes = folderNodesFromProjectTreeResponse(raw);
         setTreeNodes(nodes);
         if (nodes.length > 0) {
-          setSelectedId((prev) => prev ?? nodes[0].id);
+          setSelectedId(nodes[0].id);
         } else {
           setSelectedId(null);
         }
@@ -104,7 +127,7 @@ export function OrganisationLibraryView({ jobId }: OrganisationLibraryViewProps)
     <>
       <h3 className="mb-3 text-sm font-medium">AutotenderAI Libraries</h3>
       <div className="max-h-[min(70vh,520px)] min-w-0 max-w-full overflow-y-auto overflow-x-hidden pr-1">
-        {treeLoading ? (
+        {treeLoading && jobId.trim() ? (
           <div
             className="flex min-h-[120px] items-center justify-center py-8"
             role="status"
@@ -113,6 +136,28 @@ export function OrganisationLibraryView({ jobId }: OrganisationLibraryViewProps)
           >
             <Loader2 className="h-8 w-8 animate-spin text-primary" />
           </div>
+        ) : showProjectDropdown && projectPickerLoading ? (
+          <div
+            className="flex min-h-[120px] items-center justify-center py-8"
+            role="status"
+            aria-live="polite"
+            aria-busy="true"
+          >
+            <Loader2 className="h-8 w-8 animate-spin text-primary" />
+          </div>
+        ) : showProjectDropdown &&
+          projectCatalogEmpty &&
+          !jobId.trim() ? (
+          <p className="text-sm text-muted-foreground">
+            No projects available.
+          </p>
+        ) : showProjectDropdown &&
+          !jobId.trim() &&
+          !projectCatalogEmpty &&
+          !projectPickerLoading ? (
+          <p className="text-sm text-muted-foreground">
+            Select a project above to view its library.
+          </p>
         ) : loadError ? (
           <p className="text-sm text-muted-foreground">{loadError}</p>
         ) : treeNodes.length === 0 ? (
@@ -142,7 +187,7 @@ export function OrganisationLibraryView({ jobId }: OrganisationLibraryViewProps)
             : "pointer-events-none invisible opacity-0"
         )}
       />
-      <div className="flex min-w-0 flex-col gap-6 lg:flex-row lg:items-start">
+      <div className="flex min-w-0 w-full max-w-full flex-col gap-6 lg:flex-row lg:items-start">
         <aside
           className={cn(
             "fixed inset-y-0 left-0 z-40 w-[min(100%,16rem)] max-w-[16rem] shrink-0 transition-transform duration-300 ease-out",
@@ -171,6 +216,14 @@ export function OrganisationLibraryView({ jobId }: OrganisationLibraryViewProps)
               jobId={jobId.trim()}
               selectedId={selectedId}
               onSelectedIdChange={handleListingSelectedIdChange}
+              showProjectDropdown={showProjectDropdown}
+              onProjectJobIdChange={onProjectJobIdChange}
+              onProjectPickerLoadingChange={
+                showProjectDropdown ? setProjectPickerLoading : undefined
+              }
+              onProjectCatalogState={
+                showProjectDropdown ? setProjectCatalogEmpty : undefined
+              }
               newButton={
                 <Button size="sm" className="shrink-0">
                   New

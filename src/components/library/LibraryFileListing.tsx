@@ -26,6 +26,11 @@ import {
 } from "lucide-react";
 import { fetchProjectTree } from "@/services/projectService";
 import {
+  fetchCompletedSteps,
+  flattenProjectsFromCompletedSteps,
+  type CompletedStepStat,
+} from "@/services/statsService";
+import {
   folderNodesFromProjectTreeResponse,
   formatBytes,
 } from "@/lib/projectTreeNormalize";
@@ -57,6 +62,12 @@ export type LibraryFileListingProps = {
   sharedTree?: LibrarySharedTreeState;
   /** Shown on the top toolbar right, before bulk actions (e.g. Organisation Library "New"). */
   newButton?: ReactNode;
+  /** When false, hides the project step dropdown and skips stats fetch (e.g. `/libraries?job_id=`). */
+  showProjectDropdown?: boolean;
+  /** When set, dropdown value follows `jobId` and changes notify parent (Organisation Library dynamic project). */
+  onProjectJobIdChange?: (jobId: string) => void;
+  onProjectPickerLoadingChange?: (loading: boolean) => void;
+  onProjectCatalogState?: (empty: boolean) => void;
 };
 
 export function LibraryFileListing({
@@ -66,8 +77,13 @@ export function LibraryFileListing({
   onSelectedIdChange,
   sharedTree,
   newButton,
+  showProjectDropdown = true,
+  onProjectJobIdChange,
+  onProjectPickerLoadingChange,
+  onProjectCatalogState,
 }: LibraryFileListingProps) {
   const controlled = onSelectedIdChange != null;
+  const projectJobFromParent = Boolean(onProjectJobIdChange);
   const useSharedTree = sharedTree !== undefined;
   const [treeNodes, setTreeNodes] = useState<FolderNode[]>([]);
   const [uncontrolledSelectedId, setUncontrolledSelectedId] = useState<
@@ -82,9 +98,19 @@ export function LibraryFileListing({
   );
   const [loadError, setLoadError] = useState<string | null>(null);
   const [treeLoading, setTreeLoading] = useState(true);
+  const [completedSteps, setCompletedSteps] = useState<CompletedStepStat[]>(
+    []
+  );
+  const [stepsLoading, setStepsLoading] = useState(true);
+  const [selectedProjectJobId, setSelectedProjectJobId] = useState("");
   const selectAllRef = useRef<HTMLInputElement>(null);
 
   const nodeMap = useMemo(() => buildIdMap(treeNodes), [treeNodes]);
+
+  const projectOptions = useMemo(
+    () => flattenProjectsFromCompletedSteps(completedSteps),
+    [completedSteps]
+  );
 
   const selectedNode = useMemo(() => {
     if (!selectedId || treeNodes.length === 0) return null;
@@ -107,6 +133,48 @@ export function LibraryFileListing({
     sharedTree?.nodes,
     sharedTree?.loading,
     sharedTree?.error,
+  ]);
+
+  useEffect(() => {
+    if (!showProjectDropdown) {
+      setStepsLoading(false);
+      setCompletedSteps([]);
+      setSelectedProjectJobId("");
+      return;
+    }
+    const ac = new AbortController();
+    let cancelled = false;
+    setStepsLoading(true);
+    void (async () => {
+      try {
+        const rows = await fetchCompletedSteps({ signal: ac.signal });
+        if (!cancelled) setCompletedSteps(rows);
+      } finally {
+        if (!cancelled) setStepsLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+      ac.abort();
+    };
+  }, [showProjectDropdown]);
+
+  useEffect(() => {
+    if (!showProjectDropdown) {
+      onProjectPickerLoadingChange?.(false);
+      return;
+    }
+    onProjectPickerLoadingChange?.(stepsLoading);
+  }, [showProjectDropdown, stepsLoading, onProjectPickerLoadingChange]);
+
+  useEffect(() => {
+    if (!showProjectDropdown || stepsLoading) return;
+    onProjectCatalogState?.(projectOptions.length === 0);
+  }, [
+    showProjectDropdown,
+    stepsLoading,
+    projectOptions.length,
+    onProjectCatalogState,
   ]);
 
   useEffect(() => {
@@ -243,14 +311,69 @@ export function LibraryFileListing({
     Boolean(selectedNode && breadcrumbPath && breadcrumbPath.length > 0);
 
   const selectItemsLabel = (
-    <p className="text-sm text-muted-foreground">
+    <span className="shrink-0 text-sm text-muted-foreground">
       Select items to:
       {tableSelectedIds.size > 0 ? (
         <span className="ml-2 font-medium text-foreground">
           {tableSelectedIds.size} selected
         </span>
       ) : null}
-    </p>
+    </span>
+  );
+
+  const projectSelectValue = projectJobFromParent
+    ? projectOptions.length === 0 ||
+        !jobId.trim() ||
+        !projectOptions.some((p) => p.job_id === jobId.trim())
+      ? ""
+      : jobId.trim()
+    : projectOptions.length === 0 ||
+        !selectedProjectJobId ||
+        !projectOptions.some((p) => p.job_id === selectedProjectJobId)
+      ? ""
+      : selectedProjectJobId;
+
+  const projectSelectControl = stepsLoading ? (
+    <div
+      className="flex h-8 max-w-[11rem] items-center gap-2"
+      role="status"
+      aria-live="polite"
+      aria-busy="true"
+    >
+      <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-primary" />
+      <span className="text-xs text-muted-foreground">Loading projects…</span>
+    </div>
+  ) : (
+    <div className="flex max-w-[11rem] shrink-0 items-center gap-1.5 sm:max-w-[13rem]">
+      {useSharedTree && sharedTree?.loading && jobId.trim() ? (
+        <Loader2
+          className="h-3.5 w-3.5 shrink-0 animate-spin text-primary"
+          aria-label="Loading library"
+        />
+      ) : null}
+      <select
+        aria-label="Select project"
+        value={projectSelectValue}
+        onChange={(e) => {
+          const v = e.target.value;
+          if (onProjectJobIdChange) onProjectJobIdChange(v);
+          else setSelectedProjectJobId(v);
+        }}
+        disabled={projectOptions.length === 0}
+        className="h-8 min-w-0 flex-1 rounded-md border border-input bg-background px-2 py-1 text-xs text-foreground shadow-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
+      >
+        <option value="">
+          {projectOptions.length === 0
+            ? "No projects available"
+            : "Select project"}
+        </option>
+        {projectOptions.map((p) => (
+          <option key={p.job_id} value={p.job_id}>
+            {p.project_name}
+          </option>
+        ))}
+      </select>
+    </div>
   );
 
   const bulkActionButtons = (
@@ -287,18 +410,30 @@ export function LibraryFileListing({
     </>
   );
 
-  const topToolbarRight = (
-    <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
-      {bulkActionButtons}
-      {newButton}
+  const selectItemsAndActions = (
+    <div
+      className={cn(
+        "flex min-w-0 flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-2 sm:gap-y-2",
+        showProjectDropdown
+          ? "w-full sm:justify-end"
+          : "ml-auto w-auto max-w-full justify-end sm:justify-end"
+      )}
+    >
+      <div className="min-w-0 shrink-0">{selectItemsLabel}</div>
+      <div className="flex min-w-0 flex-wrap items-center gap-2 sm:justify-end">
+        {bulkActionButtons}
+        {newButton}
+      </div>
     </div>
   );
 
-  const selectRowToolbar = (
-    <div className="flex flex-wrap items-center justify-between gap-3">
-      <div className="min-w-0 flex-1">{selectItemsLabel}</div>
-      {topToolbarRight}
+  const selectRowToolbar = showProjectDropdown ? (
+    <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between md:gap-4">
+      <div className="w-auto min-w-0 shrink-0">{projectSelectControl}</div>
+      {selectItemsAndActions}
     </div>
+  ) : (
+    <div className="flex w-full min-w-0 justify-end">{selectItemsAndActions}</div>
   );
 
   const breadcrumbNav =
@@ -352,15 +487,18 @@ export function LibraryFileListing({
       </div>
     ) : null;
 
-  if (!jobId.trim()) {
-    return (
-      <p className="p-4 text-sm text-muted-foreground">Missing job id.</p>
-    );
-  }
+  const noJobEmptyBody =
+    !jobId.trim() && showProjectDropdown ? (
+      <div className="p-6 text-sm text-muted-foreground">
+        Select a project above to view its library.
+      </div>
+    ) : !jobId.trim() ? (
+      <div className="p-6 text-sm text-muted-foreground">Missing job id.</div>
+    ) : null;
 
   return (
     <>
-      <div className="border-b border-border/80 p-4">
+      <div className="border-b border-border/80 p-3 sm:p-4">
         {showBreadcrumbRow ? (
           <>
             <div className="mb-3 min-w-0">{selectRowToolbar}</div>
@@ -371,7 +509,9 @@ export function LibraryFileListing({
         )}
       </div>
 
-      {treeLoading ? (
+      {noJobEmptyBody}
+
+      {!noJobEmptyBody && treeLoading ? (
         <div
           className="flex min-h-[200px] items-center justify-center py-12"
           role="status"
@@ -380,15 +520,15 @@ export function LibraryFileListing({
         >
           <Loader2 className="h-8 w-8 animate-spin text-primary" />
         </div>
-      ) : loadError ? (
+      ) : !noJobEmptyBody && loadError ? (
         <div className="p-6 text-sm text-muted-foreground">{loadError}</div>
-      ) : !selectedNode ? (
+      ) : !noJobEmptyBody && !selectedNode ? (
         <div className="p-6 text-sm text-muted-foreground">
           {treeNodes.length === 0
             ? "No items in library."
             : "Select a folder or file from the library tree."}
         </div>
-      ) : isFileSelected ? (
+      ) : !noJobEmptyBody && isFileSelected ? (
         <div>
           <div className="space-y-4 p-6">
             <div>
@@ -414,7 +554,7 @@ export function LibraryFileListing({
             </div>
           </div>
         </div>
-      ) : (
+      ) : !noJobEmptyBody ? (
         <div>
           <div className="min-w-0 overflow-x-auto">
             <Table className="table-fixed">
@@ -560,7 +700,7 @@ export function LibraryFileListing({
             </Table>
           </div>
         </div>
-      )}
+      ) : null}
     </>
   );
 }

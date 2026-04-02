@@ -747,6 +747,25 @@ export function ResearchChatPage() {
 
   const hasMessages = messages.length > 0;
 
+  const isRecordNotFoundView =
+    hydrated &&
+    messages.length === 1 &&
+    messages[0].role === "assistant" &&
+    Boolean(messages[0].error) &&
+    messages[0].message === "No conversation found";
+
+  const isNewSessionView =
+    hydrated &&
+    routeJobId == null &&
+    !isChatLoading &&
+    !isTyping &&
+    messages.length === 0;
+
+  const useCenteredInputLayout = isNewSessionView || isRecordNotFoundView;
+
+  const showChatThread =
+    (hasMessages || isChatLoading) && !isRecordNotFoundView;
+
   return (
     <DashboardLayout
       title="Research"
@@ -771,50 +790,34 @@ export function ResearchChatPage() {
         />
         <PageContainer className="flex min-h-0 flex-1 flex-col items-center justify-start overflow-x-hidden overflow-y-hidden bg-[#f8fafc] py-4 md:py-6 lg:min-h-[calc(100dvh-4rem)]">
           <div className="mx-auto flex w-full min-w-0 max-w-5xl flex-1 flex-col px-3 md:px-4">
-            <div className="flex w-full shrink-0 flex-col items-stretch gap-3 sm:items-center">
-              <button
-                type="button"
-                onClick={() => setMobileSessionsOpen(true)}
-                className="inline-flex items-center justify-center gap-2 self-start rounded-lg border border-border bg-card px-3 py-2.5 text-sm font-medium text-foreground shadow-sm hover:bg-muted lg:hidden"
-              >
-                <PanelLeft className="h-4 w-4 shrink-0" />
-                Sessions
-              </button>
-              <h1 className="text-center text-2xl font-semibold text-foreground">
-                Your Intelligent Research Partner
-              </h1>
-              <p className="text-center text-sm text-muted-foreground">
-                Ask anything about your documents, answer bank, or the web.
-              </p>
-            </div>
-            <div className="mx-auto mt-4 flex min-h-0 w-full max-w-[860px] flex-1 flex-col gap-4 md:mt-6">
-              {hasMessages || isChatLoading ? (
-                <ChatContainer>
-                  <div className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain px-4 py-4 max-lg:pb-[14rem] md:px-6 md:py-5 lg:max-h-[60vh] lg:pb-4">
-                    {isChatLoading ? (
-                      <ChatSkeleton />
-                    ) : (
-                      <div className="space-y-3 md:space-y-4">
-                        {messages.map((item) => (
-                          <ChatMessage key={item.id} item={item} />
-                        ))}
-                        <div ref={chatBottomRef} />
-                      </div>
-                    )}
-                  </div>
-                </ChatContainer>
-              ) : (
-                <div className="min-h-0 flex-1 lg:min-h-0" aria-hidden />
-              )}
+            <button
+              type="button"
+              onClick={() => setMobileSessionsOpen(true)}
+              className="mb-3 inline-flex shrink-0 items-center justify-center gap-2 self-start rounded-lg border border-border bg-card px-3 py-2.5 text-sm font-medium text-foreground shadow-sm hover:bg-muted lg:hidden"
+            >
+              <PanelLeft className="h-4 w-4 shrink-0" />
+              Sessions
+            </button>
 
-              <div
-                className={cn(
-                  "z-20 w-full shrink-0",
-                  "max-lg:fixed max-lg:bottom-0 max-lg:left-0 max-lg:right-0 max-lg:border-t max-lg:border-border/80 max-lg:bg-[#f8fafc] max-lg:px-3 max-lg:pb-[max(0.75rem,env(safe-area-inset-bottom))] max-lg:pt-3",
-                  "lg:static lg:z-auto lg:border-0 lg:bg-transparent lg:p-0"
-                )}
-              >
-                <div className="mx-auto w-full max-w-[860px]">
+            {useCenteredInputLayout ? (
+              <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-6 py-6 md:py-10">
+                <div className="w-full max-w-xl px-1 text-center">
+                  <h1 className="text-2xl font-semibold text-foreground">
+                    Your Intelligent Research Partner
+                  </h1>
+                  <p className="mt-2 text-sm text-muted-foreground">
+                    Ask anything about your documents, answer bank, or the web.
+                  </p>
+                  {isRecordNotFoundView ? (
+                    <p
+                      className="mt-4 text-sm font-medium text-destructive"
+                      role="alert"
+                    >
+                      No conversation found for this session.
+                    </p>
+                  ) : null}
+                </div>
+                <div className="w-full max-w-[860px] shrink-0">
                   <ChatInput
                     value={inputValue}
                     onChange={setInputValue}
@@ -823,7 +826,55 @@ export function ResearchChatPage() {
                   />
                 </div>
               </div>
-            </div>
+            ) : (
+              <>
+                <div className="flex w-full shrink-0 flex-col items-stretch gap-3 sm:items-center">
+                  <h1 className="text-center text-2xl font-semibold text-foreground">
+                    Your Intelligent Research Partner
+                  </h1>
+                  <p className="text-center text-sm text-muted-foreground">
+                    Ask anything about your documents, answer bank, or the web.
+                  </p>
+                </div>
+                <div className="mx-auto mt-4 flex min-h-0 w-full max-w-[860px] flex-1 flex-col gap-4 md:mt-6">
+                  {showChatThread ? (
+                    <ChatContainer>
+                      <div className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain px-4 py-4 max-lg:pb-[14rem] md:px-6 md:py-5 lg:max-h-[60vh] lg:pb-4">
+                        {isChatLoading ? (
+                          <ChatSkeleton />
+                        ) : (
+                          <div className="space-y-3 md:space-y-4">
+                            {messages.map((item) => (
+                              <ChatMessage key={item.id} item={item} />
+                            ))}
+                            <div ref={chatBottomRef} />
+                          </div>
+                        )}
+                      </div>
+                    </ChatContainer>
+                  ) : (
+                    <div className="min-h-0 flex-1 lg:min-h-0" aria-hidden />
+                  )}
+
+                  <div
+                    className={cn(
+                      "z-20 w-full shrink-0",
+                      "max-lg:fixed max-lg:bottom-0 max-lg:left-0 max-lg:right-0 max-lg:border-t max-lg:border-border/80 max-lg:bg-[#f8fafc] max-lg:px-3 max-lg:pb-[max(0.75rem,env(safe-area-inset-bottom))] max-lg:pt-3",
+                      "lg:static lg:z-auto lg:border-0 lg:bg-transparent lg:p-0"
+                    )}
+                  >
+                    <div className="mx-auto w-full max-w-[860px]">
+                      <ChatInput
+                        value={inputValue}
+                        onChange={setInputValue}
+                        onSend={() => void handleSend()}
+                        disabled={isTyping}
+                      />
+                    </div>
+                  </div>
+                </div>
+              </>
+            )}
           </div>
         </PageContainer>
       </div>

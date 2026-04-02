@@ -21,7 +21,9 @@ function LibrariesContent() {
     );
   }
 
-  return <OrganisationLibraryView jobId={jobId} />;
+  return (
+    <OrganisationLibraryView jobId={jobId} showProjectDropdown={false} />
+  );
 }
 
 function ContentFallback() {

@@ -1,0 +1,155 @@
+import type { AxiosRequestConfig } from "axios";
+import { apiClient } from "@/lib/apiClient";
+
+type StatsRequestConfig = AxiosRequestConfig & {
+  skipGlobalLoader?: boolean;
+};
+
+export type CompletedStepProject = {
+  job_id: string;
+  project_name: string;
+};
+
+export type CompletedStepStat = {
+  step_name: string;
+  completed_count: number;
+  projects?: CompletedStepProject[];
+};
+
+const CACHE_TTL_MS = 2 * 60 * 1000;
+
+type StepsCacheEntry = {
+  data: CompletedStepStat[];
+  expiresAt: number;
+};
+
+let completedStepsCache: StepsCacheEntry | null = null;
+
+function isStepRecord(x: unknown): x is Record<string, unknown> {
+  return Boolean(x) && typeof x === "object" && !Array.isArray(x);
+}
+
+function normalizeProjectItem(raw: unknown): CompletedStepProject | null {
+  if (!isStepRecord(raw)) return null;
+  const job_id = typeof raw.job_id === "string" ? raw.job_id.trim() : "";
+  if (!job_id) return null;
+  const name =
+    typeof raw.project_name === "string" ? raw.project_name.trim() : "";
+  return {
+    job_id,
+    project_name: name || "Unnamed project",
+  };
+}
+
+function normalizeProjectsArray(raw: unknown): CompletedStepProject[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.map(normalizeProjectItem).filter(Boolean) as CompletedStepProject[];
+}
+
+function normalizeStepItem(raw: unknown): CompletedStepStat | null {
+  if (!isStepRecord(raw)) return null;
+  const stepName = raw.step_name;
+  if (typeof stepName !== "string" || !stepName.trim()) return null;
+  const count =
+    typeof raw.completed_count === "number" && Number.isFinite(raw.completed_count)
+      ? raw.completed_count
+      : 0;
+  const projects = normalizeProjectsArray(raw.projects);
+  return {
+    step_name: stepName.trim(),
+    completed_count: count,
+    projects: projects.length > 0 ? projects : undefined,
+  };
+}
+
+/** Unique projects from all step rows (by `job_id`), sorted by name. */
+export function flattenProjectsFromCompletedSteps(
+  steps: CompletedStepStat[]
+): CompletedStepProject[] {
+  const map = new Map<string, CompletedStepProject>();
+  for (const s of steps) {
+    for (const p of s.projects ?? []) {
+      if (p.job_id && !map.has(p.job_id)) {
+        map.set(p.job_id, p);
+      }
+    }
+  }
+  return Array.from(map.values()).sort((a, b) =>
+    a.project_name.localeCompare(b.project_name, undefined, {
+      sensitivity: "base",
+    })
+  );
+}
+
+/** Normalizes GET /stats/completed-steps payloads (single object, array, or `{ steps: [...] }`). */
+export function normalizeCompletedStepsPayload(data: unknown): CompletedStepStat[] {
+  if (data == null) return [];
+  if (Array.isArray(data)) {
+    return data.map(normalizeStepItem).filter(Boolean) as CompletedStepStat[];
+  }
+  if (!isStepRecord(data)) return [];
+  if (Array.isArray(data.steps)) {
+    return data.steps.map(normalizeStepItem).filter(Boolean) as CompletedStepStat[];
+  }
+  if (typeof data.step_name === "string") {
+    const one = normalizeStepItem(data);
+    return one ? [one] : [];
+  }
+  /** Response with only `projects` array (no `step_name`). */
+  if (Array.isArray(data.projects)) {
+    const projects = normalizeProjectsArray(data.projects);
+    if (projects.length > 0) {
+      return [
+        {
+          step_name: "projects",
+          completed_count: projects.length,
+          projects,
+        },
+      ];
+    }
+  }
+  return [];
+}
+
+export type FetchCompletedStepsOptions = {
+  force?: boolean;
+  signal?: AbortSignal;
+};
+
+/**
+ * GET /stats/completed-steps — cached in-memory (TTL) across mounts.
+ * On failure: logs to console and returns [] (cache not updated).
+ */
+export async function fetchCompletedSteps(
+  options?: FetchCompletedStepsOptions
+): Promise<CompletedStepStat[]> {
+  const force = Boolean(options?.force);
+  const now = Date.now();
+  if (!force && completedStepsCache && now < completedStepsCache.expiresAt) {
+    return completedStepsCache.data;
+  }
+
+  try {
+    const config: StatsRequestConfig = {
+      skipGlobalLoader: true,
+      ...(options?.signal ? { signal: options.signal } : {}),
+    };
+    const { data } = await apiClient.get<unknown>(
+      "/stats/completed-steps",
+      config
+    );
+    const normalized = normalizeCompletedStepsPayload(data);
+    completedStepsCache = {
+      data: normalized,
+      expiresAt: now + CACHE_TTL_MS,
+    };
+    return normalized;
+  } catch (e) {
+    console.log("fetchCompletedSteps failed", e);
+    return [];
+  }
+}
+
+export function invalidateCompletedStepsCache(): void {
+  completedStepsCache = null;
+}
