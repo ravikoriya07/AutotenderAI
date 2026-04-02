@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { usePathname } from "next/navigation";
 import { Search, Bell, HelpCircle, Menu } from "lucide-react";
 import { useSidebar } from "@/contexts/SidebarContext";
@@ -8,12 +8,15 @@ import { getAuthUserEmail, getAuthUserName } from "@/lib/authStorage";
 import { getShortDisplayName, getUserInitials } from "@/lib/userDisplay";
 
 interface HeaderProps {
+  /** Renders before the page title (e.g. back control). */
+  titleLeading?: ReactNode;
   title?: string;
   subtitle?: string;
   searchPlaceholder?: string;
 }
 
 export function Header({
+  titleLeading,
   title,
   subtitle,
   searchPlaceholder = "Search...",
@@ -47,7 +50,10 @@ export function Header({
         <div className="w-10 shrink-0 lg:hidden" aria-hidden />
       </div>
       <div className="flex min-h-14 min-w-0 items-center justify-between gap-3 px-3 py-2 sm:px-6">
-        <div className="flex min-w-0 flex-1 items-center gap-4">
+        <div className="flex min-w-0 flex-1 items-center gap-2 sm:gap-3">
+          {titleLeading ? (
+            <div className="shrink-0">{titleLeading}</div>
+          ) : null}
           {title && (
             <div className="min-w-0">
               <h1 className="truncate text-lg font-semibold">{title}</h1>

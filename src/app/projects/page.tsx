@@ -24,6 +24,7 @@ import {
   Trash2,
   FileDown,
   Library,
+  PanelRight,
 } from "lucide-react";
 import { Modal } from "@/components/ui/Modal";
 import { CreateProjectForm } from "@/components/CreateProjectForm";
@@ -168,6 +169,7 @@ function PaginationControls({
 
 function ProjectActionsCell({
   onEdit,
+  onDetail,
   onExtract,
   onLibrary,
   onDelete,
@@ -176,6 +178,7 @@ function ProjectActionsCell({
   onClose,
 }: {
   onEdit: () => void;
+  onDetail: () => void;
   onExtract: () => void;
   onLibrary: () => void;
   onDelete: () => void;
@@ -223,6 +226,19 @@ function ProjectActionsCell({
           >
             <Pencil className="h-4 w-4 shrink-0 text-primary" />
             Edit
+          </button>
+          <div className="border-t border-border" />
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              onDetail();
+              onClose();
+            }}
+            className="flex w-full items-center gap-2.5 px-3 py-2.5 text-left text-sm text-foreground transition-colors hover:bg-primary/10 focus:bg-primary/10 focus:outline-none"
+          >
+            <PanelRight className="h-4 w-4 shrink-0 text-primary" />
+            Detail
           </button>
           <div className="border-t border-border" />
           <button
@@ -465,6 +481,11 @@ export default function ProjectsPage() {
                             onEdit={() => {
                               setProjectToEdit(project);
                               setEditModalOpen(true);
+                            }}
+                            onDetail={() => {
+                              router.push(
+                                `/projects/${encodeURIComponent(project.id)}`
+                              );
                             }}
                             onExtract={() => {
                               const jobId = project.job_id ?? project.id;

@@ -1,16 +1,17 @@
 "use client";
 
-import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import { ChevronLeft } from "lucide-react";
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
 import { PageContainer } from "@/components/layout/PageContainer";
-import { OrganisationLibraryView } from "@/components/library/OrganisationLibraryView";
+import { ProjectDetailPageContent } from "@/components/projects/ProjectDetailPageContent";
 import { Button } from "@/components/ui/Button";
 
-export default function LibraryPage() {
+export default function ProjectDetailRoutePage() {
   const router = useRouter();
-  const [activeJobId, setActiveJobId] = useState("");
+  const params = useParams();
+  const raw = params.id;
+  const projectId = Array.isArray(raw) ? raw[0] ?? "" : raw ?? "";
 
   return (
     <DashboardLayout
@@ -27,14 +28,11 @@ export default function LibraryPage() {
           Back
         </Button>
       }
-      title="Organisation Library"
-      searchPlaceholder="Search your library..."
+      title="Project detail"
+      searchPlaceholder="Search your projects"
     >
       <PageContainer>
-        <OrganisationLibraryView
-          jobId={activeJobId}
-          onProjectJobIdChange={setActiveJobId}
-        />
+        <ProjectDetailPageContent projectId={projectId} />
       </PageContainer>
     </DashboardLayout>
   );

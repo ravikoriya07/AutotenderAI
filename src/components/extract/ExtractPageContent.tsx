@@ -2,12 +2,13 @@
 
 import { useCallback, useEffect, useRef, useState, type ChangeEvent } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
 import { PageContainer } from "@/components/layout/PageContainer";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Tabs } from "@/components/ui/Tabs";
-import { Upload, Trash2, Check, Library } from "lucide-react";
+import { ChevronLeft, Upload, Trash2, Check, Library } from "lucide-react";
 import axios from "axios";
 import { toast } from "react-toastify";
 import { extractZip } from "@/services/projectService";
@@ -37,6 +38,7 @@ const summaryOptions = [
 ];
 
 export function ExtractPageContent({ jobId }: { jobId: string }) {
+  const router = useRouter();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
@@ -143,32 +145,24 @@ export function ExtractPageContent({ jobId }: { jobId: string }) {
   }
 
   return (
-    <DashboardLayout title="Extract">
+    <DashboardLayout
+      titleLeading={
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="h-9 gap-1 px-2 text-muted-foreground hover:text-foreground"
+          onClick={() => router.push("/projects")}
+          aria-label="Back to projects"
+        >
+          <ChevronLeft className="h-4 w-4 shrink-0" />
+          Back
+        </Button>
+      }
+      title="Extract"
+    >
       <PageContainer>
-        <div className="mb-4 flex min-w-0 flex-wrap items-center justify-between gap-3 text-sm">
-          <div className="flex min-w-0 flex-wrap items-center gap-2">
-            <Link
-              href="/projects"
-              className="shrink-0 text-muted-foreground hover:text-foreground hover:underline"
-            >
-              Projects
-            </Link>
-            <span className="shrink-0 text-muted-foreground">{">"}</span>
-            <span className="min-w-0 font-medium text-foreground">Extract</span>
-          </div>
-          {jobId ? (
-            <Link
-              href={`/libraries?job_id=${encodeURIComponent(activeJobId)}`}
-              className={cn(
-                "inline-flex h-8 shrink-0 cursor-pointer items-center justify-center rounded-md border border-input bg-background px-3 text-sm font-medium transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              )}
-            >
-              <Library className="mr-2 h-4 w-4" />
-              Library
-            </Link>
-          ) : null}
-        </div>
-
+        
         <div className="grid gap-6 lg:grid-cols-2">
           <Card className="p-6">
             <Tabs

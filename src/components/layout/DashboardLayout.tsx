@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils";
 
 interface DashboardLayoutProps {
   children: React.ReactNode;
+  titleLeading?: React.ReactNode;
   title?: string;
   subtitle?: string;
   searchPlaceholder?: string;
@@ -14,6 +15,7 @@ interface DashboardLayoutProps {
 
 export function DashboardLayout({
   children,
+  titleLeading,
   title,
   subtitle,
   searchPlaceholder,
@@ -30,6 +32,7 @@ export function DashboardLayout({
         )}
       >
         <Header
+          titleLeading={titleLeading}
           title={title}
           subtitle={subtitle}
           searchPlaceholder={searchPlaceholder}

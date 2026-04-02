@@ -1,11 +1,12 @@
 "use client";
 
 import { Suspense } from "react";
-import { useSearchParams } from "next/navigation";
-import { Loader2 } from "lucide-react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { ChevronLeft, Loader2 } from "lucide-react";
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
 import { PageContainer } from "@/components/layout/PageContainer";
 import { OrganisationLibraryView } from "@/components/library/OrganisationLibraryView";
+import { Button } from "@/components/ui/Button";
 
 function LibrariesContent() {
   const searchParams = useSearchParams();
@@ -40,8 +41,23 @@ function ContentFallback() {
 }
 
 export default function LibrariesPage() {
+  const router = useRouter();
+
   return (
     <DashboardLayout
+      titleLeading={
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="h-9 gap-1 px-2 text-muted-foreground hover:text-foreground"
+          onClick={() => router.push("/projects")}
+          aria-label="Back to projects"
+        >
+          <ChevronLeft className="h-4 w-4 shrink-0" />
+          Back
+        </Button>
+      }
       title="Organisation Library"
       searchPlaceholder="Search your library..."
     >
