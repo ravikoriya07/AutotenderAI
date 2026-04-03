@@ -12,6 +12,24 @@ export function buildIdMap(nodes: FolderNode[]): Map<string, FolderNode> {
   return m;
 }
 
+/**
+ * Path string for POST /project-action `paths`.
+ * Prefer label chain from the tree root so paths always match the UI hierarchy
+ * (e.g. `extract_zip_output/3. Drawings`). `storagePath` alone can be missing or
+ * incomplete for folders and would drop or break bulk download.
+ */
+export function nodeToProjectActionPath(
+  node: FolderNode,
+  treeRoots: FolderNode[]
+): string | null {
+  const chain = findPathToNode(treeRoots, node.id);
+  if (chain && chain.length > 0) {
+    return chain.map((n) => n.label).join("/");
+  }
+  const sp = node.storagePath?.trim().replace(/^\/+/, "");
+  return sp || null;
+}
+
 /** Path from tree root to the node with `targetId` (inclusive). */
 export function findPathToNode(
   nodes: FolderNode[],

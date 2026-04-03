@@ -59,6 +59,7 @@ export function OrganisationLibraryView({
     () => showProjectDropdown
   );
   const [projectCatalogEmpty, setProjectCatalogEmpty] = useState(false);
+  const [treeRefreshKey, setTreeRefreshKey] = useState(0);
 
   useEffect(() => {
     if (!showProjectDropdown) {
@@ -111,7 +112,7 @@ export function OrganisationLibraryView({
       cancelled = true;
       ac.abort();
     };
-  }, [jobId]);
+  }, [jobId, treeRefreshKey]);
 
   const handleSelect = useCallback((id: string) => {
     setSelectedId(id);
@@ -223,6 +224,9 @@ export function OrganisationLibraryView({
               }
               onProjectCatalogState={
                 showProjectDropdown ? setProjectCatalogEmpty : undefined
+              }
+              onTreeRefreshRequest={() =>
+                setTreeRefreshKey((k) => k + 1)
               }
               newButton={
                 <Button size="sm" className="shrink-0">

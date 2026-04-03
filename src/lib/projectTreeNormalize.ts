@@ -82,9 +82,13 @@ export function normalizeTreeNode(
   const id = `${parentPath}/n-${index}-${encodeURIComponent(safeSegment(name))}`;
   const childrenRaw = o.children;
   const size = pickSize(o);
+  const storagePath =
+    typeof o.path === "string" && o.path.trim().length > 0
+      ? o.path.trim().replace(/^\/+/, "")
+      : undefined;
 
   if (isLeafFile(o, childrenRaw, name)) {
-    return { id, label: name, kind: "file", size };
+    return { id, label: name, kind: "file", size, storagePath };
   }
 
   const childList = Array.isArray(childrenRaw) ? childrenRaw : [];
@@ -99,6 +103,7 @@ export function normalizeTreeNode(
     label: name,
     kind: "folder",
     children: children.length > 0 ? children : undefined,
+    storagePath,
   };
 }
 

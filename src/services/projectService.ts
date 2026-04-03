@@ -145,3 +145,75 @@ export async function fetchProjectTree(
   );
   return data;
 }
+
+export type ProjectActionType = "download" | "delete" | "archive";
+
+export type ProjectActionResult =
+  | {
+      kind: "blob";
+      blob: Blob;
+      contentDisposition?: string;
+      contentType?: string;
+    }
+  | { kind: "json"; data: unknown };
+
+function getResponseHeader(
+  headers: { get?: (name: string) => unknown; [key: string]: unknown },
+  name: string
+): string | undefined {
+  if (typeof headers.get === "function") {
+    const v = headers.get(name);
+    if (typeof v === "string" && v) return v;
+    if (Array.isArray(v) && typeof v[0] === "string") return v[0];
+  }
+  const lower = name.toLowerCase();
+  for (const k of Object.keys(headers)) {
+    if (k.toLowerCase() === lower) {
+      const val = headers[k];
+      if (typeof val === "string") return val;
+      if (Array.isArray(val) && typeof val[0] === "string") return val[0];
+    }
+  }
+  return undefined;
+}
+
+/** POST /project-action/{job_id}?action_type=… — body `{ paths: [] }` (empty = whole project). */
+export async function postProjectAction(
+  jobId: string,
+  actionType: ProjectActionType,
+  paths: string[],
+  signal?: AbortSignal
+): Promise<ProjectActionResult> {
+  const trimmed = jobId.trim();
+  const isDownload = actionType === "download";
+  const config: ProjectRequestConfig = {
+    skipGlobalLoader: true,
+    params: { action_type: actionType },
+    ...(isDownload
+      ? {
+          responseType: "blob" as const,
+          // Avoid implying we only accept JSON; binary responses stay as blob.
+          headers: { Accept: "*/*" },
+        }
+      : {}),
+    ...(signal ? { signal } : {}),
+  };
+  const res = await apiClient.post<Blob | unknown>(
+    `/project-action/${encodeURIComponent(trimmed)}`,
+    { paths },
+    config
+  );
+  if (isDownload) {
+    const blob = res.data instanceof Blob ? res.data : new Blob();
+    const contentDisposition = getResponseHeader(
+      res.headers as { get?: (name: string) => unknown; [key: string]: unknown },
+      "content-disposition"
+    );
+    const contentType = getResponseHeader(
+      res.headers as { get?: (name: string) => unknown; [key: string]: unknown },
+      "content-type"
+    );
+    return { kind: "blob", blob, contentDisposition, contentType };
+  }
+  return { kind: "json", data: res.data };
+}

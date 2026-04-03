@@ -18,6 +18,8 @@ export interface FolderNode {
   kind?: "folder" | "file";
   /** Byte size for files when known. */
   size?: number;
+  /** Server path for project-action API (e.g. extract_zip_output/file.pdf). */
+  storagePath?: string;
 }
 
 interface FolderTreeProps {

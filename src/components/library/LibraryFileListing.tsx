@@ -24,7 +24,11 @@ import {
   Loader2,
   Trash2,
 } from "lucide-react";
-import { fetchProjectTree } from "@/services/projectService";
+import {
+  fetchProjectTree,
+  postProjectAction,
+  type ProjectActionType,
+} from "@/services/projectService";
 import {
   fetchCompletedSteps,
   flattenProjectsFromCompletedSteps,
@@ -42,7 +46,17 @@ import {
   getFileManagerIconKind,
 } from "@/components/library/FileManagerItemIcon";
 import type { FolderNode } from "@/components/ui/FolderTree";
-import { buildIdMap, findPathToNode } from "@/lib/libraryListingUtils";
+import {
+  basenameFromStoragePath,
+  blobLooksLikeZipFamily,
+  fallbackDownloadFilename,
+  parseContentDispositionFilename,
+} from "@/lib/downloadFilename";
+import {
+  buildIdMap,
+  findPathToNode,
+  nodeToProjectActionPath,
+} from "@/lib/libraryListingUtils";
 
 /** Parent-fetched tree so sidebar + listing share one GET /project-tree call. */
 export type LibrarySharedTreeState = {
@@ -68,6 +82,8 @@ export type LibraryFileListingProps = {
   onProjectJobIdChange?: (jobId: string) => void;
   onProjectPickerLoadingChange?: (loading: boolean) => void;
   onProjectCatalogState?: (empty: boolean) => void;
+  /** After a successful project-action, parent can refetch the tree (e.g. shared library view). */
+  onTreeRefreshRequest?: () => void;
 };
 
 export function LibraryFileListing({
@@ -81,6 +97,7 @@ export function LibraryFileListing({
   onProjectJobIdChange,
   onProjectPickerLoadingChange,
   onProjectCatalogState,
+  onTreeRefreshRequest,
 }: LibraryFileListingProps) {
   const controlled = onSelectedIdChange != null;
   const projectJobFromParent = Boolean(onProjectJobIdChange);
@@ -103,9 +120,82 @@ export function LibraryFileListing({
   );
   const [stepsLoading, setStepsLoading] = useState(true);
   const [selectedProjectJobId, setSelectedProjectJobId] = useState("");
+  const [actionBusy, setActionBusy] = useState(false);
+  const actionBusyRef = useRef(false);
   const selectAllRef = useRef<HTMLInputElement>(null);
 
   const nodeMap = useMemo(() => buildIdMap(treeNodes), [treeNodes]);
+
+  const effectiveJobId = jobId.trim();
+
+  const bulkPaths = useMemo(() => {
+    const paths: string[] = [];
+    for (const id of tableSelectedIds) {
+      const node = nodeMap.get(id);
+      if (!node) continue;
+      const p = nodeToProjectActionPath(node, treeNodes);
+      if (p) paths.push(p);
+    }
+    return paths;
+  }, [tableSelectedIds, nodeMap, treeNodes]);
+
+  const runProjectActionCall = useCallback(
+    async (actionType: ProjectActionType, paths: string[]) => {
+      if (!effectiveJobId || actionBusyRef.current) return;
+      actionBusyRef.current = true;
+      setActionBusy(true);
+      try {
+        const result = await postProjectAction(
+          effectiveJobId,
+          actionType,
+          paths
+        );
+        if (result.kind === "blob" && result.blob.size > 0) {
+          const ct = (result.contentType ?? "").toLowerCase();
+          const zipLike = await blobLooksLikeZipFamily(result.blob);
+          const probablyJsonError =
+            ct.includes("application/json") ||
+            (!zipLike &&
+              result.blob.size < 65536 &&
+              (await result.blob.slice(0, 1).text()) === "{");
+          if (probablyJsonError) {
+            try {
+              const text = await result.blob.text();
+              console.log("project-action download error body", text);
+            } catch (e) {
+              console.log("project-action download error (read failed)", e);
+            }
+          } else {
+            const fallbackZip = `library-${effectiveJobId}.zip`;
+            const filename =
+              parseContentDispositionFilename(result.contentDisposition) ??
+              (paths.length === 1
+                ? fallbackDownloadFilename(paths[0], result.contentType, zipLike) ||
+                  fallbackZip
+                : fallbackZip);
+            const url = URL.createObjectURL(result.blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            URL.revokeObjectURL(url);
+          }
+        }
+        if (actionType === "delete" || actionType === "archive") {
+          setTableSelectedIds(new Set());
+          onTreeRefreshRequest?.();
+        }
+      } catch (e) {
+        console.log("project-action failed", e);
+      } finally {
+        actionBusyRef.current = false;
+        setActionBusy(false);
+      }
+    },
+    [effectiveJobId, onTreeRefreshRequest]
+  );
 
   const projectOptions = useMemo(
     () => flattenProjectsFromCompletedSteps(completedSteps),
@@ -376,35 +466,51 @@ export function LibraryFileListing({
     </div>
   );
 
+  const bulkDisabled =
+    actionBusy ||
+    !effectiveJobId ||
+    tableSelectedIds.size === 0 ||
+    bulkPaths.length === 0;
+
   const bulkActionButtons = (
     <>
       <Button
         variant="outline"
         size="sm"
-        disabled={tableSelectedIds.size === 0}
-        onClick={() =>
-          console.log("bulk download", Array.from(tableSelectedIds))
-        }
+        disabled={bulkDisabled}
+        onClick={() => void runProjectActionCall("download", bulkPaths)}
       >
-        <Download className="mr-2 h-4 w-4" />
+        {actionBusy ? (
+          <Loader2 className="mr-2 h-4 w-4 shrink-0 animate-spin" aria-hidden />
+        ) : (
+          <Download className="mr-2 h-4 w-4 shrink-0" aria-hidden />
+        )}
         Bulk Download
       </Button>
       <Button
         variant="outline"
         size="sm"
-        disabled={tableSelectedIds.size === 0}
-        onClick={() => console.log("archive", Array.from(tableSelectedIds))}
+        disabled={bulkDisabled}
+        onClick={() => void runProjectActionCall("archive", bulkPaths)}
       >
-        <Archive className="mr-2 h-4 w-4" />
+        {actionBusy ? (
+          <Loader2 className="mr-2 h-4 w-4 shrink-0 animate-spin" aria-hidden />
+        ) : (
+          <Archive className="mr-2 h-4 w-4 shrink-0" aria-hidden />
+        )}
         Archive
       </Button>
       <Button
         variant="outline"
         size="sm"
-        disabled={tableSelectedIds.size === 0}
-        onClick={() => console.log("delete", Array.from(tableSelectedIds))}
+        disabled={bulkDisabled}
+        onClick={() => void runProjectActionCall("delete", bulkPaths)}
       >
-        <Trash2 className="mr-2 h-4 w-4" />
+        {actionBusy ? (
+          <Loader2 className="mr-2 h-4 w-4 shrink-0 animate-spin" aria-hidden />
+        ) : (
+          <Trash2 className="mr-2 h-4 w-4 shrink-0" aria-hidden />
+        )}
         Delete
       </Button>
     </>
@@ -671,24 +777,62 @@ export function LibraryFileListing({
                             <button
                               type="button"
                               data-row-action
-                              className="rounded p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+                              disabled={actionBusy || !effectiveJobId}
+                              className="rounded p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
                               aria-label="Download"
-                              onClick={() =>
-                                console.log("download", child.id)
-                              }
+                              onClick={() => {
+                                const p = nodeToProjectActionPath(
+                                  child,
+                                  treeNodes
+                                );
+                                if (!p) {
+                                  console.log(
+                                    "project-action: missing path for row",
+                                    child.id
+                                  );
+                                  return;
+                                }
+                                void runProjectActionCall("download", [p]);
+                              }}
                             >
-                              <Download className="h-4 w-4" />
+                              {actionBusy ? (
+                                <Loader2
+                                  className="h-4 w-4 animate-spin"
+                                  aria-hidden
+                                />
+                              ) : (
+                                <Download className="h-4 w-4" />
+                              )}
                             </button>
                             <button
                               type="button"
                               data-row-action
-                              className="rounded p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+                              disabled={actionBusy || !effectiveJobId}
+                              className="rounded p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
                               aria-label="Delete"
-                              onClick={() =>
-                                console.log("delete", child.id)
-                              }
+                              onClick={() => {
+                                const p = nodeToProjectActionPath(
+                                  child,
+                                  treeNodes
+                                );
+                                if (!p) {
+                                  console.log(
+                                    "project-action: missing path for row",
+                                    child.id
+                                  );
+                                  return;
+                                }
+                                void runProjectActionCall("delete", [p]);
+                              }}
                             >
-                              <Trash2 className="h-4 w-4" />
+                              {actionBusy ? (
+                                <Loader2
+                                  className="h-4 w-4 animate-spin"
+                                  aria-hidden
+                                />
+                              ) : (
+                                <Trash2 className="h-4 w-4" />
+                              )}
                             </button>
                           </div>
                         </TableCell>
