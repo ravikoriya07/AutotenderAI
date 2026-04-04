@@ -29,11 +29,7 @@ import {
   postProjectAction,
   type ProjectActionType,
 } from "@/services/projectService";
-import {
-  fetchCompletedSteps,
-  flattenProjectsFromCompletedSteps,
-  type CompletedStepStat,
-} from "@/services/statsService";
+import { useCompletedStepProjects } from "@/hooks/useCompletedStepProjects";
 import {
   folderNodesFromProjectTreeResponse,
   formatBytes,
@@ -115,11 +111,9 @@ export function LibraryFileListing({
   );
   const [loadError, setLoadError] = useState<string | null>(null);
   const [treeLoading, setTreeLoading] = useState(true);
-  const [completedSteps, setCompletedSteps] = useState<CompletedStepStat[]>(
-    []
-  );
-  const [stepsLoading, setStepsLoading] = useState(true);
   const [selectedProjectJobId, setSelectedProjectJobId] = useState("");
+  const { projects: projectOptions, loading: stepsLoading } =
+    useCompletedStepProjects({ enabled: showProjectDropdown });
   const [actionBusy, setActionBusy] = useState(false);
   const actionBusyRef = useRef(false);
   const selectAllRef = useRef<HTMLInputElement>(null);
@@ -197,11 +191,6 @@ export function LibraryFileListing({
     [effectiveJobId, onTreeRefreshRequest]
   );
 
-  const projectOptions = useMemo(
-    () => flattenProjectsFromCompletedSteps(completedSteps),
-    [completedSteps]
-  );
-
   const selectedNode = useMemo(() => {
     if (!selectedId || treeNodes.length === 0) return null;
     return nodeMap.get(selectedId) ?? null;
@@ -227,26 +216,8 @@ export function LibraryFileListing({
 
   useEffect(() => {
     if (!showProjectDropdown) {
-      setStepsLoading(false);
-      setCompletedSteps([]);
       setSelectedProjectJobId("");
-      return;
     }
-    const ac = new AbortController();
-    let cancelled = false;
-    setStepsLoading(true);
-    void (async () => {
-      try {
-        const rows = await fetchCompletedSteps({ signal: ac.signal });
-        if (!cancelled) setCompletedSteps(rows);
-      } finally {
-        if (!cancelled) setStepsLoading(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-      ac.abort();
-    };
   }, [showProjectDropdown]);
 
   useEffect(() => {

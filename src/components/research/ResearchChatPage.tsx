@@ -21,7 +21,10 @@ import {
   fetchResearchQueryResult,
   fetchResearchQueryStatus,
   submitResearchQuery,
+  type QueryResultResponse,
 } from "@/services/researchService";
+import type { CompletedStepProject } from "@/services/statsService";
+import { useCompletedStepProjects } from "@/hooks/useCompletedStepProjects";
 import { cn } from "@/lib/utils";
 
 type ChatRole = "user" | "assistant";
@@ -34,14 +37,23 @@ type ChatMessageItem = {
   error?: boolean;
 };
 
+type StoredChatTurn = {
+  query: string;
+  refined_answer: string;
+};
+
 type StoredChat = {
   query: string;
   refined_answer: string;
+  /** Present when multiple turns were loaded from `/results` `chat_sessions`. */
+  turns?: StoredChatTurn[];
 };
 
 type JobChatStore = {
   jobIds: string[];
   chats: Record<string, StoredChat>;
+  /** research job_id → Neo4j session_id from /query-neo4j */
+  sessions: Record<string, string>;
 };
 
 const STORAGE_KEY = "autotender_research_sessions_v1";
@@ -58,12 +70,14 @@ function generateClientId(prefix: string): string {
 }
 
 function readStoredChats(): JobChatStore {
-  if (typeof window === "undefined") return { jobIds: [], chats: {} };
+  if (typeof window === "undefined")
+    return { jobIds: [], chats: {}, sessions: {} };
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return { jobIds: [], chats: {} };
+    if (!raw) return { jobIds: [], chats: {}, sessions: {} };
     const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object") return { jobIds: [], chats: {} };
+    if (!parsed || typeof parsed !== "object")
+      return { jobIds: [], chats: {}, sessions: {} };
     const o = parsed as Record<string, unknown>;
     const jobIds = Array.isArray(o.jobIds)
       ? o.jobIds.filter((id): id is string => typeof id === "string")
@@ -77,19 +91,185 @@ function readStoredChats(): JobChatStore {
       const maybe = chatsRaw[id];
       if (!maybe || typeof maybe !== "object") continue;
       const c = maybe as Record<string, unknown>;
-      if (typeof c.query === "string" && typeof c.refined_answer === "string") {
+      let turns: StoredChatTurn[] | undefined;
+      const turnsRaw = c.turns;
+      if (Array.isArray(turnsRaw)) {
+        const parsed: StoredChatTurn[] = [];
+        for (const t of turnsRaw) {
+          if (!t || typeof t !== "object") continue;
+          const tr = t as Record<string, unknown>;
+          if (
+            typeof tr.query === "string" &&
+            typeof tr.refined_answer === "string"
+          ) {
+            parsed.push({ query: tr.query, refined_answer: tr.refined_answer });
+          }
+        }
+        if (parsed.length > 0) turns = parsed;
+      }
+      if (turns?.length) {
+        const last = turns[turns.length - 1];
+        chats[id] =
+          turns.length > 1
+            ? {
+                query: last.query,
+                refined_answer: last.refined_answer,
+                turns,
+              }
+            : { query: last.query, refined_answer: last.refined_answer };
+      } else if (
+        typeof c.query === "string" &&
+        typeof c.refined_answer === "string"
+      ) {
         chats[id] = { query: c.query, refined_answer: c.refined_answer };
       }
     }
-    return { jobIds, chats };
+    const sessions: Record<string, string> = {};
+    const sessRaw =
+      o.sessions && typeof o.sessions === "object"
+        ? (o.sessions as Record<string, unknown>)
+        : {};
+    for (const [k, v] of Object.entries(sessRaw)) {
+      if (typeof k === "string" && typeof v === "string" && v.trim()) {
+        sessions[k] = v;
+      }
+    }
+    return { jobIds, chats, sessions };
   } catch {
-    return { jobIds: [], chats: {} };
+    return { jobIds: [], chats: {}, sessions: {} };
   }
 }
 
 function writeStoredChats(store: JobChatStore): void {
   if (typeof window === "undefined") return;
   localStorage.setItem(STORAGE_KEY, JSON.stringify(store));
+}
+
+function parseChatSessionsFromOutputs(
+  outputs: unknown
+): Record<string, StoredChatTurn[]> | null {
+  if (!outputs || typeof outputs !== "object") return null;
+  const o = outputs as Record<string, unknown>;
+  const cs = o.chat_sessions;
+  if (!cs || typeof cs !== "object" || Array.isArray(cs)) return null;
+  const out: Record<string, StoredChatTurn[]> = {};
+  for (const [sid, arr] of Object.entries(cs as Record<string, unknown>)) {
+    if (!Array.isArray(arr)) continue;
+    const turns: StoredChatTurn[] = [];
+    for (const item of arr) {
+      if (!item || typeof item !== "object") continue;
+      const row = item as Record<string, unknown>;
+      const q = typeof row.query === "string" ? row.query.trim() : "";
+      const a =
+        typeof row.refined_answer === "string" ? row.refined_answer.trim() : "";
+      if (q || a) turns.push({ query: q, refined_answer: a });
+    }
+    if (turns.length) out[sid] = turns;
+  }
+  return Object.keys(out).length ? out : null;
+}
+
+function pickActiveChatSession(
+  sessions: Record<string, StoredChatTurn[]>,
+  preferredSessionId: string | undefined,
+  topQuery: string,
+  topAnswer: string
+): { sessionId: string; turns: StoredChatTurn[] } | null {
+  const keys = Object.keys(sessions).filter((k) => sessions[k].length > 0);
+  if (!keys.length) return null;
+
+  if (preferredSessionId && sessions[preferredSessionId]?.length) {
+    return {
+      sessionId: preferredSessionId,
+      turns: sessions[preferredSessionId],
+    };
+  }
+
+  if (keys.length === 1) {
+    const sessionId = keys[0];
+    return { sessionId, turns: sessions[sessionId] };
+  }
+
+  const tq = topQuery.trim();
+  const ta = topAnswer.trim();
+  if (tq || ta) {
+    for (const sid of keys) {
+      const turns = sessions[sid];
+      const last = turns[turns.length - 1];
+      if (last && last.query === tq && last.refined_answer === ta) {
+        return { sessionId: sid, turns };
+      }
+    }
+    if (ta) {
+      for (const sid of keys) {
+        const turns = sessions[sid];
+        const last = turns[turns.length - 1];
+        if (last && last.refined_answer === ta) {
+          return { sessionId: sid, turns };
+        }
+      }
+    }
+  }
+
+  let bestKey = keys[0];
+  let bestLen = sessions[bestKey].length;
+  for (let i = 1; i < keys.length; i++) {
+    const k = keys[i];
+    const len = sessions[k].length;
+    if (len > bestLen) {
+      bestLen = len;
+      bestKey = k;
+    }
+  }
+  return { sessionId: bestKey, turns: sessions[bestKey] };
+}
+
+/** If API top-level outputs are newer than the last row in chat_sessions, append one turn. */
+function mergeTopLevelIntoTurns(
+  turns: StoredChatTurn[],
+  topQuery: string,
+  topAnswer: string
+): StoredChatTurn[] {
+  const tq = topQuery.trim();
+  const ta = topAnswer.trim();
+  if (!ta && !tq) return turns;
+
+  if (turns.length === 0) {
+    return [{ query: tq, refined_answer: ta }];
+  }
+
+  const last = turns[turns.length - 1];
+  if (last.refined_answer === ta && (!tq || last.query === tq)) {
+    return turns;
+  }
+  if (last.refined_answer === ta) {
+    return turns;
+  }
+  return [...turns, { query: tq || last.query || "", refined_answer: ta }];
+}
+
+function mergedTurnsFromResult(
+  result: QueryResultResponse,
+  preferredSessionId: string | undefined
+): StoredChatTurn[] | null {
+  const sessionMap = parseChatSessionsFromOutputs(result.outputs);
+  if (!sessionMap || Object.keys(sessionMap).length === 0) return null;
+  const query = result.outputs?.query?.trim() ?? "";
+  const answer = result.outputs?.refined_answer?.trim() ?? "";
+  const picked = pickActiveChatSession(
+    sessionMap,
+    preferredSessionId,
+    query,
+    answer
+  );
+  if (!picked) return null;
+  return mergeTopLevelIntoTurns(picked.turns, query, answer);
+}
+
+function turnsIncludeUserQuery(turns: StoredChatTurn[], userQuery: string): boolean {
+  const t = userQuery.trim();
+  if (!t) return true;
+  return turns.some((x) => x.query.trim() === t);
 }
 
 function TypingDots() {
@@ -166,14 +346,72 @@ function ChatInput({
   onChange,
   onSend,
   disabled,
+  showProjectPicker,
+  catalogProjects,
+  catalogProjectsLoading,
+  selectedProjectJobId,
+  onProjectJobIdChange,
 }: {
   value: string;
   onChange: (v: string) => void;
   onSend: () => void;
   disabled: boolean;
+  showProjectPicker: boolean;
+  catalogProjects: CompletedStepProject[];
+  catalogProjectsLoading: boolean;
+  selectedProjectJobId: string;
+  onProjectJobIdChange: (jobId: string) => void;
 }) {
+  const selectValue =
+    selectedProjectJobId &&
+    catalogProjects.some((p) => p.job_id === selectedProjectJobId)
+      ? selectedProjectJobId
+      : "";
+
+  const firstSendBlocked =
+    showProjectPicker &&
+    (!selectValue || catalogProjectsLoading || catalogProjects.length === 0);
+
   return (
     <div className="w-full rounded-[1.75rem] border border-border/80 bg-card p-4 shadow-md">
+      {showProjectPicker ? (
+        <div className="mb-3 flex flex-wrap items-center gap-2">
+          {catalogProjectsLoading ? (
+            <div
+              className="flex h-8 max-w-[11rem] items-center gap-2"
+              role="status"
+              aria-live="polite"
+              aria-busy="true"
+            >
+              <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-primary" />
+              <span className="text-xs text-muted-foreground">
+                Loading projects…
+              </span>
+            </div>
+          ) : (
+            <div className="flex max-w-[11rem] shrink-0 items-center gap-1.5 sm:max-w-[13rem]">
+              <select
+                aria-label="Select project"
+                value={selectValue}
+                onChange={(e) => onProjectJobIdChange(e.target.value)}
+                disabled={catalogProjects.length === 0}
+                className="h-8 min-w-0 flex-1 rounded-md border border-input bg-background px-2 py-1 text-xs text-foreground shadow-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                <option value="">
+                  {catalogProjects.length === 0
+                    ? "No projects available"
+                    : "Select project"}
+                </option>
+                {catalogProjects.map((p) => (
+                  <option key={p.job_id} value={p.job_id}>
+                    {p.project_name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+        </div>
+      ) : null}
       <textarea
         placeholder="Ask anything"
         value={value}
@@ -207,7 +445,7 @@ function ChatInput({
         <button
           type="button"
           onClick={onSend}
-          disabled={disabled || !value.trim()}
+          disabled={disabled || !value.trim() || firstSendBlocked}
           className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground hover:bg-primary hover:text-primary-foreground disabled:cursor-not-allowed disabled:opacity-60"
           aria-label="Send"
         >
@@ -254,18 +492,28 @@ function ChatSkeleton() {
 function ResearchSidebar({
   collapsed,
   onCollapsedChange,
-  jobIds,
-  activeJobId,
   onNewSession,
-  onSelectJob,
+  recentJobIds,
+  onSelectRecentJob,
+  researchJobId,
+  sessionIds,
+  selectedSessionId,
+  onSelectSession,
 }: {
   collapsed: boolean;
   onCollapsedChange: (v: boolean) => void;
-  jobIds: string[];
-  activeJobId: string | null;
   onNewSession: () => void;
-  onSelectJob: (jobId: string) => void;
+  recentJobIds: string[];
+  onSelectRecentJob: (jobId: string) => void;
+  researchJobId: string | null;
+  sessionIds: string[];
+  selectedSessionId: string | null;
+  onSelectSession: (sessionId: string) => void;
 }) {
+  const hasRecent = recentJobIds.length > 0;
+  const showCurrentDetail = Boolean(researchJobId);
+  const showEmptyHint = !hasRecent && !showCurrentDetail;
+
   return (
     <aside
       className={cn(
@@ -296,34 +544,81 @@ function ResearchSidebar({
               New Session
             </Button>
           </div>
-          <div className="flex-1 overflow-y-auto px-3 py-4">
-            <p className="mb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
-              RECENT SESSIONS
-            </p>
-            <ul className="space-y-1">
-              {jobIds.map((jobId) => (
-                <li key={jobId}>
-                  <button
-                    type="button"
-                    onClick={() => onSelectJob(jobId)}
-                    className={cn(
-                      "w-full truncate rounded-md px-2 py-2 text-left text-sm",
-                      jobId === activeJobId
-                        ? "bg-primary/10 font-medium text-primary"
-                        : "text-foreground hover:bg-muted"
-                    )}
-                    title={jobId}
-                  >
-                    {jobId.slice(0, 8)}
-                  </button>
-                </li>
-              ))}
-              {jobIds.length === 0 ? (
-                <li className="px-2 py-2 text-sm text-muted-foreground">
-                  No sessions yet
-                </li>
-              ) : null}
-            </ul>
+          <div className="flex-1 overflow-y-auto px-3 pb-4">
+            {hasRecent ? (
+              <>
+                <p className="mb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                  Recent chats
+                </p>
+                <ul className="space-y-1">
+                  {recentJobIds.map((jid) => (
+                    <li key={jid}>
+                      <button
+                        type="button"
+                        onClick={() => onSelectRecentJob(jid)}
+                        className={cn(
+                          "w-full truncate rounded-md px-2 py-2 text-left font-mono text-xs",
+                          jid === researchJobId
+                            ? "bg-primary/10 font-medium text-primary"
+                            : "text-foreground hover:bg-muted"
+                        )}
+                        title={jid}
+                      >
+                        {jid.slice(0, 8)}…
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </>
+            ) : null}
+            {showCurrentDetail ? (
+              <>
+                {hasRecent ? (
+                  <hr className="my-4 border-border" aria-hidden />
+                ) : null}
+                <p className="mb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                  Job id
+                </p>
+                <p
+                  className="mb-4 truncate rounded-md border border-border bg-card px-2 py-2 font-mono text-xs text-foreground"
+                  title={researchJobId ?? undefined}
+                >
+                  {researchJobId}
+                </p>
+                <p className="mb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                  Sessions
+                </p>
+                <ul className="space-y-1">
+                  {sessionIds.map((sid) => (
+                    <li key={sid}>
+                      <button
+                        type="button"
+                        onClick={() => onSelectSession(sid)}
+                        className={cn(
+                          "w-full truncate rounded-md px-2 py-2 text-left font-mono text-xs",
+                          sid === selectedSessionId
+                            ? "bg-primary/10 font-medium text-primary"
+                            : "text-foreground hover:bg-muted"
+                        )}
+                        title={sid}
+                      >
+                        {sid.slice(0, 8)}…
+                      </button>
+                    </li>
+                  ))}
+                  {sessionIds.length === 0 ? (
+                    <li className="px-2 py-2 text-sm text-muted-foreground">
+                      Open results to load sessions
+                    </li>
+                  ) : null}
+                </ul>
+              </>
+            ) : null}
+            {showEmptyHint ? (
+              <p className="px-1 text-sm text-muted-foreground">
+                No chats yet. Submit a question to start.
+              </p>
+            ) : null}
           </div>
         </>
       )}
@@ -334,17 +629,23 @@ function ResearchSidebar({
 function MobileSessionsDrawer({
   open,
   onOpenChange,
-  jobIds,
-  activeJobId,
   onNewSession,
-  onSelectJob,
+  recentJobIds,
+  onSelectRecentJob,
+  researchJobId,
+  sessionIds,
+  selectedSessionId,
+  onSelectSession,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  jobIds: string[];
-  activeJobId: string | null;
   onNewSession: () => void;
-  onSelectJob: (jobId: string) => void;
+  recentJobIds: string[];
+  onSelectRecentJob: (jobId: string) => void;
+  researchJobId: string | null;
+  sessionIds: string[];
+  selectedSessionId: string | null;
+  onSelectSession: (sessionId: string) => void;
 }) {
   return (
     <>
@@ -364,12 +665,12 @@ function MobileSessionsDrawer({
         aria-hidden={!open}
       >
         <div className="flex h-14 shrink-0 items-center justify-between border-b border-border px-3">
-          <span className="text-sm font-medium text-foreground">Sessions</span>
+          <span className="text-sm font-medium text-foreground">Research</span>
           <button
             type="button"
             onClick={() => onOpenChange(false)}
             className="rounded p-2 text-muted-foreground hover:bg-muted hover:text-foreground"
-            aria-label="Close sessions"
+            aria-label="Close"
           >
             <X className="h-5 w-5" />
           </button>
@@ -388,37 +689,87 @@ function MobileSessionsDrawer({
             New Session
           </Button>
         </div>
-        <div className="flex-1 overflow-y-auto px-3 py-4">
-          <p className="mb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
-            RECENT SESSIONS
-          </p>
-          <ul className="space-y-1">
-            {jobIds.map((jobId) => (
-              <li key={jobId}>
-                <button
-                  type="button"
-                  onClick={() => {
-                    onSelectJob(jobId);
-                    onOpenChange(false);
-                  }}
-                  className={cn(
-                    "w-full truncate rounded-md px-2 py-2 text-left text-sm",
-                    jobId === activeJobId
-                      ? "bg-primary/10 font-medium text-primary"
-                      : "text-foreground hover:bg-muted"
-                  )}
-                  title={jobId}
-                >
-                  {jobId.slice(0, 8)}
-                </button>
-              </li>
-            ))}
-            {jobIds.length === 0 ? (
-              <li className="px-2 py-2 text-sm text-muted-foreground">
-                No sessions yet
-              </li>
-            ) : null}
-          </ul>
+        <div className="flex-1 overflow-y-auto px-3 pb-4">
+          {recentJobIds.length > 0 ? (
+            <>
+              <p className="mb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                Recent chats
+              </p>
+              <ul className="space-y-1">
+                {recentJobIds.map((jid) => (
+                  <li key={jid}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onSelectRecentJob(jid);
+                        onOpenChange(false);
+                      }}
+                      className={cn(
+                        "w-full truncate rounded-md px-2 py-2 text-left font-mono text-xs",
+                        jid === researchJobId
+                          ? "bg-primary/10 font-medium text-primary"
+                          : "text-foreground hover:bg-muted"
+                      )}
+                      title={jid}
+                    >
+                      {jid.slice(0, 8)}…
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </>
+          ) : null}
+          {researchJobId ? (
+            <>
+              {recentJobIds.length > 0 ? (
+                <hr className="my-4 border-border" aria-hidden />
+              ) : null}
+              <p className="mb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                Job id
+              </p>
+              <p
+                className="mb-4 break-all rounded-md border border-border bg-card px-2 py-2 font-mono text-[10px] leading-snug text-foreground"
+                title={researchJobId}
+              >
+                {researchJobId}
+              </p>
+              <p className="mb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                Sessions
+              </p>
+              <ul className="space-y-1">
+                {sessionIds.map((sid) => (
+                  <li key={sid}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onSelectSession(sid);
+                        onOpenChange(false);
+                      }}
+                      className={cn(
+                        "w-full truncate rounded-md px-2 py-2 text-left font-mono text-xs",
+                        sid === selectedSessionId
+                          ? "bg-primary/10 font-medium text-primary"
+                          : "text-foreground hover:bg-muted"
+                      )}
+                      title={sid}
+                    >
+                      {sid.slice(0, 8)}…
+                    </button>
+                  </li>
+                ))}
+                {sessionIds.length === 0 ? (
+                  <li className="px-2 py-2 text-sm text-muted-foreground">
+                    Open results to load sessions
+                  </li>
+                ) : null}
+              </ul>
+            </>
+          ) : null}
+          {recentJobIds.length === 0 && !researchJobId ? (
+            <p className="mt-2 text-sm text-muted-foreground">
+              No chats yet. Submit a question to start.
+            </p>
+          ) : null}
         </div>
       </aside>
     </>
@@ -429,10 +780,23 @@ export function ResearchChatPage() {
   const router = useRouter();
   const params = useParams<{ sessionId?: string }>();
 
+  const { projects: catalogProjects, loading: catalogProjectsLoading } =
+    useCompletedStepProjects();
+  const [selectedProjectJobId, setSelectedProjectJobId] = useState("");
+
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [mobileSessionsOpen, setMobileSessionsOpen] = useState(false);
   const [jobIds, setJobIds] = useState<string[]>([]);
+  const [chatSessionsMapByJob, setChatSessionsMapByJob] = useState<
+    Record<string, Record<string, StoredChatTurn[]>>
+  >({});
+  const [selectedSessionIdByJob, setSelectedSessionIdByJob] = useState<
+    Record<string, string>
+  >({});
   const [chatByJobId, setChatByJobId] = useState<Record<string, StoredChat>>({});
+  const [researchSessions, setResearchSessions] = useState<Record<string, string>>(
+    {}
+  );
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
   const [hydrated, setHydrated] = useState(false);
   const [inputValue, setInputValue] = useState("");
@@ -440,11 +804,17 @@ export function ResearchChatPage() {
   const [isTyping, setIsTyping] = useState(false);
   const [isChatLoading, setIsChatLoading] = useState(false);
   const [pendingJobId, setPendingJobId] = useState<string | null>(null);
+  const pendingJobIdRef = useRef<string | null>(null);
   const [pendingPrompt, setPendingPrompt] = useState("");
   const [activeAssistantId, setActiveAssistantId] = useState<string | null>(null);
   const pollingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const chatBottomRef = useRef<HTMLDivElement>(null);
   const chatCacheRef = useRef<Record<string, StoredChat>>({});
+  const researchSessionsRef = useRef<Record<string, string>>({});
+  const selectedSessionIdByJobRef = useRef<Record<string, string>>({});
+  const chatSessionsMapByJobRef = useRef<
+    Record<string, Record<string, StoredChatTurn[]>>
+  >({});
 
   const routeJobId = typeof params?.sessionId === "string" ? params.sessionId : null;
 
@@ -472,8 +842,10 @@ export function ResearchChatPage() {
     setPendingPrompt("");
     setActiveAssistantId(null);
     setInputValue("");
+    setSelectedProjectJobId("");
     setActiveJobId(null);
     setMessages([]);
+    setMobileSessionsOpen(false);
     router.push("/research");
   }, [router, stopPolling]);
 
@@ -487,6 +859,141 @@ export function ResearchChatPage() {
       [jobId]: { query, refined_answer: answer },
     }));
   }, []);
+
+  const hydrateChatFromTurns = useCallback(
+    (jobId: string, turns: StoredChatTurn[]) => {
+      const msgs: ChatMessageItem[] = [];
+      turns.forEach((t, i) => {
+        msgs.push({
+          id: `${jobId}-user-${i}`,
+          role: "user",
+          message: t.query,
+        });
+        msgs.push({
+          id: `${jobId}-asst-${i}`,
+          role: "assistant",
+          message: t.refined_answer,
+        });
+      });
+      setMessages(msgs);
+      const last = turns[turns.length - 1];
+      setChatByJobId((prev) => ({
+        ...prev,
+        [jobId]:
+          turns.length > 1
+            ? { query: last.query, refined_answer: last.refined_answer, turns }
+            : { query: last.query, refined_answer: last.refined_answer },
+      }));
+    },
+    []
+  );
+
+  const digestResearchResults = useCallback(
+    (
+      jobId: string,
+      result: QueryResultResponse,
+      pollAssistantId: string | null,
+      options?: { updateMessages?: boolean; fallbackUserQuery?: string }
+    ) => {
+      const updateMessages = options?.updateMessages !== false;
+      const fallbackUserQuery = options?.fallbackUserQuery?.trim() ?? "";
+      console.log("[research] digest /results", {
+        job_id: jobId,
+        result,
+        pollAssistantId,
+        updateMessages,
+      });
+      const query = result.outputs?.query?.trim() ?? "";
+      const answer = result.outputs?.refined_answer?.trim() ?? "";
+      const sessionMap = parseChatSessionsFromOutputs(result.outputs);
+      const hasSessions = Boolean(
+        sessionMap && Object.keys(sessionMap).length > 0
+      );
+
+      if (hasSessions && sessionMap) {
+        setChatSessionsMapByJob((prev) => ({ ...prev, [jobId]: sessionMap }));
+        if (!updateMessages) {
+          return;
+        }
+        const preferred =
+          researchSessionsRef.current[jobId] ||
+          selectedSessionIdByJobRef.current[jobId];
+        const picked = pickActiveChatSession(
+          sessionMap,
+          preferred,
+          query,
+          answer
+        );
+        if (picked) {
+          const turns = mergeTopLevelIntoTurns(picked.turns, query, answer);
+          console.log("[research] chat_sessions", {
+            job_id: jobId,
+            session_id: picked.sessionId,
+            turnsCount: turns.length,
+          });
+          setResearchSessions((prev) => {
+            const next = { ...prev, [jobId]: picked.sessionId };
+            researchSessionsRef.current = next;
+            return next;
+          });
+          setSelectedSessionIdByJob((prev) => ({
+            ...prev,
+            [jobId]: picked.sessionId,
+          }));
+          if (turns.length) {
+            hydrateChatFromTurns(jobId, turns);
+          } else if (answer) {
+            hydrateChatFromResult(jobId, query || "", answer);
+          }
+          return;
+        }
+      }
+
+      setChatSessionsMapByJob((prev) => {
+        const next = { ...prev };
+        delete next[jobId];
+        return next;
+      });
+
+      if (pollAssistantId) {
+        if (!answer) {
+          replaceAssistantMessage(pollAssistantId, {
+            typing: false,
+            error: true,
+            message: "Completed, but no response text was returned.",
+          });
+        } else {
+          replaceAssistantMessage(pollAssistantId, {
+            typing: false,
+            error: false,
+            message: answer,
+          });
+          const resolvedQuery = query || fallbackUserQuery;
+          if (resolvedQuery) {
+            setChatByJobId((prev) => ({
+              ...prev,
+              [jobId]: {
+                query: resolvedQuery,
+                refined_answer: answer,
+              },
+            }));
+          }
+        }
+        return;
+      }
+
+      if (updateMessages && answer) {
+        const fq =
+          query || chatCacheRef.current[jobId]?.query || "";
+        hydrateChatFromResult(jobId, fq, answer);
+      }
+    },
+    [
+      hydrateChatFromResult,
+      hydrateChatFromTurns,
+      replaceAssistantMessage,
+    ]
+  );
 
   const loadJobConversation = useCallback(
     async (jobId: string, navigate: boolean) => {
@@ -505,19 +1012,39 @@ export function ResearchChatPage() {
       const cached = chatCacheRef.current[jobId];
       if (cached) {
         setIsChatLoading(false);
-        hydrateChatFromResult(jobId, cached.query, cached.refined_answer);
+        if (cached.turns?.length) {
+          hydrateChatFromTurns(jobId, cached.turns);
+        } else {
+          hydrateChatFromResult(jobId, cached.query, cached.refined_answer);
+        }
+        void fetchResearchQueryResult(jobId)
+          .then((result) => {
+            console.log("[research] sidebar refresh /results (cached chat)", {
+              jobId,
+              result,
+            });
+            const map = parseChatSessionsFromOutputs(result.outputs);
+            const hasChatSessions =
+              map != null && Object.keys(map).length > 0;
+            digestResearchResults(jobId, result, null, {
+              updateMessages: hasChatSessions,
+            });
+          })
+          .catch(() => {});
         return;
       }
 
       setIsChatLoading(true);
       try {
         const result = await fetchResearchQueryResult(jobId);
+        console.log("[research] load /results response", { jobId, result });
         const detail =
-          typeof (result as { detail?: unknown }).detail === "string"
-            ? ((result as { detail?: string }).detail ?? "")
-            : "";
-        const query = result.outputs?.query?.trim() ?? "";
+          typeof result.detail === "string" ? result.detail : "";
         const answer = result.outputs?.refined_answer?.trim() ?? "";
+        const sessionMap = parseChatSessionsFromOutputs(result.outputs);
+        const hasSessions = Boolean(
+          sessionMap && Object.keys(sessionMap).length > 0
+        );
         if (detail.toLowerCase().includes("not completed")) {
           setMessages([
             {
@@ -528,7 +1055,7 @@ export function ResearchChatPage() {
           ]);
           return;
         }
-        if (!answer) {
+        if (!hasSessions && !answer) {
           setMessages([
             {
               id: `${jobId}-not-found`,
@@ -537,10 +1064,10 @@ export function ResearchChatPage() {
               error: true,
             },
           ]);
-        } else {
-          const fallbackQuery = chatCacheRef.current[jobId]?.query ?? "";
-          hydrateChatFromResult(jobId, query || fallbackQuery, answer);
+          return;
         }
+
+        digestResearchResults(jobId, result, null);
       } catch {
         setMessages([
           {
@@ -554,13 +1081,27 @@ export function ResearchChatPage() {
         setIsChatLoading(false);
       }
     },
-    [hydrateChatFromResult, router, stopPolling]
+    [digestResearchResults, hydrateChatFromResult, hydrateChatFromTurns, router, stopPolling]
   );
+
+  useEffect(() => {
+    researchSessionsRef.current = researchSessions;
+  }, [researchSessions]);
+
+  useEffect(() => {
+    selectedSessionIdByJobRef.current = selectedSessionIdByJob;
+  }, [selectedSessionIdByJob]);
+
+  useEffect(() => {
+    chatSessionsMapByJobRef.current = chatSessionsMapByJob;
+  }, [chatSessionsMapByJob]);
 
   useEffect(() => {
     const stored = readStoredChats();
     setJobIds(stored.jobIds);
     setChatByJobId(stored.chats);
+    setResearchSessions(stored.sessions);
+    researchSessionsRef.current = stored.sessions;
     chatCacheRef.current = stored.chats;
     setHydrated(true);
   }, []);
@@ -568,6 +1109,10 @@ export function ResearchChatPage() {
   useEffect(() => {
     chatCacheRef.current = chatByJobId;
   }, [chatByJobId]);
+
+  useEffect(() => {
+    pendingJobIdRef.current = pendingJobId;
+  }, [pendingJobId]);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -578,9 +1123,14 @@ export function ResearchChatPage() {
       setIsTyping(false);
       return;
     }
-    if (pendingJobId && routeJobId === pendingJobId) return;
+    if (
+      pendingJobIdRef.current &&
+      routeJobId === pendingJobIdRef.current
+    ) {
+      return;
+    }
     void loadJobConversation(routeJobId, false);
-  }, [hydrated, routeJobId, loadJobConversation, pendingJobId]);
+  }, [hydrated, routeJobId, loadJobConversation]);
 
   useEffect(() => {
     chatBottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -588,8 +1138,8 @@ export function ResearchChatPage() {
 
   useEffect(() => {
     if (!hydrated) return;
-    writeStoredChats({ jobIds, chats: chatByJobId });
-  }, [hydrated, jobIds, chatByJobId]);
+    writeStoredChats({ jobIds, chats: chatByJobId, sessions: researchSessions });
+  }, [hydrated, jobIds, chatByJobId, researchSessions]);
 
   useEffect(() => {
     return () => {
@@ -600,6 +1150,39 @@ export function ResearchChatPage() {
   const handleSend = useCallback(async () => {
     const prompt = inputValue.trim();
     if (!prompt || isTyping) return;
+
+    const hadUserMessage = messages.some((m) => m.role === "user");
+    let payloadJobId: string;
+    let sessionIdForPayload: string | undefined;
+
+    if (!hadUserMessage) {
+      if (!selectedProjectJobId.trim()) return;
+      payloadJobId = selectedProjectJobId;
+      sessionIdForPayload = undefined;
+    } else {
+      const researchJobId = routeJobId ?? activeJobId;
+      if (!researchJobId) {
+        console.log("[research] follow-up submit: missing research job id");
+        toast.error("Session error. Open a research chat or start a new session.");
+        return;
+      }
+      const storedSession = (
+        selectedSessionIdByJob[researchJobId] ||
+        researchSessions[researchJobId] ||
+        ""
+      ).trim();
+      if (!storedSession) {
+        console.log("[research] follow-up submit: missing session_id", {
+          researchJobId,
+          researchSessions,
+          selectedSessionIdByJob,
+        });
+        toast.error("Session missing. Start a new research session.");
+        return;
+      }
+      payloadJobId = researchJobId;
+      sessionIdForPayload = storedSession;
+    }
 
     const userId = generateClientId("user");
     const assistantId = generateClientId("assistant");
@@ -616,14 +1199,40 @@ export function ResearchChatPage() {
     setPendingPrompt(prompt);
 
     try {
+      console.log("[research] POST /query-neo4j", {
+        job_id: payloadJobId,
+        session_id: sessionIdForPayload ?? "(omit)",
+        query: prompt,
+      });
       const queued = await submitResearchQuery({
+        job_id: payloadJobId,
+        ...(sessionIdForPayload !== undefined
+          ? { session_id: sessionIdForPayload }
+          : {}),
         query: prompt,
         show_sources: true,
         show_combined: false,
         database: "neo4j",
       });
+      console.log("[research] /query-neo4j response", queued);
       if (!queued?.job_id) {
         throw new Error("Query request did not return a job id.");
+      }
+      if (queued.session_id?.trim()) {
+        const sid = queued.session_id.trim();
+        setResearchSessions((prev) => {
+          const next = { ...prev, [queued.job_id]: sid };
+          researchSessionsRef.current = next;
+          return next;
+        });
+        setSelectedSessionIdByJob((prev) => ({
+          ...prev,
+          [queued.job_id]: sid,
+        }));
+        selectedSessionIdByJobRef.current = {
+          ...selectedSessionIdByJobRef.current,
+          [queued.job_id]: sid,
+        };
       }
       setPendingJobId(queued.job_id);
       setActiveJobId(queued.job_id);
@@ -631,7 +1240,8 @@ export function ResearchChatPage() {
         prev.includes(queued.job_id) ? prev : [queued.job_id, ...prev]
       );
       router.push(`/research/${queued.job_id}`);
-    } catch {
+    } catch (err) {
+      console.log("[research] submitResearchQuery failed", err);
       replaceAssistantMessage(assistantId, {
         typing: false,
         error: true,
@@ -643,12 +1253,22 @@ export function ResearchChatPage() {
       setPendingPrompt("");
       toast.error("Failed to send query.");
     }
-  }, [inputValue, isTyping, replaceAssistantMessage, router]);
+  }, [
+    activeJobId,
+    inputValue,
+    isTyping,
+    messages,
+    replaceAssistantMessage,
+    researchSessions,
+    routeJobId,
+    router,
+    selectedProjectJobId,
+    selectedSessionIdByJob,
+  ]);
 
-  const handleSelectJob = useCallback(
+  const handleSelectRecentJob = useCallback(
     (jobId: string) => {
-      if (!jobId) return;
-      if (jobId === routeJobId) return;
+      if (!jobId || jobId === routeJobId) return;
       stopPolling();
       setIsTyping(false);
       setPendingJobId(null);
@@ -661,6 +1281,34 @@ export function ResearchChatPage() {
     [routeJobId, router, stopPolling]
   );
 
+  const handleSelectSession = useCallback(
+    (sessionId: string) => {
+      if (!routeJobId) return;
+      const map = chatSessionsMapByJobRef.current[routeJobId];
+      const turns = map?.[sessionId];
+      if (!turns?.length) return;
+      console.log("[research] sidebar select session", {
+        job_id: routeJobId,
+        session_id: sessionId,
+      });
+      selectedSessionIdByJobRef.current = {
+        ...selectedSessionIdByJobRef.current,
+        [routeJobId]: sessionId,
+      };
+      setSelectedSessionIdByJob((prev) => ({
+        ...prev,
+        [routeJobId]: sessionId,
+      }));
+      setResearchSessions((prev) => {
+        const next = { ...prev, [routeJobId]: sessionId };
+        researchSessionsRef.current = next;
+        return next;
+      });
+      hydrateChatFromTurns(routeJobId, turns);
+    },
+    [routeJobId, hydrateChatFromTurns]
+  );
+
   useEffect(() => {
     if (!pendingJobId || !activeAssistantId) return;
 
@@ -670,36 +1318,38 @@ export function ResearchChatPage() {
       try {
         const status = await fetchResearchQueryStatus(pendingJobId);
         if (cancelled) return;
+        console.log("[research] /status response", {
+          job_id: pendingJobId,
+          status,
+        });
 
         const normalized = status.status?.toLowerCase?.() ?? "";
         if (normalized === "success" || normalized === "completed") {
-          const result = await fetchResearchQueryResult(pendingJobId);
+          let result = await fetchResearchQueryResult(pendingJobId);
           if (cancelled) return;
-          const query = result.outputs?.query?.trim() ?? "";
-          const answer = result.outputs?.refined_answer?.trim() ?? "";
-          if (!answer) {
-            replaceAssistantMessage(activeAssistantId, {
-              typing: false,
-              error: true,
-              message: "Completed, but no response text was returned.",
-            });
-          } else {
-            replaceAssistantMessage(activeAssistantId, {
-              typing: false,
-              error: false,
-              message: answer,
-            });
-            const resolvedQuery = query || pendingPrompt.trim();
-            if (resolvedQuery) {
-              setChatByJobId((prev) => ({
-                ...prev,
-                [pendingJobId]: {
-                  query: resolvedQuery,
-                  refined_answer: answer,
-                },
-              }));
+          const pendingQ = pendingPrompt.trim();
+          if (pendingQ) {
+            const merged = mergedTurnsFromResult(
+              result,
+              researchSessionsRef.current[pendingJobId]
+            );
+            if (
+              merged &&
+              !turnsIncludeUserQuery(merged, pendingQ)
+            ) {
+              await new Promise((r) => setTimeout(r, 750));
+              if (cancelled) return;
+              result = await fetchResearchQueryResult(pendingJobId);
+              if (cancelled) return;
             }
           }
+          console.log("[research] poll /status success → /results", {
+            job_id: pendingJobId,
+            result,
+          });
+          digestResearchResults(pendingJobId, result, activeAssistantId, {
+            fallbackUserQuery: pendingPrompt,
+          });
           setIsTyping(false);
           setPendingJobId(null);
           setPendingPrompt("");
@@ -743,9 +1393,28 @@ export function ResearchChatPage() {
       cancelled = true;
       stopPolling();
     };
-  }, [pendingJobId, activeAssistantId, replaceAssistantMessage, stopPolling, pendingPrompt]);
+  }, [
+    pendingJobId,
+    activeAssistantId,
+    replaceAssistantMessage,
+    stopPolling,
+    pendingPrompt,
+    hydrateChatFromTurns,
+    digestResearchResults,
+  ]);
 
   const hasMessages = messages.length > 0;
+
+  const sidebarSessionIds = routeJobId
+    ? Object.keys(chatSessionsMapByJob[routeJobId] ?? {})
+    : [];
+  const sidebarSelectedSessionId: string | null = routeJobId
+    ? selectedSessionIdByJob[routeJobId] ??
+      researchSessions[routeJobId] ??
+      null
+    : null;
+
+  const showProjectPicker = !messages.some((m) => m.role === "user");
 
   const isRecordNotFoundView =
     hydrated &&
@@ -775,18 +1444,24 @@ export function ResearchChatPage() {
         <MobileSessionsDrawer
           open={mobileSessionsOpen}
           onOpenChange={setMobileSessionsOpen}
-          jobIds={jobIds}
-          activeJobId={activeJobId}
           onNewSession={createAndGoToNewSession}
-          onSelectJob={handleSelectJob}
+          recentJobIds={jobIds}
+          onSelectRecentJob={handleSelectRecentJob}
+          researchJobId={routeJobId}
+          sessionIds={sidebarSessionIds}
+          selectedSessionId={sidebarSelectedSessionId}
+          onSelectSession={handleSelectSession}
         />
         <ResearchSidebar
           collapsed={sidebarCollapsed}
           onCollapsedChange={setSidebarCollapsed}
-          jobIds={jobIds}
-          activeJobId={activeJobId}
           onNewSession={createAndGoToNewSession}
-          onSelectJob={handleSelectJob}
+          recentJobIds={jobIds}
+          onSelectRecentJob={handleSelectRecentJob}
+          researchJobId={routeJobId}
+          sessionIds={sidebarSessionIds}
+          selectedSessionId={sidebarSelectedSessionId}
+          onSelectSession={handleSelectSession}
         />
         <PageContainer className="flex min-h-0 flex-1 flex-col items-center justify-start overflow-x-hidden overflow-y-hidden bg-[#f8fafc] py-4 md:py-6 lg:min-h-[calc(100dvh-4rem)]">
           <div className="mx-auto flex w-full min-w-0 max-w-5xl flex-1 flex-col px-3 md:px-4">
@@ -796,7 +1471,7 @@ export function ResearchChatPage() {
               className="mb-3 inline-flex shrink-0 items-center justify-center gap-2 self-start rounded-lg border border-border bg-card px-3 py-2.5 text-sm font-medium text-foreground shadow-sm hover:bg-muted lg:hidden"
             >
               <PanelLeft className="h-4 w-4 shrink-0" />
-              Sessions
+              Menu
             </button>
 
             {useCenteredInputLayout ? (
@@ -823,6 +1498,11 @@ export function ResearchChatPage() {
                     onChange={setInputValue}
                     onSend={() => void handleSend()}
                     disabled={isTyping}
+                    showProjectPicker={showProjectPicker}
+                    catalogProjects={catalogProjects}
+                    catalogProjectsLoading={catalogProjectsLoading}
+                    selectedProjectJobId={selectedProjectJobId}
+                    onProjectJobIdChange={setSelectedProjectJobId}
                   />
                 </div>
               </div>
@@ -869,6 +1549,11 @@ export function ResearchChatPage() {
                         onChange={setInputValue}
                         onSend={() => void handleSend()}
                         disabled={isTyping}
+                        showProjectPicker={showProjectPicker}
+                        catalogProjects={catalogProjects}
+                        catalogProjectsLoading={catalogProjectsLoading}
+                        selectedProjectJobId={selectedProjectJobId}
+                        onProjectJobIdChange={setSelectedProjectJobId}
                       />
                     </div>
                   </div>
