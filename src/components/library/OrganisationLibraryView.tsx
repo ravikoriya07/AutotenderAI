@@ -36,37 +36,16 @@ function treeLoadErrorMessage(e: unknown): string {
 
 export type OrganisationLibraryViewProps = {
   jobId: string;
-  /** Set false on `/libraries?job_id=` — project dropdown is org-library only. */
-  showProjectDropdown?: boolean;
-  /** `/library` passes this so the project dropdown drives `jobId` and tree fetch. */
-  onProjectJobIdChange?: (jobId: string) => void;
 };
 
 /** Shared tree + listing layout used by `/library` and `/libraries?job_id=`. */
-export function OrganisationLibraryView({
-  jobId,
-  showProjectDropdown = true,
-  onProjectJobIdChange,
-}: OrganisationLibraryViewProps) {
+export function OrganisationLibraryView({ jobId }: OrganisationLibraryViewProps) {
   const [treeNodes, setTreeNodes] = useState<FolderNode[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [treeLoading, setTreeLoading] = useState(() =>
-    Boolean(jobId.trim()) || !showProjectDropdown
-  );
+  const [treeLoading, setTreeLoading] = useState(() => Boolean(jobId.trim()));
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
-  const [projectPickerLoading, setProjectPickerLoading] = useState(
-    () => showProjectDropdown
-  );
-  const [projectCatalogEmpty, setProjectCatalogEmpty] = useState(false);
   const [treeRefreshKey, setTreeRefreshKey] = useState(0);
-
-  useEffect(() => {
-    if (!showProjectDropdown) {
-      setProjectPickerLoading(false);
-      setProjectCatalogEmpty(false);
-    }
-  }, [showProjectDropdown]);
 
   useEffect(() => {
     const trimmed = jobId.trim();
@@ -137,27 +116,9 @@ export function OrganisationLibraryView({
           >
             <Loader2 className="h-8 w-8 animate-spin text-primary" />
           </div>
-        ) : showProjectDropdown && projectPickerLoading ? (
-          <div
-            className="flex min-h-[120px] items-center justify-center py-8"
-            role="status"
-            aria-live="polite"
-            aria-busy="true"
-          >
-            <Loader2 className="h-8 w-8 animate-spin text-primary" />
-          </div>
-        ) : showProjectDropdown &&
-          projectCatalogEmpty &&
-          !jobId.trim() ? (
+        ) : !jobId.trim() ? (
           <p className="text-sm text-muted-foreground">
-            No projects available.
-          </p>
-        ) : showProjectDropdown &&
-          !jobId.trim() &&
-          !projectCatalogEmpty &&
-          !projectPickerLoading ? (
-          <p className="text-sm text-muted-foreground">
-            Select a project above to view its library.
+            Select a project in the header to view its library.
           </p>
         ) : loadError ? (
           <p className="text-sm text-muted-foreground">{loadError}</p>
@@ -217,14 +178,6 @@ export function OrganisationLibraryView({
               jobId={jobId.trim()}
               selectedId={selectedId}
               onSelectedIdChange={handleListingSelectedIdChange}
-              showProjectDropdown={showProjectDropdown}
-              onProjectJobIdChange={onProjectJobIdChange}
-              onProjectPickerLoadingChange={
-                showProjectDropdown ? setProjectPickerLoading : undefined
-              }
-              onProjectCatalogState={
-                showProjectDropdown ? setProjectCatalogEmpty : undefined
-              }
               onTreeRefreshRequest={() =>
                 setTreeRefreshKey((k) => k + 1)
               }

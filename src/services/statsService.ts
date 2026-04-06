@@ -23,7 +23,13 @@ type StepsCacheEntry = {
   expiresAt: number;
 };
 
-let completedStepsCache: StepsCacheEntry | null = null;
+/** Separate TTL cache per query variant (default vs `step_name`). */
+const completedStepsCacheByKey = new Map<string, StepsCacheEntry>();
+
+function completedStepsCacheKey(stepName?: string): string {
+  const s = stepName?.trim();
+  return s ? `step:${s}` : "default";
+}
 
 function isStepRecord(x: unknown): x is Record<string, unknown> {
   return Boolean(x) && typeof x === "object" && !Array.isArray(x);
@@ -114,35 +120,43 @@ export function normalizeCompletedStepsPayload(data: unknown): CompletedStepStat
 export type FetchCompletedStepsOptions = {
   force?: boolean;
   signal?: AbortSignal;
+  /** When set, requests `GET /stats/completed-steps?step_name=…`. */
+  stepName?: string;
 };
 
 /**
- * GET /stats/completed-steps — cached in-memory (TTL) across mounts.
+ * GET /stats/completed-steps — cached in-memory (TTL) per query variant.
  * On failure: logs to console and returns [] (cache not updated).
  */
 export async function fetchCompletedSteps(
   options?: FetchCompletedStepsOptions
 ): Promise<CompletedStepStat[]> {
   const force = Boolean(options?.force);
+  const stepName = options?.stepName?.trim();
+  const cacheKey = completedStepsCacheKey(stepName);
   const now = Date.now();
-  if (!force && completedStepsCache && now < completedStepsCache.expiresAt) {
-    return completedStepsCache.data;
+  if (!force) {
+    const hit = completedStepsCacheByKey.get(cacheKey);
+    if (hit && now < hit.expiresAt) {
+      return hit.data;
+    }
   }
 
   try {
     const config: StatsRequestConfig = {
       skipGlobalLoader: true,
       ...(options?.signal ? { signal: options.signal } : {}),
+      ...(stepName ? { params: { step_name: stepName } } : {}),
     };
     const { data } = await apiClient.get<unknown>(
       "/stats/completed-steps",
       config
     );
     const normalized = normalizeCompletedStepsPayload(data);
-    completedStepsCache = {
+    completedStepsCacheByKey.set(cacheKey, {
       data: normalized,
       expiresAt: now + CACHE_TTL_MS,
-    };
+    });
     return normalized;
   } catch (e) {
     console.log("fetchCompletedSteps failed", e);
@@ -151,5 +165,5 @@ export async function fetchCompletedSteps(
 }
 
 export function invalidateCompletedStepsCache(): void {
-  completedStepsCache = null;
+  completedStepsCacheByKey.clear();
 }

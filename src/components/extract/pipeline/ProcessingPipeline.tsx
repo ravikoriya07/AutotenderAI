@@ -328,7 +328,7 @@ export function ProcessingPipeline({
   const showAutoHint = autoRunToken > 0;
   const uploadBlockedHint =
     isProcessing && showAutoHint ? (
-      <p className="rounded-md border border-primary/20 bg-primary/5 px-3 py-2 text-xs text-muted-foreground">
+      <p className="rounded-xl border border-primary/25 bg-primary/5 px-3 py-2.5 text-xs leading-relaxed text-muted-foreground sm:px-4">
         Processing started automatically after upload. Upload controls are
         disabled until the pipeline finishes.
       </p>
@@ -354,23 +354,27 @@ export function ProcessingPipeline({
 
   return (
     <div ref={rootRef} className="min-w-0 space-y-4">
-      <div>
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <h3 className="text-sm font-medium">Processing pipeline</h3>
-            <p className="text-xs text-muted-foreground">
-              Step 1 is Extract zip on the left. After a successful upload, steps
-              2–13 run once automatically in this session. If you leave and
-              return, use Resume to continue from the server state.
+      <div className="space-y-3">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
+          <div className="min-w-0 flex-1 space-y-1.5">
+            <h3 className="text-base font-semibold tracking-tight text-foreground">
+              Processing pipeline
+            </h3>
+            <p className="text-xs leading-relaxed text-muted-foreground sm:text-sm">
+              Step 1 is Extract zip (upload card). After a successful upload,
+              steps 2–13 run automatically in this session. If you leave and
+              return, use <span className="font-medium text-foreground/80">Resume</span>{" "}
+              to continue from the server state.
             </p>
           </div>
-          <div className="flex shrink-0 flex-wrap gap-2">
-            {showResumeButton ? (
+          {showResumeButton ? (
+            <div className="flex w-full shrink-0 sm:w-auto sm:pt-0.5">
               <Button
                 type="button"
                 size="sm"
                 variant="default"
                 disabled={resumeDisabled}
+                className="h-10 w-full sm:h-9 sm:w-auto"
                 onClick={() => void handleResume()}
               >
                 {resumeInfoFetching ? (
@@ -382,12 +386,14 @@ export function ProcessingPipeline({
                   "Resume processing"
                 )}
               </Button>
-            ) : null}
-          </div>
+            </div>
+          ) : null}
         </div>
         {uploadBlockedHint}
         {resumeHint ? (
-          <p className="mt-2 text-xs text-muted-foreground">{resumeHint}</p>
+          <p className="text-xs leading-relaxed text-muted-foreground">
+            {resumeHint}
+          </p>
         ) : null}
         {resumeInfoFetching && jobId ? (
           <div

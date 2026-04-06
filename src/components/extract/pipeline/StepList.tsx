@@ -47,7 +47,7 @@ export function StepList({ steps }: StepListProps) {
 
   return (
     <div
-      className="grid grid-cols-1 gap-6 sm:grid-cols-2 sm:gap-4"
+      className="grid grid-cols-1 gap-5 md:grid-cols-2 md:gap-6 lg:gap-8"
       role="group"
       aria-label="Processing pipeline steps in two columns"
     >

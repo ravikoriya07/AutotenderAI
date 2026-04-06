@@ -15,11 +15,11 @@ export function StepItem({ step, isActive }: StepItemProps) {
   return (
     <div
       className={cn(
-        "flex items-start gap-3 rounded-lg border bg-card px-3 py-2.5 text-sm transition-colors",
-        status === "processing" && "border-primary/50 bg-primary/5",
+        "flex items-start gap-3 rounded-xl border border-border/80 bg-card px-3 py-3 text-sm shadow-sm transition-[border-color,box-shadow,background-color]",
+        status === "processing" && "border-primary/45 bg-primary/[0.06]",
         active &&
-          "ring-2 ring-primary/40 ring-offset-2 ring-offset-background shadow-sm",
-        status === "error" && "border-destructive/50 bg-destructive/5"
+          "ring-2 ring-primary/35 ring-offset-2 ring-offset-background shadow-md",
+        status === "error" && "border-destructive/45 bg-destructive/[0.06]"
       )}
     >
       <div className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center">

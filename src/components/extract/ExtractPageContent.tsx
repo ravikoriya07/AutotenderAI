@@ -163,8 +163,8 @@ export function ExtractPageContent({ jobId }: { jobId: string }) {
     >
       <PageContainer>
         
-        <div className="grid gap-6 lg:grid-cols-2">
-          <Card className="p-6">
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-2 lg:items-start">
+          <Card className="min-w-0 p-4 sm:p-6">
             <Tabs
               tabs={[
                 {
@@ -285,7 +285,7 @@ export function ExtractPageContent({ jobId }: { jobId: string }) {
             />
           </Card>
 
-          <Card className="p-6">
+          <Card className="min-w-0 overflow-hidden p-4 sm:p-6">
             <ProcessingPipeline
               jobId={activeJobId}
               extractedDir={extractedDir}

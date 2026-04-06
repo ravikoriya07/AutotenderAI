@@ -23,7 +23,7 @@ function LibrariesContent() {
   }
 
   return (
-    <OrganisationLibraryView jobId={jobId} showProjectDropdown={false} />
+    <OrganisationLibraryView jobId={jobId} />
   );
 }
 

@@ -10,13 +10,16 @@ import {
 export type UseCompletedStepProjectsOptions = {
   /** When false, skips fetch and clears the list (e.g. Library without project dropdown). */
   enabled?: boolean;
+  /** When set, passes `step_name` to GET /stats/completed-steps (Research page). */
+  stepName?: string;
 };
 
 /**
- * Same project catalog as Library: GET /stats/completed-steps → unique projects by job_id.
+ * Project catalog from GET /stats/completed-steps → unique projects by job_id.
  */
 export function useCompletedStepProjects(options?: UseCompletedStepProjectsOptions) {
   const enabled = options?.enabled !== false;
+  const stepName = options?.stepName?.trim();
   const [completedSteps, setCompletedSteps] = useState<CompletedStepStat[]>([]);
   const [loading, setLoading] = useState(() => enabled);
 
@@ -31,7 +34,10 @@ export function useCompletedStepProjects(options?: UseCompletedStepProjectsOptio
     setLoading(true);
     void (async () => {
       try {
-        const rows = await fetchCompletedSteps({ signal: ac.signal });
+        const rows = await fetchCompletedSteps({
+          signal: ac.signal,
+          ...(stepName ? { stepName } : {}),
+        });
         if (!cancelled) setCompletedSteps(rows);
       } finally {
         if (!cancelled) setLoading(false);
@@ -41,7 +47,7 @@ export function useCompletedStepProjects(options?: UseCompletedStepProjectsOptio
       cancelled = true;
       ac.abort();
     };
-  }, [enabled]);
+  }, [enabled, stepName]);
 
   const projects = useMemo(
     () => flattenProjectsFromCompletedSteps(completedSteps),

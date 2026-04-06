@@ -29,7 +29,6 @@ import {
   postProjectAction,
   type ProjectActionType,
 } from "@/services/projectService";
-import { useCompletedStepProjects } from "@/hooks/useCompletedStepProjects";
 import {
   folderNodesFromProjectTreeResponse,
   formatBytes,
@@ -72,12 +71,6 @@ export type LibraryFileListingProps = {
   sharedTree?: LibrarySharedTreeState;
   /** Shown on the top toolbar right, before bulk actions (e.g. Organisation Library "New"). */
   newButton?: ReactNode;
-  /** When false, hides the project step dropdown and skips stats fetch (e.g. `/libraries?job_id=`). */
-  showProjectDropdown?: boolean;
-  /** When set, dropdown value follows `jobId` and changes notify parent (Organisation Library dynamic project). */
-  onProjectJobIdChange?: (jobId: string) => void;
-  onProjectPickerLoadingChange?: (loading: boolean) => void;
-  onProjectCatalogState?: (empty: boolean) => void;
   /** After a successful project-action, parent can refetch the tree (e.g. shared library view). */
   onTreeRefreshRequest?: () => void;
 };
@@ -89,14 +82,9 @@ export function LibraryFileListing({
   onSelectedIdChange,
   sharedTree,
   newButton,
-  showProjectDropdown = true,
-  onProjectJobIdChange,
-  onProjectPickerLoadingChange,
-  onProjectCatalogState,
   onTreeRefreshRequest,
 }: LibraryFileListingProps) {
   const controlled = onSelectedIdChange != null;
-  const projectJobFromParent = Boolean(onProjectJobIdChange);
   const useSharedTree = sharedTree !== undefined;
   const [treeNodes, setTreeNodes] = useState<FolderNode[]>([]);
   const [uncontrolledSelectedId, setUncontrolledSelectedId] = useState<
@@ -111,9 +99,6 @@ export function LibraryFileListing({
   );
   const [loadError, setLoadError] = useState<string | null>(null);
   const [treeLoading, setTreeLoading] = useState(true);
-  const [selectedProjectJobId, setSelectedProjectJobId] = useState("");
-  const { projects: projectOptions, loading: stepsLoading } =
-    useCompletedStepProjects({ enabled: showProjectDropdown });
   const [actionBusy, setActionBusy] = useState(false);
   const actionBusyRef = useRef(false);
   const selectAllRef = useRef<HTMLInputElement>(null);
@@ -212,30 +197,6 @@ export function LibraryFileListing({
     sharedTree?.nodes,
     sharedTree?.loading,
     sharedTree?.error,
-  ]);
-
-  useEffect(() => {
-    if (!showProjectDropdown) {
-      setSelectedProjectJobId("");
-    }
-  }, [showProjectDropdown]);
-
-  useEffect(() => {
-    if (!showProjectDropdown) {
-      onProjectPickerLoadingChange?.(false);
-      return;
-    }
-    onProjectPickerLoadingChange?.(stepsLoading);
-  }, [showProjectDropdown, stepsLoading, onProjectPickerLoadingChange]);
-
-  useEffect(() => {
-    if (!showProjectDropdown || stepsLoading) return;
-    onProjectCatalogState?.(projectOptions.length === 0);
-  }, [
-    showProjectDropdown,
-    stepsLoading,
-    projectOptions.length,
-    onProjectCatalogState,
   ]);
 
   useEffect(() => {
@@ -382,61 +343,6 @@ export function LibraryFileListing({
     </span>
   );
 
-  const projectSelectValue = projectJobFromParent
-    ? projectOptions.length === 0 ||
-        !jobId.trim() ||
-        !projectOptions.some((p) => p.job_id === jobId.trim())
-      ? ""
-      : jobId.trim()
-    : projectOptions.length === 0 ||
-        !selectedProjectJobId ||
-        !projectOptions.some((p) => p.job_id === selectedProjectJobId)
-      ? ""
-      : selectedProjectJobId;
-
-  const projectSelectControl = stepsLoading ? (
-    <div
-      className="flex h-8 max-w-[11rem] items-center gap-2"
-      role="status"
-      aria-live="polite"
-      aria-busy="true"
-    >
-      <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-primary" />
-      <span className="text-xs text-muted-foreground">Loading projects…</span>
-    </div>
-  ) : (
-    <div className="flex max-w-[11rem] shrink-0 items-center gap-1.5 sm:max-w-[13rem]">
-      {useSharedTree && sharedTree?.loading && jobId.trim() ? (
-        <Loader2
-          className="h-3.5 w-3.5 shrink-0 animate-spin text-primary"
-          aria-label="Loading library"
-        />
-      ) : null}
-      <select
-        aria-label="Select project"
-        value={projectSelectValue}
-        onChange={(e) => {
-          const v = e.target.value;
-          if (onProjectJobIdChange) onProjectJobIdChange(v);
-          else setSelectedProjectJobId(v);
-        }}
-        disabled={projectOptions.length === 0}
-        className="h-8 min-w-0 flex-1 rounded-md border border-input bg-background px-2 py-1 text-xs text-foreground shadow-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
-      >
-        <option value="">
-          {projectOptions.length === 0
-            ? "No projects available"
-            : "Select project"}
-        </option>
-        {projectOptions.map((p) => (
-          <option key={p.job_id} value={p.job_id}>
-            {p.project_name}
-          </option>
-        ))}
-      </select>
-    </div>
-  );
-
   const bulkDisabled =
     actionBusy ||
     !effectiveJobId ||
@@ -488,14 +394,7 @@ export function LibraryFileListing({
   );
 
   const selectItemsAndActions = (
-    <div
-      className={cn(
-        "flex min-w-0 flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-2 sm:gap-y-2",
-        showProjectDropdown
-          ? "w-full sm:justify-end"
-          : "ml-auto w-auto max-w-full justify-end sm:justify-end"
-      )}
-    >
+    <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-2 sm:gap-y-2 ml-auto w-auto max-w-full justify-end sm:justify-end">
       <div className="min-w-0 shrink-0">{selectItemsLabel}</div>
       <div className="flex min-w-0 flex-wrap items-center gap-2 sm:justify-end">
         {bulkActionButtons}
@@ -504,12 +403,7 @@ export function LibraryFileListing({
     </div>
   );
 
-  const selectRowToolbar = showProjectDropdown ? (
-    <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between md:gap-4">
-      <div className="w-auto min-w-0 shrink-0">{projectSelectControl}</div>
-      {selectItemsAndActions}
-    </div>
-  ) : (
+  const selectRowToolbar = (
     <div className="flex w-full min-w-0 justify-end">{selectItemsAndActions}</div>
   );
 
@@ -564,14 +458,11 @@ export function LibraryFileListing({
       </div>
     ) : null;
 
-  const noJobEmptyBody =
-    !jobId.trim() && showProjectDropdown ? (
-      <div className="p-6 text-sm text-muted-foreground">
-        Select a project above to view its library.
-      </div>
-    ) : !jobId.trim() ? (
-      <div className="p-6 text-sm text-muted-foreground">Missing job id.</div>
-    ) : null;
+  const noJobEmptyBody = !jobId.trim() ? (
+    <div className="p-6 text-sm text-muted-foreground">
+      Select a project in the header to view its library.
+    </div>
+  ) : null;
 
   return (
     <>

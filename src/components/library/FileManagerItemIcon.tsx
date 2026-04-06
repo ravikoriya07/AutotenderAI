@@ -3,7 +3,13 @@
 import { File, Folder } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-export type FileManagerIconKind = "folder" | "pdf" | "word" | "excel" | "file";
+export type FileManagerIconKind =
+  | "folder"
+  | "pdf"
+  | "word"
+  | "excel"
+  | "text"
+  | "file";
 
 export function getFileManagerIconKind(
   label: string,
@@ -15,6 +21,8 @@ export function getFileManagerIconKind(
   if (ext === "pdf") return "pdf";
   if (ext === "doc" || ext === "docx") return "word";
   if (ext === "xls" || ext === "xlsx" || ext === "csv") return "excel";
+  if (ext === "txt" || ext === "md" || ext === "log" || ext === "rtf")
+    return "text";
   return "file";
 }
 
@@ -28,6 +36,8 @@ export function getItemTypeLabel(kind: FileManagerIconKind): string {
       return "Word";
     case "excel":
       return "Excel";
+    case "text":
+      return "Text";
     default:
       return "File";
   }
@@ -84,6 +94,19 @@ export function FileManagerItemIcon({
         aria-hidden
       >
         X
+      </span>
+    );
+  }
+  if (kind === "text") {
+    return (
+      <span
+        className={cn(
+          "inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-slate-600 text-[10px] font-bold leading-none text-white",
+          className
+        )}
+        aria-hidden
+      >
+        TXT
       </span>
     );
   }
