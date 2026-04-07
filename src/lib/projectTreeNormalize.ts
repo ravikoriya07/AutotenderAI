@@ -108,6 +108,58 @@ export function normalizeTreeNode(
 }
 
 /**
+ * Walk API `tree` nodes and return the first object whose `name` is `drawing`.
+ */
+function findDrawingTreeNode(nodes: unknown[]): unknown | null {
+  for (const item of nodes) {
+    if (item == null || typeof item !== "object") continue;
+    const o = item as Record<string, unknown>;
+    const name = typeof o.name === "string" ? o.name : "";
+    if (name === "drawing") return item;
+    const children = o.children;
+    if (Array.isArray(children)) {
+      const found = findDrawingTreeNode(children);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+function findDirectChildByName(
+  node: unknown,
+  childName: string
+): unknown | null {
+  if (node == null || typeof node !== "object") return null;
+  const o = node as Record<string, unknown>;
+  const children = o.children;
+  if (!Array.isArray(children)) return null;
+  for (const c of children) {
+    if (c == null || typeof c !== "object") continue;
+    const co = c as Record<string, unknown>;
+    if (typeof co.name === "string" && co.name === childName) return c;
+  }
+  return null;
+}
+
+/**
+ * GET /project-tree/{job_id} → only **drawing → pdfs** (the `pdfs` folder under `drawing`).
+ */
+export function folderNodesDrawingBranchFromProjectTreeResponse(
+  api: unknown
+): FolderNode[] {
+  if (!api || typeof api !== "object") return [];
+  const o = api as Record<string, unknown>;
+  const tree = o.tree;
+  if (!Array.isArray(tree) || tree.length === 0) return [];
+  const drawingRaw = findDrawingTreeNode(tree);
+  if (!drawingRaw) return [];
+  const pdfsRaw = findDirectChildByName(drawingRaw, "pdfs");
+  if (!pdfsRaw) return [];
+  const root = normalizeTreeNode(pdfsRaw, "pdfs-root", 0);
+  return root ? [root] : [];
+}
+
+/**
  * GET /project-tree/{job_id} → use only `tree[3]` (extract_zip_output branch).
  */
 export function folderNodesFromProjectTreeResponse(api: unknown): FolderNode[] {

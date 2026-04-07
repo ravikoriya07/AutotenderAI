@@ -12,6 +12,7 @@ import {
   FlaskConical,
   // BookOpen,
   Library,
+  Ruler,
   Settings,
   ChevronLeft,
   ChevronRight,
@@ -33,6 +34,7 @@ const mainNav = [
 const bottomNav = [
   // { href: "/answer-bank", label: "Answer Bank", icon: BookOpen },
   { href: "/library", label: "Library", icon: Library },
+  { href: "/quantity-take-off", label: "Quantity take-off", icon: Ruler },
   { href: "/settings", label: "Settings", icon: Settings },
 ];
 

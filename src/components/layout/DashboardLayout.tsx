@@ -2,6 +2,7 @@
 
 import { Sidebar } from "./Sidebar";
 import { Header } from "./Header";
+import { AppFooter } from "./AppFooter";
 import { useSidebar } from "@/contexts/SidebarContext";
 import { cn } from "@/lib/utils";
 
@@ -22,11 +23,11 @@ export function DashboardLayout({
 }: DashboardLayoutProps) {
   const { collapsed } = useSidebar();
   return (
-    <div className="min-h-screen min-w-0 overflow-x-hidden">
+    <div className="flex min-h-screen min-w-0 overflow-x-hidden">
       <Sidebar />
       <div
         className={cn(
-          "min-w-0 transition-all duration-300",
+          "flex min-h-0 min-w-0 flex-1 flex-col transition-all duration-300",
           "max-lg:pl-0",
           collapsed ? "lg:pl-16" : "lg:pl-64"
         )}
@@ -37,7 +38,8 @@ export function DashboardLayout({
           subtitle={subtitle}
           searchPlaceholder={searchPlaceholder}
         />
-        {children}
+        <div className="flex min-h-0 flex-1 flex-col">{children}</div>
+        <AppFooter />
       </div>
     </div>
   );

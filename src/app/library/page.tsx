@@ -19,12 +19,12 @@ export default function LibraryPage() {
           type="button"
           variant="ghost"
           size="sm"
-          className="h-9 gap-1 px-2 text-muted-foreground hover:text-foreground"
+          className="h-9 min-h-9 gap-1 px-2 text-muted-foreground hover:text-foreground sm:min-h-0"
           onClick={() => router.push("/projects")}
           aria-label="Back to projects"
         >
           <ChevronLeft className="h-4 w-4 shrink-0" />
-          Back
+          <span className="hidden sm:inline">Back</span>
         </Button>
       }
       title="Organisation Library"

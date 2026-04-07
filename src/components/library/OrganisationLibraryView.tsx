@@ -106,7 +106,7 @@ export function OrganisationLibraryView({ jobId }: OrganisationLibraryViewProps)
   const sidebarBody = (
     <>
       <h3 className="mb-3 text-sm font-medium">AutotenderAI Libraries</h3>
-      <div className="max-h-[min(70vh,520px)] min-w-0 max-w-full overflow-y-auto overflow-x-hidden pr-1">
+      <div className="max-h-[min(75dvh,520px)] min-w-0 max-w-full touch-pan-y overflow-y-auto overscroll-contain overflow-x-hidden pr-1 sm:max-h-[min(70vh,520px)]">
         {treeLoading && jobId.trim() ? (
           <div
             className="flex min-h-[120px] items-center justify-center py-8"

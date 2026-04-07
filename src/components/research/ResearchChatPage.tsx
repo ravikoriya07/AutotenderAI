@@ -1,6 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import { useRouter } from "next/navigation";
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
 import { PageContainer } from "@/components/layout/PageContainer";
@@ -422,7 +428,7 @@ function ChatInput({
   onToggleShowSources: () => void;
 }) {
   return (
-    <div className="w-full rounded-[1.75rem] border border-border/80 bg-card p-4 shadow-md">
+    <div className="w-full min-w-0 rounded-[1.75rem] border border-border/80 bg-card p-3 shadow-md sm:p-4">
       <textarea
         placeholder="Ask anything"
         value={value}
@@ -434,24 +440,24 @@ function ChatInput({
           }
         }}
         disabled={disabled}
-        className="min-h-[72px] w-full resize-none rounded-xl border border-input bg-background px-3 py-2.5 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary disabled:opacity-70"
+        className="min-h-[56px] w-full min-w-0 resize-none rounded-xl border border-input bg-background px-3 py-2.5 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary disabled:opacity-70 sm:min-h-[72px]"
         rows={2}
       />
-      <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
-        <div className="flex flex-wrap items-center gap-2">
+      <div className="mt-3 flex min-w-0 flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between sm:gap-2">
+        <div className="flex min-w-0 flex-col gap-2 sm:flex-1 sm:flex-row sm:flex-wrap sm:items-center">
           <button
             type="button"
-            className="inline-flex items-center gap-1.5 rounded-full bg-primary/10 px-3 py-1.5 text-sm font-medium text-primary hover:bg-primary/20"
+            className="inline-flex min-h-10 w-full shrink-0 items-center justify-center gap-1.5 rounded-full bg-primary/10 px-3 py-2 text-sm font-medium text-primary hover:bg-primary/20 sm:w-auto sm:justify-start sm:py-1.5"
           >
             Research
-            <ChevronDown className="h-4 w-4" />
+            <ChevronDown className="h-4 w-4 shrink-0" />
           </button>
           <button
             type="button"
             onClick={onToggleShowSources}
             aria-pressed={showSources}
             className={cn(
-              "inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-sm font-medium transition-colors",
+              "inline-flex min-h-10 w-full shrink-0 items-center justify-center gap-1.5 rounded-full px-3 py-2 text-sm font-medium transition-colors sm:w-auto sm:justify-start sm:py-1.5",
               showSources
                 ? "bg-primary/10 text-primary hover:bg-primary/20"
                 : "border border-input bg-transparent text-muted-foreground hover:bg-muted hover:text-foreground"
@@ -460,19 +466,21 @@ function ChatInput({
             Source Providers
           </button>
         </div>
-        <button
-          type="button"
-          onClick={onSend}
-          disabled={disabled || !value.trim() || blockSendForProject}
-          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground hover:bg-primary hover:text-primary-foreground disabled:cursor-not-allowed disabled:opacity-60"
-          aria-label="Send"
-        >
-          {disabled ? (
-            <Loader2 className="h-4 w-4 animate-spin" />
-          ) : (
-            <Send className="h-4 w-4" />
-          )}
-        </button>
+        <div className="flex shrink-0 justify-end sm:justify-start">
+          <button
+            type="button"
+            onClick={onSend}
+            disabled={disabled || !value.trim() || blockSendForProject}
+            className="flex h-11 w-11 items-center justify-center rounded-full bg-muted text-muted-foreground hover:bg-primary hover:text-primary-foreground disabled:cursor-not-allowed disabled:opacity-60 sm:h-10 sm:w-10"
+            aria-label="Send"
+          >
+            {disabled ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Send className="h-4 w-4" />
+            )}
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -488,7 +496,7 @@ function ChatContainer({
   return (
     <div
       className={cn(
-        "flex w-full min-h-0 flex-1 flex-col rounded-3xl border border-slate-200 bg-[#f9fafb] shadow-sm",
+        "flex min-h-0 w-full flex-1 flex-col overflow-hidden rounded-3xl border border-slate-200 bg-[#f9fafb] shadow-sm",
         className
       )}
     >
@@ -768,7 +776,7 @@ export function ResearchChatPage() {
   const [pendingPrompt, setPendingPrompt] = useState("");
   const [activeAssistantId, setActiveAssistantId] = useState<string | null>(null);
   const pollingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const chatBottomRef = useRef<HTMLDivElement>(null);
+  const chatScrollRef = useRef<HTMLDivElement>(null);
   const chatCacheRef = useRef<Record<string, StoredChat>>({});
   const researchSessionsRef = useRef<Record<string, string>>({});
   const selectedSessionIdByJobRef = useRef<Record<string, string>>({});
@@ -1128,8 +1136,17 @@ export function ResearchChatPage() {
     hydrateChatFromTurns,
   ]);
 
-  useEffect(() => {
-    chatBottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  /** Scroll the chat panel (not `scrollIntoView`) so the latest thread stays above the fixed mobile composer. */
+  useLayoutEffect(() => {
+    const el = chatScrollRef.current;
+    if (!el) return;
+    const snap = () => {
+      el.scrollTop = el.scrollHeight;
+    };
+    snap();
+    requestAnimationFrame(() => {
+      requestAnimationFrame(snap);
+    });
   }, [messages]);
 
   useEffect(() => {
@@ -1424,7 +1441,7 @@ export function ResearchChatPage() {
         contexts={sourcesDrawerContexts}
         projectJobId={selectedProjectJobId}
       />
-      <div className="flex min-h-[calc(100dvh-4rem)] min-w-0 flex-col lg:flex-row">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden lg:flex-row">
         <MobileSessionsDrawer
           open={mobileSessionsOpen}
           onOpenChange={setMobileSessionsOpen}
@@ -1445,8 +1462,8 @@ export function ResearchChatPage() {
           selectedSessionId={sidebarSelectedSessionId}
           onSelectSession={handleSelectSession}
         />
-        <PageContainer className="flex min-h-0 flex-1 flex-col items-center justify-start overflow-x-hidden overflow-y-hidden bg-[#f8fafc] py-4 md:py-6 lg:min-h-[calc(100dvh-4rem)]">
-          <div className="mx-auto flex w-full min-w-0 max-w-5xl flex-1 flex-col px-3 md:px-4">
+        <PageContainer className="flex min-h-0 w-full min-w-0 flex-1 flex-col items-center justify-start overflow-x-hidden overflow-y-hidden bg-[#f8fafc] py-3 sm:py-4 md:py-6">
+          <div className="mx-auto flex min-h-0 w-full min-w-0 max-w-5xl flex-1 flex-col px-2 sm:px-3 md:px-4">
             <button
               type="button"
               onClick={() => setMobileSessionsOpen(true)}
@@ -1498,10 +1515,13 @@ export function ResearchChatPage() {
                     Ask anything about your documents, answer bank, or the web.
                   </p>
                 </div>
-                <div className="mx-auto mt-4 flex min-h-0 w-full max-w-[860px] flex-1 flex-col gap-4 md:mt-6">
+                <div className="mx-auto mt-4 flex min-h-0 w-full max-w-[860px] flex-1 flex-col gap-0 md:mt-6">
                   {showChatThread ? (
                     <ChatContainer>
-                      <div className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain px-4 py-4 max-lg:pb-[14rem] md:px-6 md:py-5 lg:max-h-[60vh] lg:pb-4">
+                      <div
+                        ref={chatScrollRef}
+                        className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-y-contain px-3 py-4 sm:px-4 md:px-6 md:py-5 lg:max-h-[60vh]"
+                      >
                         {isChatLoading ? (
                           <ChatSkeleton />
                         ) : (
@@ -1513,7 +1533,6 @@ export function ResearchChatPage() {
                                 onOpenSources={openSourcesDrawer}
                               />
                             ))}
-                            <div ref={chatBottomRef} />
                           </div>
                         )}
                       </div>
@@ -1524,12 +1543,11 @@ export function ResearchChatPage() {
 
                   <div
                     className={cn(
-                      "z-20 w-full shrink-0",
-                      "max-lg:fixed max-lg:bottom-0 max-lg:left-0 max-lg:right-0 max-lg:border-t max-lg:border-border/80 max-lg:bg-[#f8fafc] max-lg:px-3 max-lg:pb-[max(0.75rem,env(safe-area-inset-bottom))] max-lg:pt-3",
-                      "lg:static lg:z-auto lg:border-0 lg:bg-transparent lg:p-0"
+                      "w-full min-w-0 shrink-0 border-t border-border/80 bg-[#f8fafc] px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-3 shadow-[0_-4px_24px_-16px_rgba(15,23,42,0.08)]",
+                      "lg:border-0 lg:bg-transparent lg:p-0 lg:shadow-none"
                     )}
                   >
-                    <div className="mx-auto w-full max-w-[860px]">
+                    <div className="mx-auto w-full min-w-0 max-w-[860px]">
                       <ChatInput
                         value={inputValue}
                         onChange={setInputValue}

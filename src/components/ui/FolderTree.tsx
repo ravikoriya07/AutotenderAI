@@ -6,9 +6,14 @@ import {
   Folder,
   FolderOpen,
   File,
+  Eye,
 } from "lucide-react";
 import { memo, useState } from "react";
 import { cn } from "@/lib/utils";
+import {
+  FileManagerItemIcon,
+  getFileManagerIconKind,
+} from "@/components/library/FileManagerItemIcon";
 
 export interface FolderNode {
   id: string;
@@ -27,6 +32,12 @@ interface FolderTreeProps {
   selectedId?: string;
   onSelect?: (id: string) => void;
   className?: string;
+  /** Folders with children start expanded (e.g. Quantity take-off full tree). */
+  defaultExpandAll?: boolean;
+  /** Use library PDF-style badge for file leaves when `"pdf"`. */
+  fileLeafIcon?: "default" | "pdf";
+  /** Optional view action on file rows (icon on the right). */
+  onViewFile?: (node: FolderNode) => void;
 }
 
 const TreeNode = memo(function TreeNode({
@@ -34,16 +45,24 @@ const TreeNode = memo(function TreeNode({
   selectedId,
   onSelect,
   level = 0,
+  defaultExpandAll,
+  fileLeafIcon,
+  onViewFile,
 }: {
   node: FolderNode;
   selectedId?: string;
   onSelect?: (id: string) => void;
   level?: number;
+  defaultExpandAll?: boolean;
+  fileLeafIcon?: "default" | "pdf";
+  onViewFile?: (node: FolderNode) => void;
 }) {
   const isFile = node.kind === "file";
   const hasChildren = Boolean(node.children && node.children.length > 0);
   const expandable = !isFile && hasChildren;
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(
+    () => Boolean(defaultExpandAll && expandable)
+  );
   const isSelected = selectedId === node.id;
 
   const handleChevronClick = (e: React.MouseEvent) => {
@@ -61,7 +80,7 @@ const TreeNode = memo(function TreeNode({
     <div className="w-full min-w-0 max-w-full select-none">
       <div
         className={cn(
-          "flex w-full min-w-0 max-w-full cursor-pointer items-center gap-1 overflow-hidden rounded px-2 py-1.5 text-sm hover:bg-sidebar-foreground/10",
+          "flex w-full min-w-0 max-w-full cursor-pointer items-center gap-2 overflow-x-hidden rounded px-2 py-2 text-sm hover:bg-sidebar-foreground/10 sm:py-1.5",
           isSelected && "bg-primary/20 text-primary"
         )}
         style={{ paddingLeft: `${level * 12 + 8}px` }}
@@ -83,7 +102,11 @@ const TreeNode = memo(function TreeNode({
         ) : (
           <span className="w-4 shrink-0" aria-hidden />
         )}
-        {isFile ? (
+        {isFile && fileLeafIcon === "pdf" ? (
+          <span className="inline-flex shrink-0 items-center self-center">
+            <FileManagerItemIcon kind={getFileManagerIconKind(node.label, false)} />
+          </span>
+        ) : isFile ? (
           <File className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
         ) : open && hasChildren ? (
           <FolderOpen className="h-4 w-4 shrink-0" aria-hidden />
@@ -91,11 +114,30 @@ const TreeNode = memo(function TreeNode({
           <Folder className="h-4 w-4 shrink-0" aria-hidden />
         )}
         <span
-          className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap"
+          className={cn(
+            "min-w-0 flex-1 text-sm leading-snug",
+            isFile
+              ? "break-words [overflow-wrap:anywhere] sm:truncate sm:overflow-hidden sm:text-ellipsis sm:whitespace-nowrap sm:leading-normal"
+              : "truncate whitespace-nowrap"
+          )}
           title={node.label}
         >
           {node.label}
         </span>
+        {isFile && onViewFile ? (
+          <button
+            type="button"
+            className="inline-flex min-h-10 min-w-10 shrink-0 items-center justify-center rounded-md p-1.5 text-muted-foreground hover:bg-sidebar-foreground/10 hover:text-foreground sm:min-h-0 sm:min-w-0 sm:p-1"
+            aria-label={`View ${node.label}`}
+            title="View"
+            onClick={(e) => {
+              e.stopPropagation();
+              onViewFile(node);
+            }}
+          >
+            <Eye className="h-5 w-5 sm:h-4 sm:w-4" />
+          </button>
+        ) : null}
       </div>
       {open && hasChildren && (
         <div className="min-w-0 max-w-full overflow-hidden">
@@ -106,6 +148,9 @@ const TreeNode = memo(function TreeNode({
               selectedId={selectedId}
               onSelect={onSelect}
               level={level + 1}
+              defaultExpandAll={defaultExpandAll}
+              fileLeafIcon={fileLeafIcon}
+              onViewFile={onViewFile}
             />
           ))}
         </div>
@@ -119,6 +164,9 @@ export function FolderTree({
   selectedId,
   onSelect,
   className,
+  defaultExpandAll,
+  fileLeafIcon,
+  onViewFile,
 }: FolderTreeProps) {
   return (
     <div className={cn("w-full min-w-0 max-w-full space-y-0.5", className)}>
@@ -128,6 +176,9 @@ export function FolderTree({
           node={node}
           selectedId={selectedId}
           onSelect={onSelect}
+          defaultExpandAll={defaultExpandAll}
+          fileLeafIcon={fileLeafIcon}
+          onViewFile={onViewFile}
         />
       ))}
     </div>

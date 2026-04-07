@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { PROJECT_CATALOG_REFRESH_EVENT } from "@/lib/projectCatalogRefresh";
 import {
   fetchCompletedSteps,
   flattenProjectsFromCompletedSteps,
@@ -22,6 +23,17 @@ export function useCompletedStepProjects(options?: UseCompletedStepProjectsOptio
   const stepName = options?.stepName?.trim();
   const [completedSteps, setCompletedSteps] = useState<CompletedStepStat[]>([]);
   const [loading, setLoading] = useState(() => enabled);
+  const [refreshToken, setRefreshToken] = useState(0);
+
+  useEffect(() => {
+    function onCatalogRefresh() {
+      setRefreshToken((t) => t + 1);
+    }
+    if (typeof window === "undefined") return;
+    window.addEventListener(PROJECT_CATALOG_REFRESH_EVENT, onCatalogRefresh);
+    return () =>
+      window.removeEventListener(PROJECT_CATALOG_REFRESH_EVENT, onCatalogRefresh);
+  }, []);
 
   useEffect(() => {
     if (!enabled) {
@@ -47,7 +59,7 @@ export function useCompletedStepProjects(options?: UseCompletedStepProjectsOptio
       cancelled = true;
       ac.abort();
     };
-  }, [enabled, stepName]);
+  }, [enabled, stepName, refreshToken]);
 
   const projects = useMemo(
     () => flattenProjectsFromCompletedSteps(completedSteps),

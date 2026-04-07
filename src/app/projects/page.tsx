@@ -44,6 +44,7 @@ import { listProjects, deleteProject } from "@/services/projectService";
 import Swal from "sweetalert2";
 import type { Project, Pagination } from "@/types/project";
 import { toast } from "react-toastify";
+import { requestProjectCatalogRefresh } from "@/lib/projectCatalogRefresh";
 import { cn } from "@/lib/utils";
 import { DateRangePickerWrapper } from "@/components/DateRangePickerWrapper";
 
@@ -572,6 +573,7 @@ export default function ProjectsPage() {
         deleteProject(project.id)
           .then(() => {
             toast.success("Project deleted successfully.");
+            requestProjectCatalogRefresh();
             void fetchProjects();
           })
           .catch(() => {
@@ -769,6 +771,7 @@ export default function ProjectsPage() {
           <CreateProjectForm
             onSuccess={() => {
               setCreateModalOpen(false);
+              requestProjectCatalogRefresh();
               void fetchProjects();
             }}
           />
@@ -787,6 +790,7 @@ export default function ProjectsPage() {
               onSuccess={() => {
                 setEditModalOpen(false);
                 setProjectToEdit(null);
+                requestProjectCatalogRefresh();
                 void fetchProjects();
               }}
             />

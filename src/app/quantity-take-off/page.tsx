@@ -1,17 +1,16 @@
 "use client";
 
-import { useParams, useRouter } from "next/navigation";
+import { useRouter } from "next/navigation";
 import { ChevronLeft } from "lucide-react";
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
 import { PageContainer } from "@/components/layout/PageContainer";
-import { ProjectDetailPageContent } from "@/components/projects/ProjectDetailPageContent";
+import { QuantityTakeOffView } from "@/components/quantity-take-off/QuantityTakeOffView";
 import { Button } from "@/components/ui/Button";
+import { useResearchProject } from "@/contexts/ResearchProjectContext";
 
-export default function ProjectDetailRoutePage() {
+export default function QuantityTakeOffPage() {
   const router = useRouter();
-  const params = useParams();
-  const raw = params.id;
-  const projectId = Array.isArray(raw) ? raw[0] ?? "" : raw ?? "";
+  const { selectedProjectJobId } = useResearchProject();
 
   return (
     <DashboardLayout
@@ -28,11 +27,12 @@ export default function ProjectDetailRoutePage() {
           <span className="hidden sm:inline">Back</span>
         </Button>
       }
-      title="Project detail"
-      searchPlaceholder="Search your projects"
+      title="Quantity take-off"
+      subtitle="Browse drawing files for the selected project."
+      searchPlaceholder="Search…"
     >
       <PageContainer>
-        <ProjectDetailPageContent projectId={projectId} />
+        <QuantityTakeOffView jobId={selectedProjectJobId} />
       </PageContainer>
     </DashboardLayout>
   );
