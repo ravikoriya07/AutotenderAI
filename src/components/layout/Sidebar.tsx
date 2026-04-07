@@ -38,6 +38,17 @@ const bottomNav = [
   { href: "/settings", label: "Settings", icon: Settings },
 ];
 
+/** Exact match, or sub-routes that belong to the same nav section (e.g. `/quantity-take-off/view`). */
+function isSidebarNavActive(pathname: string | null, href: string): boolean {
+  if (!pathname) return false;
+  if (pathname === href) return true;
+  if (href === "/research" && pathname.startsWith("/research/")) return true;
+  if (href === "/quantity-take-off" && pathname.startsWith("/quantity-take-off/"))
+    return true;
+  if (href === "/projects" && pathname.startsWith("/projects/")) return true;
+  return false;
+}
+
 export function Sidebar() {
   const pathname = usePathname();
   const router = useRouter();
@@ -108,7 +119,7 @@ export function Sidebar() {
       <nav className="flex-1 overflow-y-auto p-3">
         <div className="space-y-1">
           {[...mainNav, ...bottomNav].map((item) => {
-            const isActive = pathname === item.href;
+            const isActive = isSidebarNavActive(pathname, item.href);
             return (
               <Link
                 key={item.href}

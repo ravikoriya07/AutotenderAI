@@ -4,10 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { Card } from "@/components/ui/Card";
 import { FolderTree, type FolderNode } from "@/components/ui/FolderTree";
-import {
-  fetchProjectTree,
-  postProjectAction,
-} from "@/services/projectService";
+import { fetchProjectTree } from "@/services/projectService";
 import { folderNodesDrawingBranchFromProjectTreeResponse } from "@/lib/projectTreeNormalize";
 import { nodeToProjectActionPath } from "@/lib/libraryListingUtils";
 import { toast } from "react-toastify";
@@ -100,7 +97,7 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
   }, []);
 
   const handleViewFile = useCallback(
-    async (node: FolderNode) => {
+    (node: FolderNode) => {
       const jid = jobId.trim();
       if (node.kind !== "file" || !jid) return;
       const path = nodeToProjectActionPath(node, treeNodes);
@@ -108,26 +105,15 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
         toast.error("Could not resolve file path.");
         return;
       }
-      try {
-        const result = await postProjectAction(jid, "download", [path]);
-        if (result.kind !== "blob" || result.blob.size === 0) return;
-        const ct = (result.contentType ?? "").toLowerCase();
-        const probablyJsonError =
-          ct.includes("application/json") ||
-          (result.blob.size < 65536 &&
-            (await result.blob.slice(0, 1).text()) === "{");
-        if (probablyJsonError) {
-          toast.error("Could not open file.");
-          return;
-        }
-        const url = URL.createObjectURL(result.blob);
-        const w = window.open(url, "_blank", "noopener,noreferrer");
-        if (!w) {
-          toast.info("Allow pop-ups to view the file in a new tab.");
-        }
-        window.setTimeout(() => URL.revokeObjectURL(url), 120_000);
-      } catch {
-        toast.error("Could not open file.");
+      const u = new URL(
+        "/quantity-take-off/view",
+        window.location.origin
+      );
+      u.searchParams.set("job_id", jid);
+      u.searchParams.set("path", path);
+      const w = window.open(u.toString(), "_blank", "noopener,noreferrer");
+      if (!w) {
+        toast.info("Allow pop-ups to open the drawing viewer.");
       }
     },
     [jobId, treeNodes]

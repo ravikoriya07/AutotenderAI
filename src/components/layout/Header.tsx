@@ -40,7 +40,7 @@ export function Header({
   const researchProject = useResearchProjectOptional();
   const onResearchRoute = pathname.startsWith("/research");
   const onOrganisationLibraryRoute = pathname === "/library";
-  const onQuantityTakeOffRoute = pathname === "/quantity-take-off";
+  const onQuantityTakeOffRoute = pathname.startsWith("/quantity-take-off");
   const showResearchProjectPicker =
     researchProject != null &&
     (onResearchRoute ||
