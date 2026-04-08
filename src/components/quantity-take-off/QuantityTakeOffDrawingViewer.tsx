@@ -1,24 +1,24 @@
 "use client";
 
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { useSearchParams } from "next/navigation";
 import { Loader2 } from "lucide-react";
-import { postProjectAction } from "@/services/projectService";
+import { fetchViewFile, toViewFileApiPath } from "@/services/projectService";
 import { CadAnalyzerModule } from "@/components/quantity-take-off/cad-analyzer/CadAnalyzerModule";
+import { CadPdfCanvasStack } from "@/components/quantity-take-off/cad-analyzer/CadPdfCanvasStack";
 
 /**
- * Reads `job_id` and `path` from the URL, downloads the file, and shows it inside the dashboard layout.
+ * Reads `job_id` and `path` from the URL, loads the file via GET /view-file, and shows it in the CAD canvas.
  */
 export function QuantityTakeOffDrawingViewer() {
   const searchParams = useSearchParams();
   const jobId = searchParams.get("job_id")?.trim() ?? "";
   const path = searchParams.get("path")?.trim() ?? "";
 
-  const [blobUrl, setBlobUrl] = useState<string | null>(null);
+  const [pdfBlob, setPdfBlob] = useState<Blob | null>(null);
   const [phase, setPhase] = useState<"idle" | "loading" | "ready" | "error">(
     "idle"
   );
-  const objectUrlRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (!jobId || !path) {
@@ -28,22 +28,14 @@ export function QuantityTakeOffDrawingViewer() {
 
     let cancelled = false;
 
-    function revokeCurrent() {
-      if (objectUrlRef.current) {
-        URL.revokeObjectURL(objectUrlRef.current);
-        objectUrlRef.current = null;
-      }
-    }
-
     setPhase("loading");
-    revokeCurrent();
-    setBlobUrl(null);
+    setPdfBlob(null);
 
     void (async () => {
       try {
-        const result = await postProjectAction(jobId, "download", [path]);
+        const result = await fetchViewFile(jobId, toViewFileApiPath(path));
         if (cancelled) return;
-        if (result.kind !== "blob" || result.blob.size === 0) {
+        if (result.blob.size === 0) {
           setPhase("error");
           return;
         }
@@ -56,14 +48,8 @@ export function QuantityTakeOffDrawingViewer() {
           setPhase("error");
           return;
         }
-        const nextUrl = URL.createObjectURL(result.blob);
-        if (cancelled) {
-          URL.revokeObjectURL(nextUrl);
-          return;
-        }
-        revokeCurrent();
-        objectUrlRef.current = nextUrl;
-        setBlobUrl(nextUrl);
+        if (cancelled) return;
+        setPdfBlob(result.blob);
         setPhase("ready");
       } catch {
         if (!cancelled) setPhase("error");
@@ -72,8 +58,7 @@ export function QuantityTakeOffDrawingViewer() {
 
     return () => {
       cancelled = true;
-      revokeCurrent();
-      setBlobUrl(null);
+      setPdfBlob(null);
     };
   }, [jobId, path]);
 
@@ -88,7 +73,7 @@ export function QuantityTakeOffDrawingViewer() {
         <span className="sr-only">Drawing preview unavailable.</span>
       </div>
     );
-  } else if (phase === "loading" || phase === "idle" || !blobUrl) {
+  } else if (phase === "loading" || phase === "idle" || !pdfBlob) {
     canvasContent = (
       <div
         className="flex h-full min-h-[280px] w-full flex-1 items-center justify-center bg-muted/20"
@@ -101,10 +86,9 @@ export function QuantityTakeOffDrawingViewer() {
     );
   } else {
     canvasContent = (
-      <iframe
-        title={path}
-        src={blobUrl}
-        className="h-full min-h-[min(52dvh,400px)] w-full flex-1 border-0 bg-muted/20"
+      <CadPdfCanvasStack
+        pdfBlob={pdfBlob}
+        className="min-h-[min(52dvh,400px)] flex-1"
       />
     );
   }

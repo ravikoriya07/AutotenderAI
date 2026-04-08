@@ -1,6 +1,7 @@
 "use client";
 
 import { cn } from "@/lib/utils";
+import { CadAnalyzerFloatingBridge } from "./CadAnalyzerFloatingBridge";
 
 type CadAnalyzerCanvasProps = {
   children: React.ReactNode;
@@ -8,13 +9,13 @@ type CadAnalyzerCanvasProps = {
 };
 
 /**
- * Center workspace with light grid (Photoshop-style artboard). Content is the PDF / placeholder.
+ * Grid artboard + PDF stage. Toolbar is a separate overlay layer above the PDF (z-index).
  */
 export function CadAnalyzerCanvas({ children, className }: CadAnalyzerCanvasProps) {
   return (
     <div
       className={cn(
-        "relative flex min-h-[min(52dvh,420px)] flex-1 items-center justify-center overflow-hidden bg-zinc-100/90 p-3 sm:min-h-[min(58dvh,520px)] sm:p-4 lg:min-h-0",
+        "relative flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-hidden bg-zinc-100/90 p-3 sm:p-4 lg:min-h-0",
         className
       )}
       style={{
@@ -27,10 +28,18 @@ export function CadAnalyzerCanvas({ children, className }: CadAnalyzerCanvasProp
     >
       <div
         className={cn(
-          "relative flex h-full w-full max-h-[min(70dvh,780px)] max-w-full items-center justify-center overflow-hidden rounded-lg border border-border/80 bg-background shadow-md"
+          "relative flex min-h-[min(48dvh,360px)] w-full min-w-0 flex-1 flex-col overflow-hidden rounded-lg border border-border/80 bg-background shadow-md lg:min-h-0"
         )}
       >
-        {children}
+        {/* PDF / placeholder — below toolbar in stacking order */}
+        <div className="relative z-0 flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+          {children}
+        </div>
+
+        {/* Overlay: must sit above transformed PDF layers */}
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 z-[100] flex justify-center pb-6 pt-2">
+          <CadAnalyzerFloatingBridge />
+        </div>
       </div>
     </div>
   );

@@ -31,7 +31,7 @@ export default function QuantityTakeOffPage() {
       subtitle="Browse drawing files for the selected project."
       searchPlaceholder="Search…"
     >
-      <PageContainer>
+      <PageContainer className="flex min-h-0 flex-1 flex-col !bg-background">
         <QuantityTakeOffView jobId={selectedProjectJobId} />
       </PageContainer>
     </DashboardLayout>

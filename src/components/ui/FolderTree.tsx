@@ -6,7 +6,6 @@ import {
   Folder,
   FolderOpen,
   File,
-  Eye,
 } from "lucide-react";
 import { memo, useState } from "react";
 import { cn } from "@/lib/utils";
@@ -36,9 +35,16 @@ interface FolderTreeProps {
   defaultExpandAll?: boolean;
   /** Use library PDF-style badge for file leaves when `"pdf"`. */
   fileLeafIcon?: "default" | "pdf";
-  /** Optional view action on file rows (icon on the right). */
+  /** When set, file names are clickable and call this (no separate “view” icon). */
   onViewFile?: (node: FolderNode) => void;
+  /** `"light"` uses muted hovers for light panels; `"sidebar"` is for dark `bg-sidebar` overlays. */
+  variant?: "default" | "light" | "sidebar";
 }
+
+const rowHover =
+  "hover:bg-sidebar-foreground/10" as const;
+const rowHoverLight = "hover:bg-muted/90" as const;
+const rowHoverSidebar = "hover:bg-sidebar-foreground/10" as const;
 
 const TreeNode = memo(function TreeNode({
   node,
@@ -48,6 +54,7 @@ const TreeNode = memo(function TreeNode({
   defaultExpandAll,
   fileLeafIcon,
   onViewFile,
+  variant = "default",
 }: {
   node: FolderNode;
   selectedId?: string;
@@ -56,6 +63,7 @@ const TreeNode = memo(function TreeNode({
   defaultExpandAll?: boolean;
   fileLeafIcon?: "default" | "pdf";
   onViewFile?: (node: FolderNode) => void;
+  variant?: "default" | "light" | "sidebar";
 }) {
   const isFile = node.kind === "file";
   const hasChildren = Boolean(node.children && node.children.length > 0);
@@ -76,11 +84,24 @@ const TreeNode = memo(function TreeNode({
     if (expandable) setOpen((o) => !o);
   };
 
+  const rowHoverClass =
+    variant === "light"
+      ? rowHoverLight
+      : variant === "sidebar"
+        ? rowHoverSidebar
+        : rowHover;
+  const rowTextClass =
+    variant === "sidebar"
+      ? "text-sidebar-foreground"
+      : "text-foreground";
+
   return (
     <div className="w-full min-w-0 max-w-full select-none">
       <div
         className={cn(
-          "flex w-full min-w-0 max-w-full cursor-pointer items-center gap-2 overflow-x-hidden rounded px-2 py-2 text-sm hover:bg-sidebar-foreground/10 sm:py-1.5",
+          "flex w-full min-w-0 max-w-full cursor-pointer items-center gap-2 overflow-x-hidden rounded px-2 py-2 text-sm sm:py-1.5",
+          rowTextClass,
+          rowHoverClass,
           isSelected && "bg-primary/20 text-primary"
         )}
         style={{ paddingLeft: `${level * 12 + 8}px` }}
@@ -90,7 +111,7 @@ const TreeNode = memo(function TreeNode({
           <button
             type="button"
             onClick={handleChevronClick}
-            className="shrink-0 rounded p-0.5 hover:bg-sidebar-foreground/10"
+            className={cn("shrink-0 rounded p-0.5", rowHoverClass)}
             aria-label={open ? "Collapse" : "Expand"}
           >
             {open ? (
@@ -107,37 +128,48 @@ const TreeNode = memo(function TreeNode({
             <FileManagerItemIcon kind={getFileManagerIconKind(node.label, false)} />
           </span>
         ) : isFile ? (
-          <File className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
+          <File
+            className={cn(
+              "h-4 w-4 shrink-0",
+              variant === "sidebar"
+                ? "text-sidebar-foreground/55"
+                : "text-muted-foreground"
+            )}
+            aria-hidden
+          />
         ) : open && hasChildren ? (
           <FolderOpen className="h-4 w-4 shrink-0" aria-hidden />
         ) : (
           <Folder className="h-4 w-4 shrink-0" aria-hidden />
         )}
-        <span
-          className={cn(
-            "min-w-0 flex-1 text-sm leading-snug",
-            isFile
-              ? "break-words [overflow-wrap:anywhere] sm:truncate sm:overflow-hidden sm:text-ellipsis sm:whitespace-nowrap sm:leading-normal"
-              : "truncate whitespace-nowrap"
-          )}
-          title={node.label}
-        >
-          {node.label}
-        </span>
         {isFile && onViewFile ? (
           <button
             type="button"
-            className="inline-flex min-h-10 min-w-10 shrink-0 items-center justify-center rounded-md p-1.5 text-muted-foreground hover:bg-sidebar-foreground/10 hover:text-foreground sm:min-h-0 sm:min-w-0 sm:p-1"
-            aria-label={`View ${node.label}`}
-            title="View"
+            className={cn(
+              "min-w-0 flex-1 text-left text-sm leading-snug hover:underline hover:underline-offset-2",
+              "break-words [overflow-wrap:anywhere] sm:truncate sm:overflow-hidden sm:text-ellipsis sm:whitespace-nowrap sm:leading-normal"
+            )}
+            title={node.label}
             onClick={(e) => {
               e.stopPropagation();
               onViewFile(node);
             }}
           >
-            <Eye className="h-5 w-5 sm:h-4 sm:w-4" />
+            {node.label}
           </button>
-        ) : null}
+        ) : (
+          <span
+            className={cn(
+              "min-w-0 flex-1 text-sm leading-snug",
+              isFile
+                ? "break-words [overflow-wrap:anywhere] sm:truncate sm:overflow-hidden sm:text-ellipsis sm:whitespace-nowrap sm:leading-normal"
+                : "truncate whitespace-nowrap"
+            )}
+            title={node.label}
+          >
+            {node.label}
+          </span>
+        )}
       </div>
       {open && hasChildren && (
         <div className="min-w-0 max-w-full overflow-hidden">
@@ -151,6 +183,7 @@ const TreeNode = memo(function TreeNode({
               defaultExpandAll={defaultExpandAll}
               fileLeafIcon={fileLeafIcon}
               onViewFile={onViewFile}
+              variant={variant}
             />
           ))}
         </div>
@@ -167,6 +200,7 @@ export function FolderTree({
   defaultExpandAll,
   fileLeafIcon,
   onViewFile,
+  variant = "default",
 }: FolderTreeProps) {
   return (
     <div className={cn("w-full min-w-0 max-w-full space-y-0.5", className)}>
@@ -179,6 +213,7 @@ export function FolderTree({
           defaultExpandAll={defaultExpandAll}
           fileLeafIcon={fileLeafIcon}
           onViewFile={onViewFile}
+          variant={variant}
         />
       ))}
     </div>

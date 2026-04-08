@@ -217,3 +217,49 @@ export async function postProjectAction(
   }
   return { kind: "json", data: res.data };
 }
+
+/**
+ * Map URL `path` (e.g. `pdfs/...` from quantity take-off) to `file_path` for GET /view-file.
+ * API expects project-relative paths like `drawing/pdfs/...`.
+ */
+export function toViewFileApiPath(pathFromUrl: string): string {
+  const p = pathFromUrl.trim().replace(/^\/+/, "");
+  if (!p) return p;
+  if (p.startsWith("drawing/")) return p;
+  return `drawing/${p}`;
+}
+
+export type FetchViewFileResult = {
+  blob: Blob;
+  contentType?: string;
+};
+
+/** GET /view-file/{job_id}?file_path=...&view_original=... — PDF (or binary) for inline viewing. */
+export async function fetchViewFile(
+  jobId: string,
+  filePath: string,
+  options?: { viewOriginal?: boolean; signal?: AbortSignal }
+): Promise<FetchViewFileResult> {
+  const trimmed = jobId.trim();
+  const fp = filePath.trim();
+  const config: ProjectRequestConfig = {
+    skipGlobalLoader: true,
+    responseType: "blob",
+    headers: { Accept: "*/*" },
+    params: {
+      file_path: fp,
+      view_original: options?.viewOriginal ?? true,
+    },
+    ...(options?.signal ? { signal: options.signal } : {}),
+  };
+  const res = await apiClient.get<Blob>(
+    `/view-file/${encodeURIComponent(trimmed)}`,
+    config
+  );
+  const blob = res.data instanceof Blob ? res.data : new Blob();
+  const contentType = getResponseHeader(
+    res.headers as { get?: (name: string) => unknown; [key: string]: unknown },
+    "content-type"
+  );
+  return { blob, contentType };
+}
