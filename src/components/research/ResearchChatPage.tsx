@@ -24,8 +24,8 @@ import {
 } from "lucide-react";
 import { toast } from "react-toastify";
 import {
+  displayAnswerFromOutputs,
   fetchResearchQueryResult,
-  fetchResearchQueryStatus,
   submitResearchQuery,
 } from "@/services/researchService";
 import type { QueryResultResponse } from "@/services/researchService";
@@ -189,8 +189,13 @@ function parseChatSessionsFromOutputs(
       if (!item || typeof item !== "object") continue;
       const row = item as Record<string, unknown>;
       const q = typeof row.query === "string" ? row.query.trim() : "";
-      const a =
+      const combined =
+        typeof row.combined_answer === "string"
+          ? row.combined_answer.trim()
+          : "";
+      const refined =
         typeof row.refined_answer === "string" ? row.refined_answer.trim() : "";
+      const a = combined || refined;
       if (q || a) {
         const t: StoredChatTurn = { query: q, refined_answer: a };
         if ("contexts" in row) t.contexts = row.contexts;
@@ -279,31 +284,6 @@ function mergeTopLevelIntoTurns(
     return turns;
   }
   return [...turns, { query: tq || last.query || "", refined_answer: ta }];
-}
-
-function mergedTurnsFromResult(
-  result: QueryResultResponse,
-  preferredSessionId: string | undefined
-): StoredChatTurn[] | null {
-  const sessionMap = parseChatSessionsFromOutputs(result.outputs);
-  if (!sessionMap || Object.keys(sessionMap).length === 0) return null;
-  const query = result.outputs?.query?.trim() ?? "";
-  const answer = result.outputs?.refined_answer?.trim() ?? "";
-  const picked = pickActiveChatSession(
-    sessionMap,
-    preferredSessionId,
-    query,
-    answer
-  );
-  if (!picked) return null;
-  const merged = mergeTopLevelIntoTurns(picked.turns, query, answer);
-  return withLatestTurnContexts(merged, result.outputs?.contexts);
-}
-
-function turnsIncludeUserQuery(turns: StoredChatTurn[], userQuery: string): boolean {
-  const t = userQuery.trim();
-  if (!t) return true;
-  return turns.some((x) => x.query.trim() === t);
 }
 
 /** Attach top-level `/results` `outputs.contexts` to the latest assistant turn. */
@@ -769,13 +749,7 @@ export function ResearchChatPage() {
   const [messages, setMessages] = useState<ChatMessageItem[]>([]);
   const [isTyping, setIsTyping] = useState(false);
   const [isChatLoading, setIsChatLoading] = useState(false);
-  /** Project job_id used for GET /status and /results while a query is in flight. */
-  const [pendingPollProjectJobId, setPendingPollProjectJobId] = useState<
-    string | null
-  >(null);
-  const [pendingPrompt, setPendingPrompt] = useState("");
   const [activeAssistantId, setActiveAssistantId] = useState<string | null>(null);
-  const pollingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const chatScrollRef = useRef<HTMLDivElement>(null);
   const chatCacheRef = useRef<Record<string, StoredChat>>({});
   const researchSessionsRef = useRef<Record<string, string>>({});
@@ -785,13 +759,6 @@ export function ResearchChatPage() {
   >({});
   /** Tracks last selected project to reset chat only on real project changes. */
   const lastProjectForClearRef = useRef<string | null>(null);
-
-  const stopPolling = useCallback(() => {
-    if (pollingTimerRef.current) {
-      clearTimeout(pollingTimerRef.current);
-      pollingTimerRef.current = null;
-    }
-  }, []);
 
   const openSourcesDrawer = useCallback((ctx: unknown) => {
     setSourcesDrawerContexts(ctx);
@@ -812,11 +779,8 @@ export function ResearchChatPage() {
   );
 
   const createAndGoToNewSession = useCallback(() => {
-    stopPolling();
     setIsTyping(false);
     setIsChatLoading(false);
-    setPendingPollProjectJobId(null);
-    setPendingPrompt("");
     setActiveAssistantId(null);
     setInputValue("");
     setShowSources(false);
@@ -839,7 +803,7 @@ export function ResearchChatPage() {
     setMessages([]);
     setMobileSessionsOpen(false);
     router.push("/research");
-  }, [router, stopPolling, selectedProjectJobId]);
+  }, [router, selectedProjectJobId]);
 
   const hydrateChatFromResult = useCallback(
     (jobId: string, query: string, answer: string, contexts?: unknown) => {
@@ -916,7 +880,7 @@ export function ResearchChatPage() {
         updateMessages,
       });
       const query = result.outputs?.query?.trim() ?? "";
-      const answer = result.outputs?.refined_answer?.trim() ?? "";
+      const answer = displayAnswerFromOutputs(result.outputs);
       const sessionMap = parseChatSessionsFromOutputs(result.outputs);
       const hasSessions = Boolean(
         sessionMap && Object.keys(sessionMap).length > 0
@@ -1056,16 +1020,13 @@ export function ResearchChatPage() {
     const prev = lastProjectForClearRef.current;
     lastProjectForClearRef.current = pid || null;
     if (prev !== null && prev !== (pid || null)) {
-      stopPolling();
       setIsTyping(false);
-      setPendingPollProjectJobId(null);
-      setPendingPrompt("");
       setActiveAssistantId(null);
       setInputValue("");
       setSourcesDrawerOpen(false);
       setMessages([]);
     }
-  }, [hydrated, selectedProjectJobId, stopPolling]);
+  }, [hydrated, selectedProjectJobId]);
 
   useEffect(() => {
     if (!selectedProjectJobId.trim()) {
@@ -1109,7 +1070,7 @@ export function ResearchChatPage() {
   /** After refresh: reload thread for persisted session once `/results` map is available. */
   useEffect(() => {
     if (!hydrated) return;
-    if (isTyping || pendingPollProjectJobId) return;
+    if (isTyping) return;
     const pid = selectedProjectJobId.trim();
     if (!pid || sidebarSessionsLoading) return;
     const sessionId = (
@@ -1126,7 +1087,6 @@ export function ResearchChatPage() {
   }, [
     hydrated,
     isTyping,
-    pendingPollProjectJobId,
     selectedProjectJobId,
     sidebarSessionsLoading,
     chatSessionsMapByJob,
@@ -1153,12 +1113,6 @@ export function ResearchChatPage() {
     if (!hydrated) return;
     writeStoredChats({ chats: chatByJobId, sessions: researchSessions });
   }, [hydrated, chatByJobId, researchSessions]);
-
-  useEffect(() => {
-    return () => {
-      stopPolling();
-    };
-  }, [stopPolling]);
 
   const handleSend = useCallback(async () => {
     const prompt = inputValue.trim();
@@ -1209,7 +1163,6 @@ export function ResearchChatPage() {
     setIsTyping(true);
     setIsChatLoading(false);
     setActiveAssistantId(assistantId);
-    setPendingPrompt(prompt);
 
     try {
       console.log("[research] POST /query-neo4j", {
@@ -1225,10 +1178,39 @@ export function ResearchChatPage() {
           : {}),
         query: prompt,
         show_sources: showSources,
-        show_combined: false,
+        show_combined: true,
         database: "neo4j",
       });
       console.log("[research] /query-neo4j response", queued);
+
+      const statusNormalized = queued.status?.toLowerCase?.() ?? "";
+      if (statusNormalized !== "success" && statusNormalized !== "completed") {
+        replaceAssistantMessage(assistantId, {
+          typing: false,
+          error: true,
+          message:
+            queued.status?.trim() ||
+            "The request did not complete successfully.",
+        });
+        setIsTyping(false);
+        setActiveAssistantId(null);
+        toast.error("Request failed.");
+        router.push("/research");
+        return;
+      }
+
+      if (!queued.interaction) {
+        replaceAssistantMessage(assistantId, {
+          typing: false,
+          error: true,
+          message: "No response content returned.",
+        });
+        setIsTyping(false);
+        setActiveAssistantId(null);
+        router.push("/research");
+        return;
+      }
+
       if (queued.session_id?.trim()) {
         const sid = queued.session_id.trim();
         setResearchSessions((prev) => {
@@ -1245,7 +1227,39 @@ export function ResearchChatPage() {
           [projectJobId]: sid,
         };
       }
-      setPendingPollProjectJobId(projectJobId);
+
+      const result: QueryResultResponse = {
+        status: queued.status,
+        outputs: {
+          query: queued.interaction.query ?? prompt,
+          refined_answer: queued.interaction.refined_answer,
+          combined_answer: queued.interaction.combined_answer,
+          contexts: queued.interaction.contexts,
+        },
+      };
+
+      digestResearchResults(projectJobId, result, assistantId, {
+        fallbackUserQuery: prompt,
+      });
+      setIsTyping(false);
+      setActiveAssistantId(null);
+      setShowSources(false);
+
+      void (async () => {
+        try {
+          const r = await fetchResearchQueryResult(projectJobId);
+          const map = parseChatSessionsFromOutputs(r.outputs);
+          if (map && Object.keys(map).length > 0) {
+            setChatSessionsMapByJob((prev) => ({
+              ...prev,
+              [projectJobId]: map,
+            }));
+          }
+        } catch {
+          /* ignore — sidebar can refresh on next navigation */
+        }
+      })();
+
       router.push("/research");
     } catch (err) {
       console.log("[research] submitResearchQuery failed", err);
@@ -1256,11 +1270,10 @@ export function ResearchChatPage() {
       });
       setIsTyping(false);
       setActiveAssistantId(null);
-      setPendingPollProjectJobId(null);
-      setPendingPrompt("");
       toast.error("Failed to send query.");
     }
   }, [
+    digestResearchResults,
     inputValue,
     isTyping,
     messages,
@@ -1300,100 +1313,6 @@ export function ResearchChatPage() {
     },
     [selectedProjectJobId, hydrateChatFromTurns]
   );
-
-  useEffect(() => {
-    if (!pendingPollProjectJobId || !activeAssistantId) return;
-
-    let cancelled = false;
-    const projectJobId = pendingPollProjectJobId;
-
-    const pollOnce = async () => {
-      try {
-        const status = await fetchResearchQueryStatus(projectJobId);
-        if (cancelled) return;
-        console.log("[research] /status response", {
-          job_id: projectJobId,
-          status,
-        });
-
-        const normalized = status.status?.toLowerCase?.() ?? "";
-        if (normalized === "success" || normalized === "completed") {
-          let result = await fetchResearchQueryResult(projectJobId);
-          if (cancelled) return;
-          const pendingQ = pendingPrompt.trim();
-          if (pendingQ) {
-            const merged = mergedTurnsFromResult(
-              result,
-              researchSessionsRef.current[projectJobId]
-            );
-            if (
-              merged &&
-              !turnsIncludeUserQuery(merged, pendingQ)
-            ) {
-              await new Promise((r) => setTimeout(r, 750));
-              if (cancelled) return;
-              result = await fetchResearchQueryResult(projectJobId);
-              if (cancelled) return;
-            }
-          }
-          console.log("[research] poll /status success → /results", {
-            job_id: projectJobId,
-            result,
-          });
-          digestResearchResults(projectJobId, result, activeAssistantId, {
-            fallbackUserQuery: pendingPrompt,
-          });
-          setIsTyping(false);
-          setPendingPollProjectJobId(null);
-          setPendingPrompt("");
-          setActiveAssistantId(null);
-          stopPolling();
-          return;
-        }
-
-        if (normalized === "failed" || normalized === "error") {
-          replaceAssistantMessage(activeAssistantId, {
-            typing: false,
-            error: true,
-            message: "The request failed while processing. Please try again.",
-          });
-          setIsTyping(false);
-          setPendingPollProjectJobId(null);
-          setPendingPrompt("");
-          setActiveAssistantId(null);
-          stopPolling();
-          return;
-        }
-
-        pollingTimerRef.current = setTimeout(pollOnce, 2500);
-      } catch {
-        if (cancelled) return;
-        replaceAssistantMessage(activeAssistantId, {
-          typing: false,
-          error: true,
-          message: "Could not fetch the response status. Please try again.",
-        });
-        setIsTyping(false);
-        setPendingPollProjectJobId(null);
-        setPendingPrompt("");
-        setActiveAssistantId(null);
-        stopPolling();
-      }
-    };
-
-    void pollOnce();
-    return () => {
-      cancelled = true;
-      stopPolling();
-    };
-  }, [
-    pendingPollProjectJobId,
-    activeAssistantId,
-    replaceAssistantMessage,
-    stopPolling,
-    pendingPrompt,
-    digestResearchResults,
-  ]);
 
   const hasMessages = messages.length > 0;
 

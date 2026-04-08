@@ -16,19 +16,19 @@ export type QueryNeo4jPayload = {
   database: string;
 };
 
+/** Single turn returned inline from `POST /query-neo4j` (no polling). */
+export type QueryNeo4jInteraction = {
+  query?: string | null;
+  refined_answer?: string | null;
+  combined_answer?: string | null;
+  contexts?: unknown;
+};
+
 export type QueryNeo4jResponse = {
   job_id: string;
   status: string;
   session_id?: string;
-};
-
-export type QueryStatusResponse = {
-  status: string;
-  outputs?: {
-    refined_answer?: string | null;
-    [key: string]: unknown;
-  };
-  error?: string | null;
+  interaction?: QueryNeo4jInteraction;
 };
 
 /** One turn inside `outputs.chat_sessions[sessionId]`. */
@@ -55,6 +55,16 @@ export type QueryResultResponse = {
   detail?: string;
 };
 
+/** Prefer combined answer for display when present. */
+export function displayAnswerFromOutputs(
+  outputs: QueryResultOutputs | undefined
+): string {
+  if (!outputs) return "";
+  const c = outputs.combined_answer?.trim();
+  if (c) return c;
+  return outputs.refined_answer?.trim() ?? "";
+}
+
 export async function submitResearchQuery(
   payload: QueryNeo4jPayload
 ): Promise<QueryNeo4jResponse> {
@@ -65,17 +75,6 @@ export async function submitResearchQuery(
     config
   );
   return data as QueryNeo4jResponse;
-}
-
-export async function fetchResearchQueryStatus(
-  jobId: string
-): Promise<QueryStatusResponse> {
-  const config: ResearchRequestConfig = { skipGlobalLoader: true };
-  const { data } = await apiClient.get<QueryStatusResponse>(
-    `/status/${jobId}`,
-    config
-  );
-  return data as QueryStatusResponse;
 }
 
 export async function fetchResearchQueryResult(

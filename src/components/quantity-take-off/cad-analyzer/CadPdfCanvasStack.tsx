@@ -13,16 +13,23 @@ import { cn } from "@/lib/utils";
 import { useCadAnalyzerTool } from "@/contexts/CadAnalyzerToolContext";
 import type { PDFDocumentProxy, PDFPageProxy, RenderTask } from "pdfjs-dist";
 
+/** Avoid GPU/memory blowups on extreme zoom. */
+const MAX_CANVAS_EDGE_PX = 8192;
+const MAX_BASE_FIT = 4;
+
 type PdfPageRowProps = {
   pdfDoc: PDFDocumentProxy;
   pageNumber: number;
   maxWidth: number;
+  /** User zoom multiplier (1 = fit width). Baked into pdf.js render scale — not CSS scale — for sharp text. */
+  zoomScale: number;
 };
 
 /**
  * Single page: PDF raster on bottom canvas, transparent overlay on top (matches `abc.html` canvas-stack).
+ * Renders at `fitToWidth * zoomScale` so zooming in re-rasters at higher resolution instead of upscaling one bitmap.
  */
-function PdfPageRow({ pdfDoc, pageNumber, maxWidth }: PdfPageRowProps) {
+function PdfPageRow({ pdfDoc, pageNumber, maxWidth, zoomScale }: PdfPageRowProps) {
   const pdfRef = useRef<HTMLCanvasElement>(null);
   const overlayRef = useRef<HTMLCanvasElement>(null);
 
@@ -39,16 +46,31 @@ function PdfPageRow({ pdfDoc, pageNumber, maxWidth }: PdfPageRowProps) {
         if (cancelled || !page) return;
 
         const base = page.getViewport({ scale: 1 });
-        const fitScale = Math.min(maxWidth / base.width, 4);
-        const viewport = page.getViewport({ scale: fitScale });
+        const fitToWidth = Math.min(maxWidth / base.width, MAX_BASE_FIT);
+        let effectiveScale = fitToWidth * zoomScale;
+
         const outputScale = window.devicePixelRatio || 1;
 
         const canvas = pdfRef.current;
         const overlay = overlayRef.current;
         if (!canvas || !overlay) return;
 
-        const w = Math.floor(viewport.width * outputScale);
-        const h = Math.floor(viewport.height * outputScale);
+        const clampViewport = (scale: number) => page!.getViewport({ scale });
+
+        let viewport = clampViewport(effectiveScale);
+        let w = Math.floor(viewport.width * outputScale);
+        let h = Math.floor(viewport.height * outputScale);
+        if (w > MAX_CANVAS_EDGE_PX || h > MAX_CANVAS_EDGE_PX) {
+          const factor = Math.min(
+            MAX_CANVAS_EDGE_PX / Math.max(w, 1),
+            MAX_CANVAS_EDGE_PX / Math.max(h, 1)
+          );
+          effectiveScale *= factor;
+          viewport = clampViewport(effectiveScale);
+          w = Math.floor(viewport.width * outputScale);
+          h = Math.floor(viewport.height * outputScale);
+        }
+
         canvas.width = w;
         canvas.height = h;
         canvas.style.width = `${Math.floor(viewport.width)}px`;
@@ -98,7 +120,7 @@ function PdfPageRow({ pdfDoc, pageNumber, maxWidth }: PdfPageRowProps) {
       }
       page?.cleanup();
     };
-  }, [pdfDoc, pageNumber, maxWidth]);
+  }, [pdfDoc, pageNumber, maxWidth, zoomScale]);
 
   return (
     <div className="relative mx-auto block w-max max-w-full">
@@ -123,9 +145,12 @@ type CadPdfCanvasStackProps = {
   className?: string;
 };
 
+const ZOOM_MIN = 0.1;
+const ZOOM_MAX = 10;
+
 /**
- * Pan & zoom matches `Quantitites_Project/static/script.js` + `style.css` (.zoom-container / .zoom-content):
- * wheel zooms toward cursor; hand tool pans by dragging.
+ * Pan & zoom: zoom is baked into pdf.js render resolution (sharp). Wrapper uses translate only.
+ * Wheel uses capture + non-passive so scroll-zoom works over nested content.
  */
 export function CadPdfCanvasStack({ pdfBlob, className }: CadPdfCanvasStackProps) {
   const { tool } = useCadAnalyzerTool();
@@ -144,7 +169,6 @@ export function CadPdfCanvasStack({ pdfBlob, className }: CadPdfCanvasStackProps
   const initialFitRef = useRef(false);
 
   const [isDragging, setIsDragging] = useState(false);
-  /** Matches script.js: startX = clientX - pointX, then pointX = clientX - startX */
   const panStartRef = useRef({ startX: 0, startY: 0 });
 
   const resetZoomToFit = useCallback(() => {
@@ -155,18 +179,24 @@ export function CadPdfCanvasStack({ pdfBlob, className }: CadPdfCanvasStackProps
     const containerH = zc.clientHeight;
     const contentW = zcontent.offsetWidth;
     const contentH = zcontent.offsetHeight;
-    if (containerW === 0 || containerH === 0 || contentW === 0 || contentH === 0) {
+    if (
+      containerW === 0 ||
+      containerH === 0 ||
+      contentW === 0 ||
+      contentH === 0
+    ) {
       return;
     }
-    const scale = Math.min(
+    const prev = transformRef.current;
+    const fit = Math.min(
       (containerW - 40) / contentW,
       (containerH - 40) / contentH,
       1
     );
     setTransform({
-      scale,
-      pointX: (containerW - contentW * scale) / 2,
-      pointY: (containerH - contentH * scale) / 2,
+      scale: Math.min(Math.max(prev.scale * fit, ZOOM_MIN), ZOOM_MAX),
+      pointX: (containerW - contentW * fit) / 2,
+      pointY: (containerH - contentH * fit) / 2,
     });
   }, []);
 
@@ -211,7 +241,7 @@ export function CadPdfCanvasStack({ pdfBlob, className }: CadPdfCanvasStackProps
     };
   }, [pdfBlob]);
 
-  /** First layout after PDF paints — `resetZoom(imgW, imgH)` in script.js; debounce so async page renders finish. */
+  /** First layout after PDF paints */
   useEffect(() => {
     const zcontent = zoomContentRef.current;
     if (!zcontent || !pdfDoc) return;
@@ -239,23 +269,27 @@ export function CadPdfCanvasStack({ pdfBlob, className }: CadPdfCanvasStackProps
 
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
+      e.stopPropagation();
       const rect = zc.getBoundingClientRect();
       const prev = transformRef.current;
-      const xs = (e.clientX - rect.left - prev.pointX) / prev.scale;
-      const ys = (e.clientY - rect.top - prev.pointY) / prev.scale;
+      const cx = e.clientX - rect.left - prev.pointX;
+      const cy = e.clientY - rect.top - prev.pointY;
+      const factor = e.deltaY > 0 ? 0.9 : 1.1;
       const newScale = Math.min(
-        Math.max(prev.scale * (e.deltaY > 0 ? 0.9 : 1.1), 0.1),
-        10
+        Math.max(prev.scale * factor, ZOOM_MIN),
+        ZOOM_MAX
       );
+      const ratio = newScale / prev.scale;
       setTransform({
         scale: newScale,
-        pointX: e.clientX - rect.left - xs * newScale,
-        pointY: e.clientY - rect.top - ys * newScale,
+        pointX: e.clientX - rect.left - cx * ratio,
+        pointY: e.clientY - rect.top - cy * ratio,
       });
     };
 
-    zc.addEventListener("wheel", onWheel, { passive: false });
-    return () => zc.removeEventListener("wheel", onWheel);
+    zc.addEventListener("wheel", onWheel, { passive: false, capture: true });
+    return () =>
+      zc.removeEventListener("wheel", onWheel, { capture: true } as AddEventListenerOptions);
   }, []);
 
   const onMouseDown = useCallback(
@@ -305,10 +339,11 @@ export function CadPdfCanvasStack({ pdfBlob, className }: CadPdfCanvasStackProps
     <div
       ref={zoomContainerRef}
       className={cn(
-        "relative h-full w-full min-h-0 touch-none overflow-hidden bg-zinc-100/90",
+        "relative h-full w-full min-h-0 touch-none overflow-hidden overscroll-contain bg-zinc-100/90",
         cursorClass,
         className
       )}
+      style={{ overscrollBehavior: "contain" }}
       title="Scroll wheel: zoom in/out. Hand tool: drag to pan."
       onMouseDown={onMouseDown}
     >
@@ -327,8 +362,7 @@ export function CadPdfCanvasStack({ pdfBlob, className }: CadPdfCanvasStackProps
           className="absolute left-0 top-0 inline-block origin-top-left will-change-transform"
           style={
             {
-              transform: `translate(${transform.pointX}px, ${transform.pointY}px) scale(${transform.scale})`,
-              /* Match script.js `updateTransform`; omit transition so wheel zoom stays responsive */
+              transform: `translate(${transform.pointX}px, ${transform.pointY}px)`,
             } as CSSProperties
           }
         >
@@ -339,6 +373,7 @@ export function CadPdfCanvasStack({ pdfBlob, className }: CadPdfCanvasStackProps
                 pdfDoc={pdfDoc}
                 pageNumber={i + 1}
                 maxWidth={maxWidth}
+                zoomScale={transform.scale}
               />
             ))}
           </div>
