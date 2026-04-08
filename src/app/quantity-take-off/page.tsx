@@ -1,5 +1,6 @@
 "use client";
 
+import { Suspense } from "react";
 import { useRouter } from "next/navigation";
 import { ChevronLeft } from "lucide-react";
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
@@ -32,7 +33,16 @@ export default function QuantityTakeOffPage() {
       searchPlaceholder="Search…"
     >
       <PageContainer className="flex min-h-0 flex-1 flex-col !bg-background">
-        <QuantityTakeOffView jobId={selectedProjectJobId} />
+        <Suspense
+          fallback={
+            <div
+              className="flex min-h-[40vh] flex-1 items-center justify-center bg-background"
+              aria-hidden
+            />
+          }
+        >
+          <QuantityTakeOffView jobId={selectedProjectJobId} />
+        </Suspense>
       </PageContainer>
     </DashboardLayout>
   );

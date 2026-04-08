@@ -81,6 +81,10 @@ const TreeNode = memo(function TreeNode({
 
   const handleRowClick = () => {
     onSelect?.(node.id);
+    if (isFile && onViewFile) {
+      onViewFile(node);
+      return;
+    }
     if (expandable) setOpen((o) => !o);
   };
 
@@ -143,20 +147,15 @@ const TreeNode = memo(function TreeNode({
           <Folder className="h-4 w-4 shrink-0" aria-hidden />
         )}
         {isFile && onViewFile ? (
-          <button
-            type="button"
+          <span
             className={cn(
-              "min-w-0 flex-1 text-left text-sm leading-snug hover:underline hover:underline-offset-2",
+              "min-w-0 flex-1 text-left text-sm leading-snug",
               "break-words [overflow-wrap:anywhere] sm:truncate sm:overflow-hidden sm:text-ellipsis sm:whitespace-nowrap sm:leading-normal"
             )}
             title={node.label}
-            onClick={(e) => {
-              e.stopPropagation();
-              onViewFile(node);
-            }}
           >
             {node.label}
-          </button>
+          </span>
         ) : (
           <span
             className={cn(

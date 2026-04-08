@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { Loader2, LayoutGrid, LayoutPanelLeft } from "lucide-react";
 import { FolderTree, type FolderNode } from "@/components/ui/FolderTree";
 import {
@@ -17,6 +18,28 @@ import { cn } from "@/lib/utils";
 import { CadAnalyzerToolProvider } from "@/contexts/CadAnalyzerToolContext";
 import { CadAnalyzerFloatingBridge } from "@/components/quantity-take-off/cad-analyzer/CadAnalyzerFloatingBridge";
 import { CadPdfCanvasStack } from "@/components/quantity-take-off/cad-analyzer/CadPdfCanvasStack";
+
+function findFileIdByStoragePath(
+  nodes: FolderNode[],
+  treeNodes: FolderNode[],
+  targetPath: string
+): string | null {
+  for (const node of nodes) {
+    if (node.kind === "file") {
+      const p = nodeToProjectActionPath(node, treeNodes);
+      if (p === targetPath) return node.id;
+    }
+    if (node.children?.length) {
+      const id = findFileIdByStoragePath(
+        node.children,
+        treeNodes,
+        targetPath
+      );
+      if (id) return id;
+    }
+  }
+  return null;
+}
 
 function treeLoadErrorMessage(e: unknown): string {
   let message = "Could not load project tree.";
@@ -50,6 +73,22 @@ export type QuantityTakeOffViewProps = {
  */
 export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
   const trimmedJobId = jobId.trim();
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const pathFromUrl = searchParams.get("path")?.trim() ?? "";
+
+  const replacePdfInUrl = useCallback(
+    (path: string | null) => {
+      if (path) {
+        router.replace(`/quantity-take-off?path=${encodeURIComponent(path)}`, {
+          scroll: false,
+        });
+      } else {
+        router.replace("/quantity-take-off", { scroll: false });
+      }
+    },
+    [router]
+  );
 
   const { projects: catalogProjects } = useCompletedStepProjects({
     enabled: true,
@@ -85,6 +124,16 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
     "idle"
   );
 
+  const prevJobIdForTreeRef = useRef<string | null>(null);
+
+  /** Restore open PDF from `?path=` on load / refresh / back-forward (do not clear when empty — avoids racing router.replace). */
+  useEffect(() => {
+    if (!trimmedJobId) return;
+    if (pathFromUrl) {
+      setSelectedPdfPath(pathFromUrl);
+    }
+  }, [trimmedJobId, pathFromUrl]);
+
   useEffect(() => {
     if (!trimmedJobId) {
       clearDrawerUnmountTimeout();
@@ -111,6 +160,15 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
 
     const ac = new AbortController();
     let cancelled = false;
+
+    if (
+      prevJobIdForTreeRef.current !== null &&
+      prevJobIdForTreeRef.current !== trimmedJobId
+    ) {
+      setSelectedPdfPath(null);
+      queueMicrotask(() => replacePdfInUrl(null));
+    }
+    prevJobIdForTreeRef.current = trimmedJobId;
 
     setSelectedId(null);
 
@@ -143,7 +201,14 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
       cancelled = true;
       ac.abort();
     };
-  }, [trimmedJobId]);
+  }, [trimmedJobId, replacePdfInUrl]);
+
+  /** Highlight the file row that matches the open PDF (including after refresh). */
+  useEffect(() => {
+    if (!selectedPdfPath || treeNodes.length === 0) return;
+    const id = findFileIdByStoragePath(treeNodes, treeNodes, selectedPdfPath);
+    if (id) setSelectedId(id);
+  }, [treeNodes, selectedPdfPath]);
 
   useEffect(() => {
     if (!trimmedJobId || !selectedPdfPath) {
@@ -241,9 +306,15 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
         toast.error("Could not resolve file path.");
         return;
       }
-      setSelectedPdfPath((prev) => (prev === path ? null : path));
+      setSelectedPdfPath((prev) => {
+        const next = prev === path ? null : path;
+        queueMicrotask(() => {
+          replacePdfInUrl(next);
+        });
+        return next;
+      });
     },
-    [trimmedJobId, treeNodes]
+    [trimmedJobId, treeNodes, replacePdfInUrl]
   );
 
   const toggleSidebar = useCallback(() => {
