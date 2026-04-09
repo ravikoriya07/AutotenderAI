@@ -41,13 +41,12 @@ export function useCompletedStepProjects(options?: UseCompletedStepProjectsOptio
       setCompletedSteps([]);
       return;
     }
-    const ac = new AbortController();
     let cancelled = false;
     setLoading(true);
     void (async () => {
       try {
+        /** No AbortSignal: shared in-flight + Strict Mode unmount was cancelling the only GET. */
         const rows = await fetchCompletedSteps({
-          signal: ac.signal,
           ...(stepName ? { stepName } : {}),
         });
         if (!cancelled) setCompletedSteps(rows);
@@ -57,7 +56,6 @@ export function useCompletedStepProjects(options?: UseCompletedStepProjectsOptio
     })();
     return () => {
       cancelled = true;
-      ac.abort();
     };
   }, [enabled, stepName, refreshToken]);
 

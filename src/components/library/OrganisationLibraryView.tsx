@@ -1,6 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { Loader2, PanelLeft } from "lucide-react";
 import { Card } from "@/components/ui/Card";
 import { FolderTree, FolderNode } from "@/components/ui/FolderTree";
@@ -11,6 +18,7 @@ import { toast } from "react-toastify";
 import axios from "axios";
 import { cn } from "@/lib/utils";
 import { LibraryFileListing } from "@/components/library/LibraryFileListing";
+import { resolveLibraryDeepLinkFile } from "@/lib/libraryListingUtils";
 
 function treeLoadErrorMessage(e: unknown): string {
   let message = "Could not load project library.";
@@ -40,12 +48,22 @@ export type OrganisationLibraryViewProps = {
 
 /** Shared tree + listing layout used by `/library` and `/libraries?job_id=`. */
 export function OrganisationLibraryView({ jobId }: OrganisationLibraryViewProps) {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const deepLinkKeyRef = useRef<string | null>(null);
+  const previousJobIdRef = useRef<string | null>(null);
   const [treeNodes, setTreeNodes] = useState<FolderNode[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [listingHighlightId, setListingHighlightId] = useState<string | null>(
+    null
+  );
   const [loadError, setLoadError] = useState<string | null>(null);
   const [treeLoading, setTreeLoading] = useState(() => Boolean(jobId.trim()));
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [treeRefreshKey, setTreeRefreshKey] = useState(0);
+
+  const fileDeepLinkParam = searchParams.get("file")?.trim() ?? "";
+  const nameDeepLinkParam = searchParams.get("name")?.trim() ?? "";
 
   useEffect(() => {
     const trimmed = jobId.trim();
@@ -93,13 +111,114 @@ export function OrganisationLibraryView({ jobId }: OrganisationLibraryViewProps)
     };
   }, [jobId, treeRefreshKey]);
 
+  /** Reset dedup when switching projects or after deep-link params are cleared from the URL. */
+  useEffect(() => {
+    if (!jobId.trim()) {
+      deepLinkKeyRef.current = null;
+      return;
+    }
+    if (!fileDeepLinkParam && !nameDeepLinkParam) {
+      deepLinkKeyRef.current = null;
+    }
+  }, [jobId, fileDeepLinkParam, nameDeepLinkParam]);
+
+  /**
+   * Clear Research→Library row spotlight when the header project (job) changes (not on first mount).
+   * Runs in layout **before** the deep-link effect so a new job’s `file`/`name` highlight still applies.
+   */
+  useLayoutEffect(() => {
+    const current = jobId.trim();
+    const previous = previousJobIdRef.current;
+    if (previous !== null && previous !== current) {
+      setListingHighlightId(null);
+      deepLinkKeyRef.current = null;
+    }
+    previousJobIdRef.current = current || null;
+  }, [jobId]);
+
+  /** Run before paint so the spotlight row mounts with animation on the first frame. */
+  useLayoutEffect(() => {
+    if (
+      (!fileDeepLinkParam && !nameDeepLinkParam) ||
+      !jobId.trim() ||
+      treeLoading ||
+      treeNodes.length === 0
+    )
+      return;
+
+    let decodedFile = "";
+    if (fileDeepLinkParam) {
+      try {
+        decodedFile = decodeURIComponent(fileDeepLinkParam);
+      } catch {
+        decodedFile = fileDeepLinkParam;
+      }
+    }
+    let decodedName = "";
+    if (nameDeepLinkParam) {
+      try {
+        decodedName = decodeURIComponent(nameDeepLinkParam);
+      } catch {
+        decodedName = nameDeepLinkParam;
+      }
+    }
+
+    const key = `${decodedFile}\0${decodedName}`;
+    if (deepLinkKeyRef.current === key) return;
+
+    const { fileId, parentId } = resolveLibraryDeepLinkFile(
+      treeNodes,
+      decodedFile,
+      decodedName,
+    );
+    if (!fileId) {
+      deepLinkKeyRef.current = key;
+      console.log(
+        "[library] deep link: no file node for path/name",
+        decodedFile,
+        decodedName,
+      );
+      const next = new URLSearchParams(searchParams.toString());
+      next.delete("file");
+      next.delete("name");
+      const qs = next.toString();
+      router.replace(qs ? `/library?${qs}` : "/library", { scroll: false });
+      return;
+    }
+
+    deepLinkKeyRef.current = key;
+    if (parentId) {
+      setSelectedId(parentId);
+      setListingHighlightId(fileId);
+    } else {
+      setSelectedId(fileId);
+      setListingHighlightId(fileId);
+    }
+
+    const next = new URLSearchParams(searchParams.toString());
+    next.delete("file");
+    next.delete("name");
+    const qs = next.toString();
+    router.replace(qs ? `/library?${qs}` : "/library", { scroll: false });
+  }, [
+    fileDeepLinkParam,
+    nameDeepLinkParam,
+    jobId,
+    treeLoading,
+    treeNodes,
+    router,
+    searchParams,
+  ]);
+
   const handleSelect = useCallback((id: string) => {
     setSelectedId(id);
+    setListingHighlightId(null);
     setMobileSidebarOpen(false);
   }, []);
 
   const handleListingSelectedIdChange = useCallback((id: string | null) => {
     setSelectedId(id);
+    setListingHighlightId(null);
     setMobileSidebarOpen(false);
   }, []);
 
@@ -129,6 +248,7 @@ export function OrganisationLibraryView({ jobId }: OrganisationLibraryViewProps)
             nodes={treeNodes}
             selectedId={selectedId ?? undefined}
             onSelect={handleSelect}
+            defaultExpandAll={Boolean(fileDeepLinkParam || nameDeepLinkParam)}
           />
         )}
       </div>
@@ -178,6 +298,7 @@ export function OrganisationLibraryView({ jobId }: OrganisationLibraryViewProps)
               jobId={jobId.trim()}
               selectedId={selectedId}
               onSelectedIdChange={handleListingSelectedIdChange}
+              highlightRowId={listingHighlightId}
               onTreeRefreshRequest={() =>
                 setTreeRefreshKey((k) => k + 1)
               }

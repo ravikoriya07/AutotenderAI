@@ -10,16 +10,16 @@ import {
 import { createPortal } from "react-dom";
 import {
   ChevronRight,
-  Download,
   ExternalLink,
   File as FileIconLucide,
   FileText,
   LayoutGrid,
   LayoutTemplate,
-  Loader2,
   Search,
+  SquareArrowOutUpRight,
   X,
 } from "lucide-react";
+import { useRouter } from "next/navigation";
 import { toast } from "react-toastify";
 import {
   countResearchSourceReferences,
@@ -29,7 +29,6 @@ import {
   type ResearchSourceFile,
 } from "@/lib/researchSources";
 import {
-  downloadProjectStoragePath,
   isLikelyProjectStoragePath,
   jobOutputAbsolutePathToProjectRelative,
 } from "@/lib/projectPathDownload";
@@ -54,6 +53,28 @@ const SOURCE_BADGE_RING = [
 
 function sourceStackClass(i: number): string {
   return SOURCE_BADGE_RING[i % SOURCE_BADGE_RING.length];
+}
+
+/**
+ * Prefer metadata paths for Library. Avoid `text/data/...` context paths when
+ * `original_file_name` points at the real zip file (e.g. .pdf under extract_zip_output).
+ */
+function projectPathForLibraryOpen(file: ResearchSourceFile): string | null {
+  const ofp = file.originalFilePath?.trim();
+  if (ofp) return ofp;
+  const p = file.path.trim();
+  if (!p || file.isExternalUrl) return null;
+  const rel = isLikelyProjectStoragePath(p)
+    ? jobOutputAbsolutePathToProjectRelative(p)
+    : null;
+  if (!rel) return null;
+  if (
+    file.originalFileName?.trim() &&
+    /^(text\/|data\/)/i.test(rel.replace(/^\/+/, ""))
+  ) {
+    return null;
+  }
+  return rel;
 }
 
 function formatDisplayPath(file: ResearchSourceFile): string {
@@ -142,7 +163,7 @@ export function ResearchSourcesDrawer({
   const [rendered, setRendered] = useState(false);
   const [panelIn, setPanelIn] = useState(false);
   const [search, setSearch] = useState("");
-  const [downloadingId, setDownloadingId] = useState<string | null>(null);
+  const router = useRouter();
 
   useEffect(() => {
     setMounted(true);
@@ -209,31 +230,29 @@ export function ResearchSourcesDrawer({
   const job = projectJobId.trim();
 
   const handleSourceActivate = useCallback(
-    async (file: ResearchSourceFile) => {
+    (file: ResearchSourceFile) => {
       if (file.isExternalUrl) {
         window.open(file.path, "_blank", "noopener,noreferrer");
         return;
       }
       if (!job) {
-        toast.error("Select a project in the header to download files.");
+        toast.error("Select a project in the header to open files in the Library.");
         return;
       }
-      if (!isLikelyProjectStoragePath(file.path)) {
-        toast.error("This source cannot be downloaded as a project file.");
+      const rel = projectPathForLibraryOpen(file);
+      const name = file.originalFileName?.trim();
+      if (!rel && !name) {
+        toast.error("This source does not include a library file path.");
         return;
       }
-      setDownloadingId(file.id);
-      try {
-        const ok = await downloadProjectStoragePath(job, file.path);
-        if (!ok)
-          toast.error("Download failed. Try the Library for this project.");
-      } catch {
-        toast.error("Download failed. Try the Library for this project.");
-      } finally {
-        setDownloadingId(null);
-      }
+      const q = new URLSearchParams();
+      if (rel) q.set("file", rel);
+      if (name) q.set("name", name);
+      q.set("job_id", job);
+      router.push(`/library?${q.toString()}`);
+      onClose();
     },
-    [job]
+    [job, onClose, router]
   );
 
   const handleAsideTransitionEnd = useCallback(
@@ -339,7 +358,6 @@ export function ResearchSourcesDrawer({
           ) : (
             <ul className="space-y-1 pb-[env(safe-area-inset-bottom)]">
               {filtered.map((row) => {
-                const busy = downloadingId === row.file.id;
                 const iconKind = getFileManagerIconKind(row.file.label, false);
                 const pathLine = formatDisplayPath(row.file);
                 const dupBadge =
@@ -352,17 +370,15 @@ export function ResearchSourcesDrawer({
                   <li key={row.key}>
                     <button
                       type="button"
-                      onClick={() => void handleSourceActivate(row.file)}
-                      disabled={busy}
+                      onClick={() => handleSourceActivate(row.file)}
                       aria-label={
                         row.file.isExternalUrl
-                          ? `Open ${row.file.label}`
-                          : `Download ${row.file.label}`
+                          ? `Open ${row.file.label} in new tab`
+                          : `Open ${row.file.label} in Library`
                       }
                       className={cn(
                         "flex w-full min-w-0 items-start gap-3 rounded-xl px-3 py-3 text-left transition-colors",
-                        "hover:bg-muted/70 active:bg-muted",
-                        busy && "opacity-60"
+                        "hover:bg-muted/70 active:bg-muted"
                       )}
                     >
                       <span
@@ -385,13 +401,11 @@ export function ResearchSourcesDrawer({
                           {pathLine}
                         </span>
                       </span>
-                      <span className="mt-1 shrink-0 self-start">
-                        {busy ? (
-                          <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
-                        ) : row.file.isExternalUrl ? (
+                      <span className="mt-1 shrink-0 self-start" aria-hidden>
+                        {row.file.isExternalUrl ? (
                           <ExternalLink className="h-4 w-4 text-muted-foreground" />
                         ) : (
-                          <Download className="h-4 w-4 text-muted-foreground" />
+                          <SquareArrowOutUpRight className="h-4 w-4 text-muted-foreground" />
                         )}
                       </span>
                     </button>

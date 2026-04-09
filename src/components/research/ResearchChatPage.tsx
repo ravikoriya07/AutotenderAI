@@ -25,11 +25,14 @@ import {
 import { toast } from "react-toastify";
 import {
   displayAnswerFromOutputs,
-  fetchResearchQueryResult,
+  fetchChatHistory,
+  fetchChatSessions,
   submitResearchQuery,
 } from "@/services/researchService";
-import type { QueryResultResponse } from "@/services/researchService";
-import { useCompletedStepProjects } from "@/hooks/useCompletedStepProjects";
+import type {
+  ChatSessionListEntry,
+  QueryResultResponse,
+} from "@/services/researchService";
 import { useResearchProject } from "@/contexts/ResearchProjectContext";
 import {
   ResearchSourcesDrawer,
@@ -172,130 +175,6 @@ function readStoredChats(): JobChatStore {
 function writeStoredChats(store: JobChatStore): void {
   if (typeof window === "undefined") return;
   localStorage.setItem(STORAGE_KEY, JSON.stringify(store));
-}
-
-function parseChatSessionsFromOutputs(
-  outputs: unknown
-): Record<string, StoredChatTurn[]> | null {
-  if (!outputs || typeof outputs !== "object") return null;
-  const o = outputs as Record<string, unknown>;
-  const cs = o.chat_sessions;
-  if (!cs || typeof cs !== "object" || Array.isArray(cs)) return null;
-  const out: Record<string, StoredChatTurn[]> = {};
-  for (const [sid, arr] of Object.entries(cs as Record<string, unknown>)) {
-    if (!Array.isArray(arr)) continue;
-    const turns: StoredChatTurn[] = [];
-    for (const item of arr) {
-      if (!item || typeof item !== "object") continue;
-      const row = item as Record<string, unknown>;
-      const q = typeof row.query === "string" ? row.query.trim() : "";
-      const combined =
-        typeof row.combined_answer === "string"
-          ? row.combined_answer.trim()
-          : "";
-      const refined =
-        typeof row.refined_answer === "string" ? row.refined_answer.trim() : "";
-      const a = combined || refined;
-      if (q || a) {
-        const t: StoredChatTurn = { query: q, refined_answer: a };
-        if ("contexts" in row) t.contexts = row.contexts;
-        turns.push(t);
-      }
-    }
-    if (turns.length) out[sid] = turns;
-  }
-  return Object.keys(out).length ? out : null;
-}
-
-function pickActiveChatSession(
-  sessions: Record<string, StoredChatTurn[]>,
-  preferredSessionId: string | undefined,
-  topQuery: string,
-  topAnswer: string
-): { sessionId: string; turns: StoredChatTurn[] } | null {
-  const keys = Object.keys(sessions).filter((k) => sessions[k].length > 0);
-  if (!keys.length) return null;
-
-  if (preferredSessionId && sessions[preferredSessionId]?.length) {
-    return {
-      sessionId: preferredSessionId,
-      turns: sessions[preferredSessionId],
-    };
-  }
-
-  if (keys.length === 1) {
-    const sessionId = keys[0];
-    return { sessionId, turns: sessions[sessionId] };
-  }
-
-  const tq = topQuery.trim();
-  const ta = topAnswer.trim();
-  if (tq || ta) {
-    for (const sid of keys) {
-      const turns = sessions[sid];
-      const last = turns[turns.length - 1];
-      if (last && last.query === tq && last.refined_answer === ta) {
-        return { sessionId: sid, turns };
-      }
-    }
-    if (ta) {
-      for (const sid of keys) {
-        const turns = sessions[sid];
-        const last = turns[turns.length - 1];
-        if (last && last.refined_answer === ta) {
-          return { sessionId: sid, turns };
-        }
-      }
-    }
-  }
-
-  let bestKey = keys[0];
-  let bestLen = sessions[bestKey].length;
-  for (let i = 1; i < keys.length; i++) {
-    const k = keys[i];
-    const len = sessions[k].length;
-    if (len > bestLen) {
-      bestLen = len;
-      bestKey = k;
-    }
-  }
-  return { sessionId: bestKey, turns: sessions[bestKey] };
-}
-
-/** If API top-level outputs are newer than the last row in chat_sessions, append one turn. */
-function mergeTopLevelIntoTurns(
-  turns: StoredChatTurn[],
-  topQuery: string,
-  topAnswer: string
-): StoredChatTurn[] {
-  const tq = topQuery.trim();
-  const ta = topAnswer.trim();
-  if (!ta && !tq) return turns;
-
-  if (turns.length === 0) {
-    return [{ query: tq, refined_answer: ta }];
-  }
-
-  const last = turns[turns.length - 1];
-  if (last.refined_answer === ta && (!tq || last.query === tq)) {
-    return turns;
-  }
-  if (last.refined_answer === ta) {
-    return turns;
-  }
-  return [...turns, { query: tq || last.query || "", refined_answer: ta }];
-}
-
-/** Attach top-level `/results` `outputs.contexts` to the latest assistant turn. */
-function withLatestTurnContexts(
-  turns: StoredChatTurn[],
-  contexts: unknown
-): StoredChatTurn[] {
-  if (!turns.length || countResearchSources(contexts) === 0) return turns;
-  const last = turns.length - 1;
-  return turns.map((t, i) =>
-    i === last ? { ...t, contexts } : t
-  );
 }
 
 function TypingDots() {
@@ -501,7 +380,7 @@ function ResearchSidebar({
   onNewSession,
   projectSelected,
   sessionsLoading,
-  sessionIds,
+  sessions,
   selectedSessionId,
   onSelectSession,
 }: {
@@ -510,13 +389,13 @@ function ResearchSidebar({
   onNewSession: () => void;
   projectSelected: boolean;
   sessionsLoading: boolean;
-  sessionIds: string[];
+  sessions: ChatSessionListEntry[];
   selectedSessionId: string | null;
   onSelectSession: (sessionId: string) => void;
 }) {
   const showEmptyHint = !projectSelected;
   const showNoSessions =
-    projectSelected && !sessionsLoading && sessionIds.length === 0;
+    projectSelected && !sessionsLoading && sessions.length === 0;
 
   return (
     <aside
@@ -565,20 +444,20 @@ function ResearchSidebar({
                   Sessions
                 </p>
                 <ul className="space-y-1">
-                  {sessionIds.map((sid) => (
-                    <li key={sid}>
+                  {sessions.map((s) => (
+                    <li key={s.session_id}>
                       <button
                         type="button"
-                        onClick={() => onSelectSession(sid)}
+                        onClick={() => onSelectSession(s.session_id)}
                         className={cn(
-                          "w-full max-w-full rounded-md px-2 py-2 text-left font-mono text-[11px] leading-snug break-all whitespace-normal",
-                          sid === selectedSessionId
+                          "w-full max-w-full rounded-md px-2 py-2 text-left text-sm leading-snug break-words",
+                          s.session_id === selectedSessionId
                             ? "bg-primary/10 font-medium text-primary"
                             : "text-foreground hover:bg-muted"
                         )}
-                        title={sid}
+                        title={s.session_id}
                       >
-                        {sid}
+                        {s.title?.trim() || s.session_id}
                       </button>
                     </li>
                   ))}
@@ -608,7 +487,7 @@ function MobileSessionsDrawer({
   onNewSession,
   projectSelected,
   sessionsLoading,
-  sessionIds,
+  sessions,
   selectedSessionId,
   onSelectSession,
 }: {
@@ -617,7 +496,7 @@ function MobileSessionsDrawer({
   onNewSession: () => void;
   projectSelected: boolean;
   sessionsLoading: boolean;
-  sessionIds: string[];
+  sessions: ChatSessionListEntry[];
   selectedSessionId: string | null;
   onSelectSession: (sessionId: string) => void;
 }) {
@@ -680,28 +559,28 @@ function MobileSessionsDrawer({
                 Sessions
               </p>
               <ul className="space-y-1">
-                {sessionIds.map((sid) => (
-                  <li key={sid}>
+                {sessions.map((s) => (
+                  <li key={s.session_id}>
                     <button
                       type="button"
                       onClick={() => {
-                        onSelectSession(sid);
+                        onSelectSession(s.session_id);
                         onOpenChange(false);
                       }}
                       className={cn(
-                        "w-full max-w-full rounded-md px-2 py-2 text-left font-mono text-[11px] leading-snug break-all whitespace-normal",
-                        sid === selectedSessionId
+                        "w-full max-w-full rounded-md px-2 py-2 text-left text-sm leading-snug break-words",
+                        s.session_id === selectedSessionId
                           ? "bg-primary/10 font-medium text-primary"
                           : "text-foreground hover:bg-muted"
                       )}
-                      title={sid}
+                      title={s.session_id}
                     >
-                      {sid}
+                      {s.title?.trim() || s.session_id}
                     </button>
                   </li>
                 ))}
               </ul>
-              {!sessionsLoading && sessionIds.length === 0 ? (
+              {!sessionsLoading && sessions.length === 0 ? (
                 <p className="mt-2 px-1 text-sm text-muted-foreground">
                   No sessions yet. Submit a question to start.
                 </p>
@@ -721,16 +600,17 @@ function MobileSessionsDrawer({
 
 export function ResearchChatPage() {
   const router = useRouter();
-  const { selectedProjectJobId } = useResearchProject();
-
-  const { projects: catalogProjects, loading: catalogProjectsLoading } =
-    useCompletedStepProjects();
+  const {
+    selectedProjectJobId,
+    completedStepProjects: catalogProjects,
+    completedStepsLoading: catalogProjectsLoading,
+  } = useResearchProject();
 
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [mobileSessionsOpen, setMobileSessionsOpen] = useState(false);
   const [sidebarSessionsLoading, setSidebarSessionsLoading] = useState(false);
-  const [chatSessionsMapByJob, setChatSessionsMapByJob] = useState<
-    Record<string, Record<string, StoredChatTurn[]>>
+  const [sessionCatalogByJob, setSessionCatalogByJob] = useState<
+    Record<string, ChatSessionListEntry[]>
   >({});
   const [selectedSessionIdByJob, setSelectedSessionIdByJob] = useState<
     Record<string, string>
@@ -754,9 +634,8 @@ export function ResearchChatPage() {
   const chatCacheRef = useRef<Record<string, StoredChat>>({});
   const researchSessionsRef = useRef<Record<string, string>>({});
   const selectedSessionIdByJobRef = useRef<Record<string, string>>({});
-  const chatSessionsMapByJobRef = useRef<
-    Record<string, Record<string, StoredChatTurn[]>>
-  >({});
+  /** Tracks last loaded history so refresh does not refetch unnecessarily. */
+  const loadedHistoryKeyRef = useRef<string | null>(null);
   /** Tracks last selected project to reset chat only on real project changes. */
   const lastProjectForClearRef = useRef<string | null>(null);
 
@@ -787,6 +666,7 @@ export function ResearchChatPage() {
     setSourcesDrawerOpen(false);
     const pid = selectedProjectJobId.trim();
     if (pid) {
+      loadedHistoryKeyRef.current = null;
       setResearchSessions((prev) => {
         const next = { ...prev };
         delete next[pid];
@@ -873,7 +753,7 @@ export function ResearchChatPage() {
     ) => {
       const updateMessages = options?.updateMessages !== false;
       const fallbackUserQuery = options?.fallbackUserQuery?.trim() ?? "";
-      console.log("[research] digest /results", {
+      console.log("[research] digest POST /query-neo4j", {
         job_id: jobId,
         result,
         pollAssistantId,
@@ -881,63 +761,6 @@ export function ResearchChatPage() {
       });
       const query = result.outputs?.query?.trim() ?? "";
       const answer = displayAnswerFromOutputs(result.outputs);
-      const sessionMap = parseChatSessionsFromOutputs(result.outputs);
-      const hasSessions = Boolean(
-        sessionMap && Object.keys(sessionMap).length > 0
-      );
-
-      if (hasSessions && sessionMap) {
-        setChatSessionsMapByJob((prev) => ({ ...prev, [jobId]: sessionMap }));
-        if (!updateMessages) {
-          return;
-        }
-        const preferred =
-          researchSessionsRef.current[jobId] ||
-          selectedSessionIdByJobRef.current[jobId];
-        const picked = pickActiveChatSession(
-          sessionMap,
-          preferred,
-          query,
-          answer
-        );
-        if (picked) {
-          const turns = withLatestTurnContexts(
-            mergeTopLevelIntoTurns(picked.turns, query, answer),
-            result.outputs?.contexts
-          );
-          console.log("[research] chat_sessions", {
-            job_id: jobId,
-            session_id: picked.sessionId,
-            turnsCount: turns.length,
-          });
-          setResearchSessions((prev) => {
-            const next = { ...prev, [jobId]: picked.sessionId };
-            researchSessionsRef.current = next;
-            return next;
-          });
-          setSelectedSessionIdByJob((prev) => ({
-            ...prev,
-            [jobId]: picked.sessionId,
-          }));
-          if (turns.length) {
-            hydrateChatFromTurns(jobId, turns);
-          } else if (answer) {
-            hydrateChatFromResult(
-              jobId,
-              query || "",
-              answer,
-              result.outputs?.contexts
-            );
-          }
-          return;
-        }
-      }
-
-      setChatSessionsMapByJob((prev) => {
-        const next = { ...prev };
-        delete next[jobId];
-        return next;
-      });
 
       if (pollAssistantId) {
         if (!answer) {
@@ -979,11 +802,7 @@ export function ResearchChatPage() {
         hydrateChatFromResult(jobId, fq, answer, result.outputs?.contexts);
       }
     },
-    [
-      hydrateChatFromResult,
-      hydrateChatFromTurns,
-      replaceAssistantMessage,
-    ]
+    [hydrateChatFromResult, replaceAssistantMessage]
   );
 
   useEffect(() => {
@@ -993,10 +812,6 @@ export function ResearchChatPage() {
   useEffect(() => {
     selectedSessionIdByJobRef.current = selectedSessionIdByJob;
   }, [selectedSessionIdByJob]);
-
-  useEffect(() => {
-    chatSessionsMapByJobRef.current = chatSessionsMapByJob;
-  }, [chatSessionsMapByJob]);
 
   useEffect(() => {
     const stored = readStoredChats();
@@ -1020,6 +835,7 @@ export function ResearchChatPage() {
     const prev = lastProjectForClearRef.current;
     lastProjectForClearRef.current = pid || null;
     if (prev !== null && prev !== (pid || null)) {
+      loadedHistoryKeyRef.current = null;
       setIsTyping(false);
       setActiveAssistantId(null);
       setInputValue("");
@@ -1038,21 +854,14 @@ export function ResearchChatPage() {
     setSidebarSessionsLoading(true);
     void (async () => {
       try {
-        const result = await fetchResearchQueryResult(projectId);
+        const res = await fetchChatSessions(projectId);
         if (cancelled) return;
-        const map = parseChatSessionsFromOutputs(result.outputs);
-        if (map && Object.keys(map).length > 0) {
-          setChatSessionsMapByJob((prev) => ({ ...prev, [projectId]: map }));
-        } else {
-          setChatSessionsMapByJob((prev) => {
-            const next = { ...prev };
-            delete next[projectId];
-            return next;
-          });
-        }
-      } catch {
+        const list = res.sessions ?? [];
+        setSessionCatalogByJob((prev) => ({ ...prev, [projectId]: list }));
+      } catch (e) {
+        console.log("[research] fetchChatSessions failed", e);
         if (!cancelled) {
-          setChatSessionsMapByJob((prev) => {
+          setSessionCatalogByJob((prev) => {
             const next = { ...prev };
             delete next[projectId];
             return next;
@@ -1067,7 +876,7 @@ export function ResearchChatPage() {
     };
   }, [selectedProjectJobId]);
 
-  /** After refresh: reload thread for persisted session once `/results` map is available. */
+  /** After refresh: load `/chat-history` once for the persisted session (messages still empty). */
   useEffect(() => {
     if (!hydrated) return;
     if (isTyping) return;
@@ -1079,19 +888,39 @@ export function ResearchChatPage() {
       ""
     ).trim();
     if (!sessionId) return;
-    const turns = chatSessionsMapByJob[pid]?.[sessionId];
-    if (!turns?.length) return;
     if (messages.length > 0) return;
 
-    hydrateChatFromTurns(pid, turns);
+    const key = `${pid}|${sessionId}`;
+    if (loadedHistoryKeyRef.current === key) return;
+
+    let cancelled = false;
+    setIsChatLoading(true);
+    void (async () => {
+      try {
+        const turns = await fetchChatHistory(pid, sessionId);
+        if (cancelled) return;
+        loadedHistoryKeyRef.current = key;
+        if (turns.length) {
+          hydrateChatFromTurns(pid, turns);
+        } else {
+          setMessages([]);
+        }
+      } catch (e) {
+        console.log("[research] fetchChatHistory (restore) failed", e);
+      } finally {
+        if (!cancelled) setIsChatLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [
     hydrated,
     isTyping,
     selectedProjectJobId,
     sidebarSessionsLoading,
-    chatSessionsMapByJob,
-    researchSessions,
     selectedSessionIdByJob,
+    researchSessions,
     messages.length,
     hydrateChatFromTurns,
   ]);
@@ -1245,18 +1074,24 @@ export function ResearchChatPage() {
       setActiveAssistantId(null);
       setShowSources(false);
 
+      const sidForKey =
+        queued.session_id?.trim() ||
+        researchSessionsRef.current[projectJobId] ||
+        "";
+      if (sidForKey) {
+        loadedHistoryKeyRef.current = `${projectJobId}|${sidForKey}`;
+      }
+
       void (async () => {
         try {
-          const r = await fetchResearchQueryResult(projectJobId);
-          const map = parseChatSessionsFromOutputs(r.outputs);
-          if (map && Object.keys(map).length > 0) {
-            setChatSessionsMapByJob((prev) => ({
-              ...prev,
-              [projectJobId]: map,
-            }));
-          }
-        } catch {
-          /* ignore — sidebar can refresh on next navigation */
+          const res = await fetchChatSessions(projectJobId);
+          const list = res.sessions ?? [];
+          setSessionCatalogByJob((prev) => ({
+            ...prev,
+            [projectJobId]: list,
+          }));
+        } catch (e) {
+          console.log("[research] fetchChatSessions after send failed", e);
         }
       })();
 
@@ -1286,30 +1121,42 @@ export function ResearchChatPage() {
   ]);
 
   const handleSelectSession = useCallback(
-    (sessionId: string) => {
+    async (sessionId: string) => {
       const projectJobId = selectedProjectJobId.trim();
       if (!projectJobId) return;
-      const map = chatSessionsMapByJobRef.current[projectJobId];
-      const turns = map?.[sessionId];
-      if (!turns?.length) return;
+      const sid = sessionId.trim();
+      if (!sid) return;
       console.log("[research] sidebar select session", {
         job_id: projectJobId,
-        session_id: sessionId,
+        session_id: sid,
       });
       selectedSessionIdByJobRef.current = {
         ...selectedSessionIdByJobRef.current,
-        [projectJobId]: sessionId,
+        [projectJobId]: sid,
       };
       setSelectedSessionIdByJob((prev) => ({
         ...prev,
-        [projectJobId]: sessionId,
+        [projectJobId]: sid,
       }));
       setResearchSessions((prev) => {
-        const next = { ...prev, [projectJobId]: sessionId };
+        const next = { ...prev, [projectJobId]: sid };
         researchSessionsRef.current = next;
         return next;
       });
-      hydrateChatFromTurns(projectJobId, turns);
+      setIsChatLoading(true);
+      try {
+        const turns = await fetchChatHistory(projectJobId, sid);
+        loadedHistoryKeyRef.current = `${projectJobId}|${sid}`;
+        if (turns.length) {
+          hydrateChatFromTurns(projectJobId, turns);
+        } else {
+          setMessages([]);
+        }
+      } catch (e) {
+        console.log("[research] handleSelectSession fetchChatHistory failed", e);
+      } finally {
+        setIsChatLoading(false);
+      }
     },
     [selectedProjectJobId, hydrateChatFromTurns]
   );
@@ -1317,8 +1164,8 @@ export function ResearchChatPage() {
   const hasMessages = messages.length > 0;
 
   const projectJobIdForSidebar = selectedProjectJobId.trim();
-  const sidebarSessionIds = projectJobIdForSidebar
-    ? Object.keys(chatSessionsMapByJob[projectJobIdForSidebar] ?? {})
+  const sidebarSessionsList: ChatSessionListEntry[] = projectJobIdForSidebar
+    ? sessionCatalogByJob[projectJobIdForSidebar] ?? []
     : [];
   const sidebarSelectedSessionId: string | null = projectJobIdForSidebar
     ? selectedSessionIdByJob[projectJobIdForSidebar] ??
@@ -1367,7 +1214,7 @@ export function ResearchChatPage() {
           onNewSession={createAndGoToNewSession}
           projectSelected={Boolean(projectJobIdForSidebar)}
           sessionsLoading={sidebarSessionsLoading}
-          sessionIds={sidebarSessionIds}
+          sessions={sidebarSessionsList}
           selectedSessionId={sidebarSelectedSessionId}
           onSelectSession={handleSelectSession}
         />
@@ -1377,7 +1224,7 @@ export function ResearchChatPage() {
           onNewSession={createAndGoToNewSession}
           projectSelected={Boolean(projectJobIdForSidebar)}
           sessionsLoading={sidebarSessionsLoading}
-          sessionIds={sidebarSessionIds}
+          sessions={sidebarSessionsList}
           selectedSessionId={sidebarSelectedSessionId}
           onSelectSession={handleSelectSession}
         />

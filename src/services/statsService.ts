@@ -26,6 +26,9 @@ type StepsCacheEntry = {
 /** Separate TTL cache per query variant (default vs `step_name`). */
 const completedStepsCacheByKey = new Map<string, StepsCacheEntry>();
 
+/** Coalesce concurrent fetches (e.g. Header + Research page both use the same `stepName`). */
+const inFlightCompletedSteps = new Map<string, Promise<CompletedStepStat[]>>();
+
 function completedStepsCacheKey(stepName?: string): string {
   const s = stepName?.trim();
   return s ? `step:${s}` : "default";
@@ -142,28 +145,41 @@ export async function fetchCompletedSteps(
     }
   }
 
-  try {
-    const config: StatsRequestConfig = {
-      skipGlobalLoader: true,
-      ...(options?.signal ? { signal: options.signal } : {}),
-      ...(stepName ? { params: { step_name: stepName } } : {}),
-    };
-    const { data } = await apiClient.get<unknown>(
-      "/stats/completed-steps",
-      config
-    );
-    const normalized = normalizeCompletedStepsPayload(data);
-    completedStepsCacheByKey.set(cacheKey, {
-      data: normalized,
-      expiresAt: now + CACHE_TTL_MS,
-    });
-    return normalized;
-  } catch (e) {
-    console.log("fetchCompletedSteps failed", e);
-    return [];
-  }
+  const inflightKey = `${cacheKey}|${force ? "1" : "0"}`;
+  const existing = inFlightCompletedSteps.get(inflightKey);
+  if (existing) return existing;
+
+  const pending = (async () => {
+    try {
+      const config: StatsRequestConfig = {
+        skipGlobalLoader: true,
+        ...(options?.signal ? { signal: options.signal } : {}),
+        ...(stepName ? { params: { step_name: stepName } } : {}),
+      };
+      const { data } = await apiClient.get<unknown>(
+        "/stats/completed-steps",
+        config
+      );
+      const normalized = normalizeCompletedStepsPayload(data);
+      const ts = Date.now();
+      completedStepsCacheByKey.set(cacheKey, {
+        data: normalized,
+        expiresAt: ts + CACHE_TTL_MS,
+      });
+      return normalized;
+    } catch (e) {
+      console.log("fetchCompletedSteps failed", e);
+      return [];
+    } finally {
+      inFlightCompletedSteps.delete(inflightKey);
+    }
+  })();
+
+  inFlightCompletedSteps.set(inflightKey, pending);
+  return pending;
 }
 
 export function invalidateCompletedStepsCache(): void {
   completedStepsCacheByKey.clear();
+  inFlightCompletedSteps.clear();
 }

@@ -114,3 +114,77 @@
     cursor: pointer;
   }
 }
+
+@layer utilities {
+  /**
+   * Library: deep-linked file row — animate **cells** (`td`) fill only.
+   * Do not use per-cell `inset` box-shadow (it draws a full rectangle on each `td` and shows
+   * as vertical seams between columns). The ring uses one `outline` on the `<tr>`.
+   */
+  @keyframes library-row-spotlight-fill {
+    0% {
+      background-color: rgb(139 92 246 / 0.24);
+    }
+    33% {
+      background-color: rgb(59 130 246 / 0.2);
+    }
+    66% {
+      background-color: rgb(244 63 94 / 0.18);
+    }
+    100% {
+      background-color: rgb(139 92 246 / 0.24);
+    }
+  }
+
+  @keyframes library-row-spotlight-ring {
+    0% {
+      outline-color: rgb(139 92 246 / 0.55);
+    }
+    33% {
+      outline-color: rgb(59 130 246 / 0.5);
+    }
+    66% {
+      outline-color: rgb(244 63 94 / 0.48);
+    }
+    100% {
+      outline-color: rgb(139 92 246 / 0.55);
+    }
+  }
+
+  /* Kill default row hover bg so it doesn’t hide the animation */
+  tr.library-deep-link-row,
+  tr.library-deep-link-row:hover {
+    background-color: transparent !important;
+  }
+
+  tr.library-deep-link-row {
+    outline: 2px solid rgb(139 92 246 / 0.55);
+    outline-offset: -2px;
+    animation: library-row-spotlight-ring 2.4s ease-in-out infinite;
+  }
+
+  tr.library-deep-link-row:hover {
+    animation: library-row-spotlight-ring 2.4s ease-in-out infinite;
+  }
+
+  tr.library-deep-link-row > td {
+    animation: library-row-spotlight-fill 2.4s ease-in-out infinite;
+    box-shadow: none !important;
+  }
+
+  tr.library-deep-link-row:hover > td {
+    animation: library-row-spotlight-fill 2.4s ease-in-out infinite;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    tr.library-deep-link-row {
+      animation: none;
+      outline-color: rgb(139 92 246 / 0.5);
+    }
+
+    tr.library-deep-link-row > td {
+      animation: none;
+      background-color: rgb(139 92 246 / 0.22);
+    }
+  }
+}

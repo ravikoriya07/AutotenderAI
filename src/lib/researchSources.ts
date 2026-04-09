@@ -6,6 +6,10 @@ export type ResearchSourceFile = {
   path: string;
   /** When true, `path` is an http(s) URL — open instead of project download. */
   isExternalUrl: boolean;
+  /** From API `metadata` — preferred for Library deep-link. */
+  originalFileName?: string;
+  /** From API `metadata` — project-relative path (e.g. `extract_zip_output/…`). */
+  originalFilePath?: string;
 };
 
 /** Derive number of sources from API `contexts` (shape varies by backend). */
@@ -39,6 +43,13 @@ function extractRawSourceArray(contexts: unknown): unknown[] {
 
 function isHttpUrl(s: string): boolean {
   return /^https?:\/\//i.test(s.trim());
+}
+
+function firstNonEmptyString(...values: unknown[]): string | undefined {
+  for (const v of values) {
+    if (typeof v === "string" && v.trim()) return v.trim();
+  }
+  return undefined;
 }
 
 function normalizeOneSource(item: unknown, index: number): ResearchSourceFile | null {
@@ -102,7 +113,25 @@ function normalizeOneSource(item: unknown, index: number): ResearchSourceFile | 
       : typeof idRaw === "number" && Number.isFinite(idRaw)
         ? `src-${idRaw}`
         : `src-${index}`;
-  return { id, label, path, isExternalUrl: external };
+  /** Prefer `metadata`; backend may also send snake_case at the context root. */
+  const originalFileName = firstNonEmptyString(
+    meta?.original_file_name,
+    o.original_file_name,
+    o.originalFileName,
+  );
+  const originalFilePath = firstNonEmptyString(
+    meta?.original_file_path,
+    o.original_file_path,
+    o.originalFilePath,
+  );
+  return {
+    id,
+    label,
+    path,
+    isExternalUrl: external,
+    ...(originalFileName ? { originalFileName } : {}),
+    ...(originalFilePath ? { originalFilePath } : {}),
+  };
 }
 
 /** Map API `contexts` into rows suitable for UI + project download paths. */

@@ -3,6 +3,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -73,6 +74,8 @@ export type LibraryFileListingProps = {
   newButton?: ReactNode;
   /** After a successful project-action, parent can refetch the tree (e.g. shared library view). */
   onTreeRefreshRequest?: () => void;
+  /** Emphasize a file row (e.g. Research → Library deep link). */
+  highlightRowId?: string | null;
 };
 
 export function LibraryFileListing({
@@ -83,6 +86,7 @@ export function LibraryFileListing({
   sharedTree,
   newButton,
   onTreeRefreshRequest,
+  highlightRowId,
 }: LibraryFileListingProps) {
   const controlled = onSelectedIdChange != null;
   const useSharedTree = sharedTree !== undefined;
@@ -271,6 +275,21 @@ export function LibraryFileListing({
     setTableSelectedIds(new Set());
   }, [selectedId]);
 
+  useLayoutEffect(() => {
+    if (!highlightRowId || typeof document === "undefined") return;
+    const id = CSS.escape(highlightRowId);
+    const el = document.querySelector(
+      `[data-library-row-id="${id}"]`
+    ) as HTMLElement | null;
+    if (el) {
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          el.scrollIntoView({ block: "nearest", behavior: "smooth" });
+        });
+      });
+    }
+  }, [highlightRowId, folderChildren, selectedNode?.id]);
+
   const toggleTableRow = useCallback((id: string) => {
     setTableSelectedIds((prev) => {
       const next = new Set(prev);
@@ -394,9 +413,9 @@ export function LibraryFileListing({
   );
 
   const selectItemsAndActions = (
-    <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-2 sm:gap-y-2 ml-auto w-auto max-w-full justify-end sm:justify-end">
+    <div className="flex min-w-0 flex-row flex-wrap items-center justify-end gap-x-2 gap-y-1.5">
       <div className="min-w-0 shrink-0">{selectItemsLabel}</div>
-      <div className="flex min-w-0 flex-wrap items-center gap-2 sm:justify-end">
+      <div className="flex min-w-0 flex-wrap items-center justify-end gap-2">
         {bulkActionButtons}
         {newButton}
       </div>
@@ -468,10 +487,12 @@ export function LibraryFileListing({
     <>
       <div className="border-b border-border/80 p-3 sm:p-4">
         {showBreadcrumbRow ? (
-          <>
-            <div className="mb-3 min-w-0">{selectRowToolbar}</div>
-            <div className="min-w-0">{breadcrumbNav}</div>
-          </>
+          <div className="flex min-w-0 flex-row flex-wrap items-center justify-between gap-x-3 gap-y-2">
+            <div className="min-w-0 flex-1">{breadcrumbNav}</div>
+            <div className="flex min-w-0 shrink-0 justify-end">
+              {selectItemsAndActions}
+            </div>
+          </div>
         ) : (
           selectRowToolbar
         )}
@@ -575,18 +596,25 @@ export function LibraryFileListing({
                         ? formatBytes(child.size)
                         : "—";
                     const rowSelected = tableSelectedIds.has(child.id);
+                    const deepLinked =
+                      !isFolder &&
+                      Boolean(highlightRowId) &&
+                      highlightRowId === child.id;
 
                     return (
                       <TableRow
                         key={child.id}
+                        data-library-row-id={child.id}
                         className={cn(
                           "group border-b transition-colors duration-150",
                           isFolder ? "cursor-pointer" : "cursor-default",
-                          rowSelected
-                            ? "bg-primary/10 hover:bg-primary/15"
-                            : isFolder
-                              ? "hover:bg-muted/60"
-                              : "hover:bg-muted/40"
+                          deepLinked
+                            ? "library-deep-link-row !transition-none hover:!bg-transparent"
+                            : rowSelected
+                              ? "bg-primary/10 hover:bg-primary/15"
+                              : isFolder
+                                ? "hover:bg-muted/60"
+                                : "hover:bg-muted/40"
                         )}
                         onClick={(e) => handleTableBodyClick(child, e)}
                       >

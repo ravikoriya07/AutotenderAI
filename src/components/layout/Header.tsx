@@ -4,8 +4,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { usePathname } from "next/navigation";
 import { Search, Bell, HelpCircle, Menu } from "lucide-react";
 import { useSidebar } from "@/contexts/SidebarContext";
-import { useResearchProjectOptional } from "@/contexts/ResearchProjectContext";
-import { useCompletedStepProjects } from "@/hooks/useCompletedStepProjects";
+import { useResearchProject } from "@/contexts/ResearchProjectContext";
 import { getAuthUserEmail, getAuthUserName } from "@/lib/authStorage";
 import { getShortDisplayName, getUserInitials } from "@/lib/userDisplay";
 import { CompletedStepsProjectSelect } from "@/components/projects/CompletedStepsProjectSelect";
@@ -37,40 +36,37 @@ export function Header({
   const initials = getUserInitials(displayName, email);
   const shortName = getShortDisplayName(displayName, email);
 
-  const researchProject = useResearchProjectOptional();
   const onResearchRoute = pathname.startsWith("/research");
   const onOrganisationLibraryRoute = pathname === "/library";
   const onQuantityTakeOffRoute = pathname.startsWith("/quantity-take-off");
-  const showResearchProjectPicker =
-    researchProject != null &&
-    (onResearchRoute ||
-      onOrganisationLibraryRoute ||
-      onQuantityTakeOffRoute);
-  const { projects: researchCatalogProjects, loading: researchCatalogLoading } =
-    useCompletedStepProjects({
-      enabled: showResearchProjectPicker,
-      ...(onResearchRoute || onQuantityTakeOffRoute
-        ? { stepName: "upload_to_neo4j" }
-        : {}),
-    });
+  const needsCompletedStepsCatalog =
+    onResearchRoute || onOrganisationLibraryRoute || onQuantityTakeOffRoute;
+  const showResearchProjectPicker = needsCompletedStepsCatalog;
+
+  const {
+    selectedProjectJobId,
+    setSelectedProjectJobId,
+    completedStepProjects: researchCatalogProjects,
+    completedStepsLoading: researchCatalogLoading,
+  } = useResearchProject();
 
   useEffect(() => {
-    if (!researchProject) return;
     if (!onResearchRoute && !onOrganisationLibraryRoute && !onQuantityTakeOffRoute)
       return;
     if (researchCatalogLoading) return;
-    const id = researchProject.selectedProjectJobId.trim();
+    const id = selectedProjectJobId.trim();
     if (!id) return;
     if (!researchCatalogProjects.some((p) => p.job_id === id)) {
-      researchProject.setSelectedProjectJobId("");
+      setSelectedProjectJobId("");
     }
   }, [
     onResearchRoute,
     onOrganisationLibraryRoute,
     onQuantityTakeOffRoute,
-    researchProject,
     researchCatalogLoading,
     researchCatalogProjects,
+    selectedProjectJobId,
+    setSelectedProjectJobId,
   ]);
 
   return (
@@ -87,13 +83,13 @@ export function Header({
         <span className="min-w-0 flex-1 truncate text-center text-base font-semibold text-sidebar-foreground lg:flex-initial lg:text-left lg:text-lg">
           AutotenderAI
         </span>
-        {showResearchProjectPicker && researchProject ? (
+        {showResearchProjectPicker ? (
           <div className="min-w-0 max-w-[9.5rem] shrink-0 sm:max-w-[13rem]">
             <CompletedStepsProjectSelect
               projects={researchCatalogProjects}
               loading={researchCatalogLoading}
-              value={researchProject.selectedProjectJobId}
-              onChange={researchProject.setSelectedProjectJobId}
+              value={selectedProjectJobId}
+              onChange={setSelectedProjectJobId}
             />
           </div>
         ) : (

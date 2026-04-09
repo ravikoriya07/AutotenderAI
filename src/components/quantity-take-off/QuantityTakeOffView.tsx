@@ -11,7 +11,7 @@ import {
 } from "@/services/projectService";
 import { folderNodesDrawingBranchFromProjectTreeResponse } from "@/lib/projectTreeNormalize";
 import { nodeToProjectActionPath } from "@/lib/libraryListingUtils";
-import { useCompletedStepProjects } from "@/hooks/useCompletedStepProjects";
+import { useResearchProject } from "@/contexts/ResearchProjectContext";
 import { toast } from "react-toastify";
 import axios from "axios";
 import { cn } from "@/lib/utils";
@@ -90,10 +90,7 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
     [router]
   );
 
-  const { projects: catalogProjects } = useCompletedStepProjects({
-    enabled: true,
-    stepName: "upload_to_neo4j",
-  });
+  const { completedStepProjects: catalogProjects } = useResearchProject();
 
   const projectTitle = useMemo(() => {
     if (!trimmedJobId) return "Select a project";

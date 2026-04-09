@@ -8,12 +8,18 @@ import {
   useMemo,
   useState,
 } from "react";
+import { usePathname } from "next/navigation";
+import { useCompletedStepProjects } from "@/hooks/useCompletedStepProjects";
+import type { CompletedStepProject } from "@/services/statsService";
 
 const STORAGE_KEY = "autotender_research_selected_project_job_id";
 
 type ResearchProjectContextValue = {
   selectedProjectJobId: string;
   setSelectedProjectJobId: (jobId: string) => void;
+  /** Shared catalog for header + research/library/QTO (one GET /stats/completed-steps per route). */
+  completedStepProjects: CompletedStepProject[];
+  completedStepsLoading: boolean;
 };
 
 const ResearchProjectContext =
@@ -51,9 +57,36 @@ export function ResearchProjectProvider({
     }
   }, []);
 
+  const pathname = usePathname() ?? "";
+  const onResearchRoute = pathname.startsWith("/research");
+  const onOrganisationLibraryRoute = pathname === "/library";
+  const onQuantityTakeOffRoute = pathname.startsWith("/quantity-take-off");
+  const needsCompletedStepsCatalog =
+    onResearchRoute ||
+    onOrganisationLibraryRoute ||
+    onQuantityTakeOffRoute;
+
+  const { projects: completedStepProjects, loading: completedStepsLoading } =
+    useCompletedStepProjects({
+      enabled: needsCompletedStepsCatalog,
+      ...(onResearchRoute || onQuantityTakeOffRoute
+        ? { stepName: "upload_to_neo4j" }
+        : {}),
+    });
+
   const value = useMemo(
-    () => ({ selectedProjectJobId, setSelectedProjectJobId }),
-    [selectedProjectJobId, setSelectedProjectJobId]
+    () => ({
+      selectedProjectJobId,
+      setSelectedProjectJobId,
+      completedStepProjects,
+      completedStepsLoading,
+    }),
+    [
+      selectedProjectJobId,
+      setSelectedProjectJobId,
+      completedStepProjects,
+      completedStepsLoading,
+    ]
   );
 
   return (
