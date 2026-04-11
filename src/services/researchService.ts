@@ -276,3 +276,29 @@ export async function fetchChatHistory(
   inFlightChatHistory.set(key, pending);
   return pending;
 }
+
+// --- DELETE /chat-session/{job_id}/{session_id} ---
+
+export type DeleteChatSessionResponse = {
+  status?: string;
+  message?: string;
+};
+
+export async function deleteChatSession(
+  jobId: string,
+  sessionId: string
+): Promise<DeleteChatSessionResponse> {
+  const jid = jobId.trim();
+  const sid = sessionId.trim();
+  if (!jid || !sid) {
+    return Promise.reject(
+      new Error("deleteChatSession: jobId and sessionId are required")
+    );
+  }
+  const config: ResearchRequestConfig = { skipGlobalLoader: true };
+  const { data } = await apiClient.delete<DeleteChatSessionResponse>(
+    `/chat-session/${encodeURIComponent(jid)}/${encodeURIComponent(sid)}`,
+    config
+  );
+  return data;
+}

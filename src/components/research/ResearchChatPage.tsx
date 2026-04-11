@@ -20,11 +20,13 @@ import {
   PanelLeft,
   Plus,
   Send,
+  Trash2,
   X,
 } from "lucide-react";
 import { toast } from "react-toastify";
 import {
   displayAnswerFromOutputs,
+  deleteChatSession,
   fetchChatHistory,
   fetchChatSessions,
   submitResearchQuery,
@@ -40,6 +42,7 @@ import {
 } from "@/components/research/ResearchSourcesDrawer";
 import { countResearchSources, displayResearchSourceCount } from "@/lib/researchSources";
 import { cn } from "@/lib/utils";
+import Swal from "sweetalert2";
 
 type ChatRole = "user" | "assistant";
 
@@ -383,6 +386,8 @@ function ResearchSidebar({
   sessions,
   selectedSessionId,
   onSelectSession,
+  onDeleteSession,
+  deleteBusySessionId,
 }: {
   collapsed: boolean;
   onCollapsedChange: (v: boolean) => void;
@@ -392,6 +397,8 @@ function ResearchSidebar({
   sessions: ChatSessionListEntry[];
   selectedSessionId: string | null;
   onSelectSession: (sessionId: string) => void;
+  onDeleteSession: (sessionId: string) => void;
+  deleteBusySessionId: string | null;
 }) {
   const showEmptyHint = !projectSelected;
   const showNoSessions =
@@ -446,19 +453,45 @@ function ResearchSidebar({
                 <ul className="space-y-1">
                   {sessions.map((s) => (
                     <li key={s.session_id}>
-                      <button
-                        type="button"
-                        onClick={() => onSelectSession(s.session_id)}
+                      <div
                         className={cn(
-                          "w-full max-w-full rounded-md px-2 py-2 text-left text-sm leading-snug break-words",
+                          "group flex max-w-full items-stretch gap-0.5 rounded-md",
                           s.session_id === selectedSessionId
-                            ? "bg-primary/10 font-medium text-primary"
-                            : "text-foreground hover:bg-muted"
+                            ? "bg-primary/10"
+                            : "hover:bg-muted"
                         )}
-                        title={s.session_id}
                       >
-                        {s.title?.trim() || s.session_id}
-                      </button>
+                        <button
+                          type="button"
+                          onClick={() => onSelectSession(s.session_id)}
+                          className={cn(
+                            "min-w-0 flex-1 rounded-md px-2 py-2 text-left text-sm leading-snug break-words",
+                            s.session_id === selectedSessionId
+                              ? "font-medium text-primary"
+                              : "text-foreground"
+                          )}
+                          title={s.session_id}
+                        >
+                          {s.title?.trim() || s.session_id}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onDeleteSession(s.session_id);
+                          }}
+                          disabled={deleteBusySessionId === s.session_id}
+                          className="flex shrink-0 items-center justify-center rounded-md px-1.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive disabled:opacity-50"
+                          aria-label={`Delete session ${s.title?.trim() || s.session_id}`}
+                          title="Delete session"
+                        >
+                          {deleteBusySessionId === s.session_id ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          ) : (
+                            <Trash2 className="h-3.5 w-3.5" />
+                          )}
+                        </button>
+                      </div>
                     </li>
                   ))}
                 </ul>
@@ -490,6 +523,8 @@ function MobileSessionsDrawer({
   sessions,
   selectedSessionId,
   onSelectSession,
+  onDeleteSession,
+  deleteBusySessionId,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -499,6 +534,8 @@ function MobileSessionsDrawer({
   sessions: ChatSessionListEntry[];
   selectedSessionId: string | null;
   onSelectSession: (sessionId: string) => void;
+  onDeleteSession: (sessionId: string) => void;
+  deleteBusySessionId: string | null;
 }) {
   return (
     <>
@@ -561,22 +598,48 @@ function MobileSessionsDrawer({
               <ul className="space-y-1">
                 {sessions.map((s) => (
                   <li key={s.session_id}>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        onSelectSession(s.session_id);
-                        onOpenChange(false);
-                      }}
+                    <div
                       className={cn(
-                        "w-full max-w-full rounded-md px-2 py-2 text-left text-sm leading-snug break-words",
+                        "group flex max-w-full items-stretch gap-0.5 rounded-md",
                         s.session_id === selectedSessionId
-                          ? "bg-primary/10 font-medium text-primary"
-                          : "text-foreground hover:bg-muted"
+                          ? "bg-primary/10"
+                          : "hover:bg-muted"
                       )}
-                      title={s.session_id}
                     >
-                      {s.title?.trim() || s.session_id}
-                    </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          onSelectSession(s.session_id);
+                          onOpenChange(false);
+                        }}
+                        className={cn(
+                          "min-w-0 flex-1 rounded-md px-2 py-2 text-left text-sm leading-snug break-words",
+                          s.session_id === selectedSessionId
+                            ? "font-medium text-primary"
+                            : "text-foreground"
+                        )}
+                        title={s.session_id}
+                      >
+                        {s.title?.trim() || s.session_id}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onDeleteSession(s.session_id);
+                        }}
+                        disabled={deleteBusySessionId === s.session_id}
+                        className="flex shrink-0 items-center justify-center rounded-md px-1.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive disabled:opacity-50"
+                        aria-label={`Delete session ${s.title?.trim() || s.session_id}`}
+                        title="Delete session"
+                      >
+                        {deleteBusySessionId === s.session_id ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <Trash2 className="h-3.5 w-3.5" />
+                        )}
+                      </button>
+                    </div>
                   </li>
                 ))}
               </ul>
@@ -630,6 +693,9 @@ export function ResearchChatPage() {
   const [isTyping, setIsTyping] = useState(false);
   const [isChatLoading, setIsChatLoading] = useState(false);
   const [activeAssistantId, setActiveAssistantId] = useState<string | null>(null);
+  const [deleteBusySessionId, setDeleteBusySessionId] = useState<string | null>(
+    null
+  );
   const chatScrollRef = useRef<HTMLDivElement>(null);
   const chatCacheRef = useRef<Record<string, StoredChat>>({});
   const researchSessionsRef = useRef<Record<string, string>>({});
@@ -1161,6 +1227,80 @@ export function ResearchChatPage() {
     [selectedProjectJobId, hydrateChatFromTurns]
   );
 
+  const handleDeleteSession = useCallback(
+    (sessionId: string) => {
+      const jobId = selectedProjectJobId.trim();
+      const sid = sessionId.trim();
+      if (!jobId || !sid) return;
+
+      void Swal.fire({
+        title: "Delete session?",
+        text: "This chat session will be removed permanently. This cannot be undone.",
+        icon: "warning",
+        showCancelButton: true,
+        confirmButtonText: "Delete",
+        cancelButtonText: "Cancel",
+        confirmButtonColor: "hsl(var(--destructive))",
+      }).then(async (result) => {
+        if (!result.isConfirmed) return;
+
+        setDeleteBusySessionId(sid);
+        try {
+          await deleteChatSession(jobId, sid);
+        } catch (e) {
+          console.log("[research] deleteChatSession failed", e);
+          toast.error("Could not delete session.");
+          return;
+        } finally {
+          setDeleteBusySessionId(null);
+        }
+
+        setSessionCatalogByJob((prev) => {
+          const list = prev[jobId] ?? [];
+          const nextList = list.filter((s) => s.session_id !== sid);
+          return { ...prev, [jobId]: nextList };
+        });
+
+        const activeStored = (
+          selectedSessionIdByJob[jobId] ||
+          researchSessions[jobId] ||
+          ""
+        ).trim();
+        const wasActive = activeStored === sid;
+
+        setResearchSessions((prev) => {
+          if (prev[jobId] !== sid) return prev;
+          const next = { ...prev };
+          delete next[jobId];
+          researchSessionsRef.current = next;
+          return next;
+        });
+        setSelectedSessionIdByJob((prev) => {
+          if (prev[jobId] !== sid) return prev;
+          const next = { ...prev };
+          delete next[jobId];
+          selectedSessionIdByJobRef.current = next;
+          return next;
+        });
+
+        if (wasActive) {
+          loadedHistoryKeyRef.current = null;
+          setChatByJobId((prev) => {
+            const next = { ...prev };
+            delete next[jobId];
+            return next;
+          });
+          setMessages([]);
+          setInputValue("");
+          setSourcesDrawerOpen(false);
+        }
+
+        toast.success("Session deleted.");
+      });
+    },
+    [selectedProjectJobId, selectedSessionIdByJob, researchSessions]
+  );
+
   const hasMessages = messages.length > 0;
 
   const projectJobIdForSidebar = selectedProjectJobId.trim();
@@ -1217,6 +1357,8 @@ export function ResearchChatPage() {
           sessions={sidebarSessionsList}
           selectedSessionId={sidebarSelectedSessionId}
           onSelectSession={handleSelectSession}
+          onDeleteSession={handleDeleteSession}
+          deleteBusySessionId={deleteBusySessionId}
         />
         <ResearchSidebar
           collapsed={sidebarCollapsed}
@@ -1227,6 +1369,8 @@ export function ResearchChatPage() {
           sessions={sidebarSessionsList}
           selectedSessionId={sidebarSelectedSessionId}
           onSelectSession={handleSelectSession}
+          onDeleteSession={handleDeleteSession}
+          deleteBusySessionId={deleteBusySessionId}
         />
         <PageContainer className="flex min-h-0 w-full min-w-0 flex-1 flex-col items-center justify-start overflow-x-hidden overflow-y-hidden bg-[#f8fafc] py-3 sm:py-4 md:py-6">
           <div className="mx-auto flex min-h-0 w-full min-w-0 max-w-5xl flex-1 flex-col px-2 sm:px-3 md:px-4">
@@ -1281,12 +1425,12 @@ export function ResearchChatPage() {
                     Ask anything about your documents, answer bank, or the web.
                   </p>
                 </div>
-                <div className="mx-auto mt-4 flex min-h-0 w-full max-w-[860px] flex-1 flex-col gap-0 md:mt-6">
+                <div className="mx-auto mt-4 flex min-h-0 w-full max-w-[860px] flex-1 flex-col gap-3 sm:gap-4 md:mt-6 md:gap-5 lg:gap-6">
                   {showChatThread ? (
                     <ChatContainer>
                       <div
                         ref={chatScrollRef}
-                        className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-y-contain px-3 py-4 sm:px-4 md:px-6 md:py-5 lg:max-h-[60vh]"
+                        className="min-h-0 min-h-[12rem] flex-1 overflow-y-auto overflow-x-hidden overscroll-y-contain px-3 py-4 sm:min-h-[14rem] sm:px-4 md:min-h-[16rem] md:px-6 md:py-5 lg:max-h-[min(60vh,36rem)]"
                       >
                         {isChatLoading ? (
                           <ChatSkeleton />
@@ -1309,8 +1453,8 @@ export function ResearchChatPage() {
 
                   <div
                     className={cn(
-                      "w-full min-w-0 shrink-0 border-t border-border/80 bg-[#f8fafc] px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-3 shadow-[0_-4px_24px_-16px_rgba(15,23,42,0.08)]",
-                      "lg:border-0 lg:bg-transparent lg:p-0 lg:shadow-none"
+                      "w-full min-w-0 shrink-0",
+                      "pb-[max(0.75rem,env(safe-area-inset-bottom))]"
                     )}
                   >
                     <div className="mx-auto w-full min-w-0 max-w-[860px]">
