@@ -1,37 +1,133 @@
 "use client";
 
 import {
+  forwardRef,
   useCallback,
   useEffect,
+  useImperativeHandle,
+  useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   type CSSProperties,
   type MouseEvent as ReactMouseEvent,
+  type TouchEvent as ReactTouchEvent,
 } from "react";
 import { Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useCadAnalyzerTool } from "@/contexts/CadAnalyzerToolContext";
+import {
+  BACKEND_PDF_VIEWPORT_SCALE,
+  backendMatchesToScreen,
+  backendRoiToScreenCss,
+  type AutoCountPageMetrics,
+} from "@/lib/autoCountCoordinates";
+import type { AutoCountBackendState } from "@/lib/qtoAutoCountStorage";
+import type { AutoCountMatch } from "@/services/autoCountService";
 import type { PDFDocumentProxy, PDFPageProxy, RenderTask } from "pdfjs-dist";
 
 /** Avoid GPU/memory blowups on extreme zoom. */
 const MAX_CANVAS_EDGE_PX = 8192;
 const MAX_BASE_FIT = 4;
 
+export type AutoCountRoiCss = {
+  pageNumber: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+type CssRect = { x: number; y: number; width: number; height: number };
+
+type PageAnnotationLayer = {
+  committedRoi: CssRect | null;
+  draftRoi: CssRect | null;
+  matches: AutoCountMatch[];
+};
+
+function drawPageAnnotations(
+  octx: CanvasRenderingContext2D,
+  bufW: number,
+  bufH: number,
+  cssW: number,
+  cssH: number,
+  layer: PageAnnotationLayer
+) {
+  const sx = bufW / Math.max(cssW, 1);
+  const sy = bufH / Math.max(cssH, 1);
+  octx.setTransform(1, 0, 0, 1, 0, 0);
+  octx.globalAlpha = 1;
+  octx.globalCompositeOperation = "source-over";
+  octx.clearRect(0, 0, bufW, bufH);
+  octx.lineWidth = Math.max(1.5, 2 / (window.devicePixelRatio || 1));
+
+  if (layer.committedRoi) {
+    const r = layer.committedRoi;
+    octx.strokeStyle = "#2563eb";
+    octx.setLineDash([]);
+    octx.strokeRect(r.x * sx, r.y * sy, r.width * sx, r.height * sy);
+  }
+  if (layer.draftRoi) {
+    const r = layer.draftRoi;
+    octx.strokeStyle = "#60a5fa";
+    octx.setLineDash([6, 4]);
+    octx.strokeRect(r.x * sx, r.y * sy, r.width * sx, r.height * sy);
+    octx.setLineDash([]);
+  }
+  for (const m of layer.matches) {
+    octx.setLineDash([]);
+    const mx = m.x * sx;
+    const my = m.y * sy;
+    const mw = m.w * sx;
+    const mh = m.h * sy;
+    if (
+      !Number.isFinite(mx) ||
+      !Number.isFinite(my) ||
+      !Number.isFinite(mw) ||
+      !Number.isFinite(mh) ||
+      mw <= 0 ||
+      mh <= 0
+    ) {
+      continue;
+    }
+    octx.fillStyle = "rgba(124, 58, 237, 0.22)";
+    octx.fillRect(mx, my, mw, mh);
+    octx.strokeStyle = "#6d28d9";
+    octx.lineWidth = Math.max(1.5, 2 / (window.devicePixelRatio || 1));
+    octx.strokeRect(mx, my, mw, mh);
+  }
+}
+
 type PdfPageRowProps = {
   pdfDoc: PDFDocumentProxy;
   pageNumber: number;
   maxWidth: number;
-  /** User zoom multiplier (1 = fit width). Baked into pdf.js render scale — not CSS scale — for sharp text. */
   zoomScale: number;
+  pageWrapperRef: (el: HTMLDivElement | null) => void;
+  autoCountLayer: PageAnnotationLayer;
+  onPageMetrics?: (
+    pageNumber: number,
+    metrics: AutoCountPageMetrics | null
+  ) => void;
 };
 
 /**
  * Single page: PDF raster on bottom canvas, transparent overlay on top (matches `abc.html` canvas-stack).
- * Renders at `fitToWidth * zoomScale` so zooming in re-rasters at higher resolution instead of upscaling one bitmap.
  */
-function PdfPageRow({ pdfDoc, pageNumber, maxWidth, zoomScale }: PdfPageRowProps) {
+function PdfPageRow({
+  pdfDoc,
+  pageNumber,
+  maxWidth,
+  zoomScale,
+  pageWrapperRef,
+  autoCountLayer,
+  onPageMetrics,
+}: PdfPageRowProps) {
   const pdfRef = useRef<HTMLCanvasElement>(null);
   const overlayRef = useRef<HTMLCanvasElement>(null);
+  const layerRef = useRef(autoCountLayer);
+  layerRef.current = autoCountLayer;
 
   useEffect(() => {
     if (maxWidth <= 0) return;
@@ -44,6 +140,8 @@ function PdfPageRow({ pdfDoc, pageNumber, maxWidth, zoomScale }: PdfPageRowProps
       try {
         page = await pdfDoc.getPage(pageNumber);
         if (cancelled || !page) return;
+
+        const backendVp = page.getViewport({ scale: BACKEND_PDF_VIEWPORT_SCALE });
 
         const base = page.getViewport({ scale: 1 });
         const fitToWidth = Math.min(maxWidth / base.width, MAX_BASE_FIT);
@@ -101,10 +199,25 @@ function PdfPageRow({ pdfDoc, pageNumber, maxWidth, zoomScale }: PdfPageRowProps
         await renderTask.promise;
         if (cancelled) return;
 
+        const cssW = Math.floor(viewport.width);
+        const cssH = Math.floor(viewport.height);
+        onPageMetrics?.(pageNumber, {
+          backendBaseWidth: backendVp.width,
+          backendBaseHeight: backendVp.height,
+          cssWidth: cssW,
+          cssHeight: cssH,
+        });
+
         const octx = overlay.getContext("2d");
         if (octx) {
-          octx.setTransform(1, 0, 0, 1, 0, 0);
-          octx.clearRect(0, 0, w, h);
+          drawPageAnnotations(
+            octx,
+            w,
+            h,
+            viewport.width,
+            viewport.height,
+            layerRef.current
+          );
         }
       } catch {
         /* cancelled render or destroyed doc */
@@ -120,14 +233,68 @@ function PdfPageRow({ pdfDoc, pageNumber, maxWidth, zoomScale }: PdfPageRowProps
       }
       page?.cleanup();
     };
-  }, [pdfDoc, pageNumber, maxWidth, zoomScale]);
+  }, [pdfDoc, pageNumber, maxWidth, zoomScale, onPageMetrics]);
+
+  /**
+   * Redraw annotations when ROI/matches change without full PDF re-render.
+   * Retries with rAF until bitmap canvases are sized (avoids racing the async PDF render).
+   */
+  useLayoutEffect(() => {
+    let cancelled = false;
+    let rafId = 0;
+    let attempts = 0;
+    const maxAttempts = 240;
+
+    const tick = () => {
+      if (cancelled) return;
+      const overlay = overlayRef.current;
+      const canvas = pdfRef.current;
+      if (
+        !overlay ||
+        !canvas ||
+        canvas.width === 0 ||
+        canvas.height === 0 ||
+        overlay.width === 0
+      ) {
+        if (attempts++ < maxAttempts) {
+          rafId = requestAnimationFrame(tick);
+        }
+        return;
+      }
+      const octx = overlay.getContext("2d");
+      if (!octx) return;
+      const cssW = parseFloat(canvas.style.width) || 1;
+      const cssH = parseFloat(canvas.style.height) || 1;
+      drawPageAnnotations(
+        octx,
+        overlay.width,
+        overlay.height,
+        cssW,
+        cssH,
+        autoCountLayer
+      );
+    };
+
+    rafId = requestAnimationFrame(tick);
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(rafId);
+    };
+  }, [autoCountLayer]);
 
   return (
-    <div className="relative mx-auto block w-max max-w-full">
-      <canvas ref={pdfRef} className="block bg-white shadow-sm" />
+    <div
+      ref={pageWrapperRef}
+      data-pdf-page={pageNumber}
+      className="relative mx-auto block w-max max-w-full"
+    >
+      <canvas
+        ref={pdfRef}
+        className="relative z-0 block bg-white shadow-sm"
+      />
       <canvas
         ref={overlayRef}
-        className="pointer-events-none absolute left-0 top-0 block"
+        className="pointer-events-none absolute left-0 top-0 z-[2] block [transform:translateZ(0)]"
         aria-hidden
       />
     </div>
@@ -140,20 +307,75 @@ type TransformState = {
   pointY: number;
 };
 
-type CadPdfCanvasStackProps = {
+export type CadPdfCanvasStackProps = {
   pdfBlob: Blob;
   className?: string;
+  /** Controlled ROI in CSS px relative to the page box; null = none */
+  autoCountRoi?: AutoCountRoiCss | null;
+  onAutoCountRoiChange?: (roi: AutoCountRoiCss | null) => void;
+  /** Last analyze in backend space; overlay reprojects to CSS when layout/zoom changes */
+  autoCountBackend?: AutoCountBackendState | null;
+};
+
+export type CadPdfCanvasStackHandle = {
+  getAutoCountPageMetrics: (
+    pageNumber: number
+  ) => AutoCountPageMetrics | null;
 };
 
 const ZOOM_MIN = 0.1;
 const ZOOM_MAX = 10;
 
+function normalizeRect(ax: number, ay: number, bx: number, by: number): CssRect {
+  const x = Math.min(ax, bx);
+  const y = Math.min(ay, by);
+  return {
+    x,
+    y,
+    width: Math.abs(bx - ax),
+    height: Math.abs(by - ay),
+  };
+}
+
 /**
  * Pan & zoom: zoom is baked into pdf.js render resolution (sharp). Wrapper uses translate only.
- * Wheel uses capture + non-passive so scroll-zoom works over nested content.
  */
-export function CadPdfCanvasStack({ pdfBlob, className }: CadPdfCanvasStackProps) {
+export const CadPdfCanvasStack = forwardRef<
+  CadPdfCanvasStackHandle,
+  CadPdfCanvasStackProps
+>(function CadPdfCanvasStack(
+  {
+    pdfBlob,
+    className,
+    autoCountRoi = null,
+    onAutoCountRoiChange,
+    autoCountBackend = null,
+  },
+  ref
+) {
   const { tool } = useCadAnalyzerTool();
+  const pageMetricsRef = useRef<Map<number, AutoCountPageMetrics>>(new Map());
+  /** Bumps when any page reports metrics so layerForPage re-reads refs after zoom/resize. */
+  const [metricsTick, setMetricsTick] = useState(0);
+
+  const handlePageMetrics = useCallback(
+    (pageNumber: number, metrics: AutoCountPageMetrics | null) => {
+      const m = pageMetricsRef.current;
+      if (metrics) m.set(pageNumber, metrics);
+      else m.delete(pageNumber);
+      setMetricsTick((t) => t + 1);
+    },
+    []
+  );
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      getAutoCountPageMetrics: (pageNumber: number) =>
+        pageMetricsRef.current.get(pageNumber) ?? null,
+    }),
+    []
+  );
   const zoomContainerRef = useRef<HTMLDivElement>(null);
   const zoomContentRef = useRef<HTMLDivElement>(null);
   const [maxWidth, setMaxWidth] = useState(0);
@@ -170,6 +392,52 @@ export function CadPdfCanvasStack({ pdfBlob, className }: CadPdfCanvasStackProps
 
   const [isDragging, setIsDragging] = useState(false);
   const panStartRef = useRef({ startX: 0, startY: 0 });
+
+  const pageRefs = useRef<(HTMLDivElement | null)[]>([]);
+  const setPageRef = useCallback((index: number, el: HTMLDivElement | null) => {
+    pageRefs.current[index] = el;
+  }, []);
+
+  /** ROI drag in page-local CSS px */
+  const [draftRoi, setDraftRoi] = useState<{
+    pageIndex: number;
+    rect: CssRect;
+  } | null>(null);
+  const [isRoiDragging, setIsRoiDragging] = useState(false);
+  const roiDragRef = useRef<{
+    pageIndex: number;
+    startLocalX: number;
+    startLocalY: number;
+    curLocalX: number;
+    curLocalY: number;
+  } | null>(null);
+
+  const findPageIndex = useCallback((clientX: number, clientY: number) => {
+    for (let i = 0; i < pageRefs.current.length; i++) {
+      const el = pageRefs.current[i];
+      if (!el) continue;
+      const r = el.getBoundingClientRect();
+      if (
+        clientX >= r.left &&
+        clientX <= r.right &&
+        clientY >= r.top &&
+        clientY <= r.bottom
+      ) {
+        return i;
+      }
+    }
+    return -1;
+  }, []);
+
+  const clientToPageLocal = useCallback(
+    (clientX: number, clientY: number, pageIndex: number) => {
+      const el = pageRefs.current[pageIndex];
+      if (!el) return { x: 0, y: 0 };
+      const r = el.getBoundingClientRect();
+      return { x: clientX - r.left, y: clientY - r.top };
+    },
+    []
+  );
 
   const resetZoomToFit = useCallback(() => {
     const zc = zoomContainerRef.current;
@@ -241,7 +509,10 @@ export function CadPdfCanvasStack({ pdfBlob, className }: CadPdfCanvasStackProps
     };
   }, [pdfBlob]);
 
-  /** First layout after PDF paints */
+  useEffect(() => {
+    pageMetricsRef.current.clear();
+  }, [pdfBlob]);
+
   useEffect(() => {
     const zcontent = zoomContentRef.current;
     if (!zcontent || !pdfDoc) return;
@@ -328,12 +599,167 @@ export function CadPdfCanvasStack({ pdfBlob, className }: CadPdfCanvasStackProps
     };
   }, [isDragging]);
 
+  const endRoiDrag = useCallback(() => {
+    const d = roiDragRef.current;
+    roiDragRef.current = null;
+    setDraftRoi(null);
+    setIsRoiDragging(false);
+    if (!d || !onAutoCountRoiChange) return;
+    const w = Math.abs(d.curLocalX - d.startLocalX);
+    const h = Math.abs(d.curLocalY - d.startLocalY);
+    if (w < 4 || h < 4) {
+      return;
+    }
+    const rect = normalizeRect(
+      d.startLocalX,
+      d.startLocalY,
+      d.curLocalX,
+      d.curLocalY
+    );
+    onAutoCountRoiChange({
+      pageNumber: d.pageIndex + 1,
+      x: rect.x,
+      y: rect.y,
+      width: rect.width,
+      height: rect.height,
+    });
+  }, [onAutoCountRoiChange]);
+
+  const updateRoiDrag = useCallback(
+    (clientX: number, clientY: number) => {
+      const d = roiDragRef.current;
+      if (!d) return;
+      const local = clientToPageLocal(clientX, clientY, d.pageIndex);
+      d.curLocalX = local.x;
+      d.curLocalY = local.y;
+      const rect = normalizeRect(
+        d.startLocalX,
+        d.startLocalY,
+        d.curLocalX,
+        d.curLocalY
+      );
+      setDraftRoi({ pageIndex: d.pageIndex, rect });
+    },
+    [clientToPageLocal]
+  );
+
+  const onAutoCountPointerDown = useCallback(
+    (e: ReactMouseEvent | ReactTouchEvent) => {
+      if (tool !== "autoCount") return;
+      e.preventDefault();
+      e.stopPropagation();
+      const clientX = "touches" in e ? e.touches[0].clientX : e.clientX;
+      const clientY = "touches" in e ? e.touches[0].clientY : e.clientY;
+      const pageIndex = findPageIndex(clientX, clientY);
+      if (pageIndex < 0) return;
+      const local = clientToPageLocal(clientX, clientY, pageIndex);
+      roiDragRef.current = {
+        pageIndex,
+        startLocalX: local.x,
+        startLocalY: local.y,
+        curLocalX: local.x,
+        curLocalY: local.y,
+      };
+      setDraftRoi({
+        pageIndex,
+        rect: {
+          x: local.x,
+          y: local.y,
+          width: 0,
+          height: 0,
+        },
+      });
+      setIsRoiDragging(true);
+    },
+    [tool, findPageIndex, clientToPageLocal]
+  );
+
+  useEffect(() => {
+    if (!isRoiDragging) return;
+
+    const onMove = (e: MouseEvent | TouchEvent) => {
+      if (!roiDragRef.current) return;
+      const cx =
+        "touches" in e && e.touches.length > 0
+          ? e.touches[0].clientX
+          : (e as MouseEvent).clientX;
+      const cy =
+        "touches" in e && e.touches.length > 0
+          ? e.touches[0].clientY
+          : (e as MouseEvent).clientY;
+      updateRoiDrag(cx, cy);
+    };
+
+    const onUp = () => {
+      endRoiDrag();
+    };
+
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    window.addEventListener("touchmove", onMove, { passive: false });
+    window.addEventListener("touchend", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      window.removeEventListener("touchmove", onMove);
+      window.removeEventListener("touchend", onUp);
+    };
+  }, [isRoiDragging, updateRoiDrag, endRoiDrag]);
+
   const cursorClass =
     tool === "hand"
       ? isDragging
         ? "cursor-grabbing"
         : "cursor-grab"
       : "cursor-crosshair";
+
+  const numPages = pdfDoc?.numPages ?? 0;
+
+  const layerForPage = useCallback(
+    (pageNumber: number): PageAnnotationLayer => {
+      const idx = pageNumber - 1;
+      const metrics = pageMetricsRef.current.get(pageNumber);
+
+      let committed: CssRect | null = null;
+      if (autoCountRoi?.pageNumber === pageNumber) {
+        committed = {
+          x: autoCountRoi.x,
+          y: autoCountRoi.y,
+          width: autoCountRoi.width,
+          height: autoCountRoi.height,
+        };
+      } else if (
+        autoCountBackend &&
+        autoCountBackend.pageNumber === pageNumber &&
+        metrics
+      ) {
+        committed = backendRoiToScreenCss(autoCountBackend.roi, metrics);
+      }
+
+      const draft =
+        draftRoi?.pageIndex === idx ? draftRoi.rect : null;
+
+      let matches: AutoCountMatch[] = [];
+      if (
+        autoCountBackend &&
+        autoCountBackend.pageNumber === pageNumber &&
+        metrics
+      ) {
+        matches = backendMatchesToScreen(
+          autoCountBackend.matches,
+          metrics
+        );
+      }
+
+      return { committedRoi: committed, draftRoi: draft, matches };
+    },
+    [autoCountRoi, autoCountBackend, draftRoi, metricsTick]
+  );
+
+  const layersByPage = useMemo(() => {
+    if (numPages === 0) return [];
+    return Array.from({ length: numPages }, (_, i) => layerForPage(i + 1));
+  }, [numPages, layerForPage]);
 
   return (
     <div
@@ -366,16 +792,30 @@ export function CadPdfCanvasStack({ pdfBlob, className }: CadPdfCanvasStackProps
             } as CSSProperties
           }
         >
-          <div className="canvas-stack flex flex-col items-center gap-0 py-2 leading-none shadow-xl">
-            {Array.from({ length: pdfDoc.numPages }, (_, i) => (
-              <PdfPageRow
-                key={i + 1}
-                pdfDoc={pdfDoc}
-                pageNumber={i + 1}
-                maxWidth={maxWidth}
-                zoomScale={transform.scale}
+          <div className="relative inline-block">
+            <div className="canvas-stack flex flex-col items-center gap-0 py-2 leading-none shadow-xl">
+              {Array.from({ length: numPages }, (_, i) => (
+                <PdfPageRow
+                  key={i + 1}
+                  pdfDoc={pdfDoc}
+                  pageNumber={i + 1}
+                  maxWidth={maxWidth}
+                  zoomScale={transform.scale}
+                  pageWrapperRef={(el) => setPageRef(i, el)}
+                  autoCountLayer={layersByPage[i]!}
+                  onPageMetrics={handlePageMetrics}
+                />
+              ))}
+            </div>
+            {tool === "autoCount" ? (
+              <div
+                className="absolute inset-0 z-20 bg-transparent"
+                style={{ pointerEvents: "auto" }}
+                onMouseDown={onAutoCountPointerDown}
+                onTouchStart={onAutoCountPointerDown}
+                aria-hidden
               />
-            ))}
+            ) : null}
           </div>
         </div>
       ) : (
@@ -385,4 +825,4 @@ export function CadPdfCanvasStack({ pdfBlob, className }: CadPdfCanvasStackProps
       )}
     </div>
   );
-}
+});

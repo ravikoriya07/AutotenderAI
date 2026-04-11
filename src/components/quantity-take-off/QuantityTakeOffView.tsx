@@ -2,7 +2,13 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Loader2, LayoutGrid, LayoutPanelLeft } from "lucide-react";
+import {
+  Loader2,
+  LayoutGrid,
+  LayoutPanelLeft,
+  Search,
+  Trash2,
+} from "lucide-react";
 import { FolderTree, type FolderNode } from "@/components/ui/FolderTree";
 import {
   fetchProjectTree,
@@ -17,7 +23,20 @@ import axios from "axios";
 import { cn } from "@/lib/utils";
 import { CadAnalyzerToolProvider } from "@/contexts/CadAnalyzerToolContext";
 import { CadAnalyzerFloatingBridge } from "@/components/quantity-take-off/cad-analyzer/CadAnalyzerFloatingBridge";
-import { CadPdfCanvasStack } from "@/components/quantity-take-off/cad-analyzer/CadPdfCanvasStack";
+import {
+  CadPdfCanvasStack,
+  type AutoCountRoiCss,
+  type CadPdfCanvasStackHandle,
+} from "@/components/quantity-take-off/cad-analyzer/CadPdfCanvasStack";
+import { screenRectToBackend } from "@/lib/autoCountCoordinates";
+import {
+  clearQtoAutoCount,
+  loadQtoAutoCount,
+  saveQtoAutoCount,
+  type AutoCountBackendState,
+} from "@/lib/qtoAutoCountStorage";
+import { Button } from "@/components/ui/Button";
+import { postAutoCount } from "@/services/autoCountService";
 
 function findFileIdByStoragePath(
   nodes: FolderNode[],
@@ -121,7 +140,14 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
     "idle"
   );
 
+  const [autoCountRoi, setAutoCountRoi] = useState<AutoCountRoiCss | null>(null);
+  /** Backend coordinate space; overlay reprojects on zoom/pan */
+  const [autoCountBackend, setAutoCountBackend] =
+    useState<AutoCountBackendState | null>(null);
+  const [autoCountLoading, setAutoCountLoading] = useState(false);
+
   const prevJobIdForTreeRef = useRef<string | null>(null);
+  const cadCanvasRef = useRef<CadPdfCanvasStackHandle>(null);
 
   /** Restore open PDF from `?path=` on load / refresh / back-forward (do not clear when empty — avoids racing router.replace). */
   useEffect(() => {
@@ -199,6 +225,27 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
       ac.abort();
     };
   }, [trimmedJobId, replacePdfInUrl]);
+
+  useEffect(() => {
+    setAutoCountLoading(false);
+    if (!trimmedJobId || !selectedPdfPath?.trim()) {
+      setAutoCountRoi(null);
+      setAutoCountBackend(null);
+      return;
+    }
+    const stored = loadQtoAutoCount(trimmedJobId, selectedPdfPath.trim());
+    if (stored) {
+      setAutoCountBackend({
+        pageNumber: stored.pageNumber,
+        roi: stored.roi,
+        matches: stored.matches,
+      });
+      setAutoCountRoi(null);
+    } else {
+      setAutoCountRoi(null);
+      setAutoCountBackend(null);
+    }
+  }, [trimmedJobId, selectedPdfPath]);
 
   /** Highlight the file row that matches the open PDF (including after refresh). */
   useEffect(() => {
@@ -478,12 +525,83 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
       </>
     ) : null;
 
+  const clearAutoCount = useCallback(() => {
+    if (trimmedJobId && selectedPdfPath?.trim()) {
+      clearQtoAutoCount(trimmedJobId, selectedPdfPath.trim());
+    }
+    setAutoCountRoi(null);
+    setAutoCountBackend(null);
+    setAutoCountLoading(false);
+  }, [trimmedJobId, selectedPdfPath]);
+
+  const handleAutoCountAnalyze = useCallback(async () => {
+    if (!trimmedJobId || !selectedPdfPath?.trim()) return;
+    if (!autoCountRoi && !autoCountBackend) return;
+
+    const analyzedPage =
+      autoCountRoi?.pageNumber ?? autoCountBackend!.pageNumber;
+    const metrics = cadCanvasRef.current?.getAutoCountPageMetrics(
+      analyzedPage
+    );
+    if (!metrics) {
+      toast.error("Page layout not ready. Wait for the PDF to finish rendering.");
+      return;
+    }
+    const roiBackend = autoCountRoi
+      ? screenRectToBackend(
+          {
+            x: autoCountRoi.x,
+            y: autoCountRoi.y,
+            width: autoCountRoi.width,
+            height: autoCountRoi.height,
+          },
+          metrics
+        )
+      : autoCountBackend!.roi;
+
+    setAutoCountLoading(true);
+    try {
+      const res = await postAutoCount({
+        job_id: trimmedJobId,
+        file_path: selectedPdfPath.trim(),
+        roi: roiBackend,
+        rotation_invariant: true,
+        confidence: 0.7,
+      });
+      const rawMatches = res.matches ?? [];
+      const next: AutoCountBackendState = {
+        pageNumber: analyzedPage,
+        roi: roiBackend,
+        matches: rawMatches,
+      };
+      setAutoCountBackend(next);
+      setAutoCountRoi(null);
+      saveQtoAutoCount(trimmedJobId, selectedPdfPath.trim(), {
+        v: 1,
+        ...next,
+      });
+      const n = res.total_found ?? res.matches?.length ?? 0;
+      toast.success(
+        n > 0 ? `Found ${n} match${n === 1 ? "" : "es"}` : "No matches"
+      );
+    } catch (e) {
+      console.log("[qto] postAutoCount failed", e);
+      toast.error("Auto count failed.");
+    } finally {
+      setAutoCountLoading(false);
+    }
+  }, [trimmedJobId, selectedPdfPath, autoCountRoi, autoCountBackend]);
+
   /**
    * Show the canvas chip whenever the panel is not open. Using `translateOpen` (not `drawerMounted`)
    * restores the chip immediately on outside click; `drawerMounted` can lag until transition end.
    */
   const showOpenTrigger = !translateOpen;
   const showToolbar = pdfPhase === "ready" && Boolean(pdfBlob);
+  const showAutoCountBar =
+    pdfPhase === "ready" &&
+    Boolean(pdfBlob) &&
+    (autoCountRoi != null || autoCountBackend != null);
 
   return (
     <CadAnalyzerToolProvider>
@@ -500,6 +618,43 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
                   <div className="pointer-events-auto w-fit max-w-full">{projectChipSticky}</div>
                 </div>
               )}
+              {showAutoCountBar ? (
+                <div className="pointer-events-none absolute right-2 top-2 z-30 flex flex-col items-end gap-2 sm:right-3 sm:top-3">
+                  <div className="pointer-events-auto flex flex-col gap-1.5 rounded-xl border border-border/70 bg-background/85 p-1.5 shadow-lg backdrop-blur-sm">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="h-9 min-w-[7.5rem] justify-center gap-1.5 border-primary/25 bg-background/60 text-foreground hover:bg-muted/80"
+                      disabled={
+                        (!autoCountRoi && !autoCountBackend) ||
+                        !trimmedJobId ||
+                        !selectedPdfPath?.trim() ||
+                        autoCountLoading
+                      }
+                      onClick={() => void handleAutoCountAnalyze()}
+                    >
+                      {autoCountLoading ? (
+                        <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
+                      ) : (
+                        <Search className="h-3.5 w-3.5 shrink-0" />
+                      )}
+                      Analyze
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      className="h-9 min-w-[7.5rem] justify-center gap-1.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+                      disabled={autoCountLoading}
+                      onClick={clearAutoCount}
+                    >
+                      <Trash2 className="h-3.5 w-3.5 shrink-0" />
+                      Clear
+                    </Button>
+                  </div>
+                </div>
+              ) : null}
               <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col">
                 {pdfPhase === "error" ? (
                   <div
@@ -522,8 +677,12 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
                   </div>
                 ) : pdfBlob ? (
                   <CadPdfCanvasStack
+                    ref={cadCanvasRef}
                     pdfBlob={pdfBlob}
                     className="min-h-0 flex-1"
+                    autoCountRoi={autoCountRoi}
+                    onAutoCountRoiChange={setAutoCountRoi}
+                    autoCountBackend={autoCountBackend}
                   />
                 ) : (
                   <div className="flex w-full min-w-0 flex-1 flex-col items-center justify-center px-3 py-6 sm:px-4 sm:py-8">
