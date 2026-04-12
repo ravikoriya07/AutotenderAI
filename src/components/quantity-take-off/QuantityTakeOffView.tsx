@@ -1,12 +1,14 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
   Loader2,
   LayoutGrid,
   LayoutPanelLeft,
   Search,
+  SlidersHorizontal,
   Trash2,
 } from "lucide-react";
 import { FolderTree, type FolderNode } from "@/components/ui/FolderTree";
@@ -21,7 +23,10 @@ import { useResearchProject } from "@/contexts/ResearchProjectContext";
 import { toast } from "react-toastify";
 import axios from "axios";
 import { cn } from "@/lib/utils";
-import { CadAnalyzerToolProvider } from "@/contexts/CadAnalyzerToolContext";
+import {
+  CadAnalyzerToolProvider,
+  useCadAnalyzerTool,
+} from "@/contexts/CadAnalyzerToolContext";
 import { CadAnalyzerFloatingBridge } from "@/components/quantity-take-off/cad-analyzer/CadAnalyzerFloatingBridge";
 import {
   CadPdfCanvasStack,
@@ -36,6 +41,7 @@ import {
   type AutoCountBackendState,
 } from "@/lib/qtoAutoCountStorage";
 import { Button } from "@/components/ui/Button";
+import { AutoCountSidebar } from "@/components/AutoCountSidebar";
 import { postAutoCount } from "@/services/autoCountService";
 
 function findFileIdByStoragePath(
@@ -86,6 +92,54 @@ export type QuantityTakeOffViewProps = {
   jobId: string;
 };
 
+/** Top-right stack: reopen chip when Auto Count is active but options panel closed; Analyze/Clear when applicable. */
+function AutoCountRightFloatingStack({
+  showToolbar,
+  autoCountSidebarMounted,
+  isAutoCountOpen,
+  openAutoCountPanel,
+  showAnalyzeCard,
+  analyzeCard,
+}: {
+  showToolbar: boolean;
+  autoCountSidebarMounted: boolean;
+  isAutoCountOpen: boolean;
+  openAutoCountPanel: () => void;
+  showAnalyzeCard: boolean;
+  analyzeCard: ReactNode;
+}) {
+  const { tool } = useCadAnalyzerTool();
+  const showSymbolOptionsChip =
+    showToolbar && tool === "autoCount" && !autoCountSidebarMounted;
+
+  if (!showSymbolOptionsChip && !showAnalyzeCard) return null;
+
+  return (
+    <div
+      className={cn(
+        "pointer-events-none absolute right-2 top-2 flex flex-col items-end gap-2 sm:right-3 sm:top-3",
+        isAutoCountOpen ? "z-[45]" : "z-30"
+      )}
+    >
+      {showSymbolOptionsChip ? (
+        <button
+          type="button"
+          onClick={openAutoCountPanel}
+          className="pointer-events-auto inline-flex max-w-full items-center gap-2 rounded-full border border-border/80 bg-card px-3 py-1.5 text-left text-xs font-medium text-foreground shadow-sm transition hover:bg-muted/70 sm:gap-2 sm:px-3.5 sm:py-1.5 sm:text-sm"
+          aria-label="Open symbol options"
+        >
+          <SlidersHorizontal
+            className="h-3.5 w-3.5 shrink-0 text-muted-foreground sm:h-4 sm:w-4"
+            aria-hidden
+          />
+          <span className="min-w-0 truncate">Symbol options</span>
+        </button>
+      ) : null}
+      {showAnalyzeCard ? analyzeCard : null}
+    </div>
+  );
+}
+
 /**
  * Light Figma-style layers panel: overlays the workspace only (no layout shift).
  * Full-width scrollable canvas; panel is absolute inside the card.
@@ -130,6 +184,13 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
     }
   }, []);
 
+  const clearAutoCountUnmountTimeout = useCallback(() => {
+    if (autoCountUnmountTimeoutRef.current != null) {
+      clearTimeout(autoCountUnmountTimeoutRef.current);
+      autoCountUnmountTimeoutRef.current = null;
+    }
+  }, []);
+
   const [treeNodes, setTreeNodes] = useState<FolderNode[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -146,6 +207,14 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
     useState<AutoCountBackendState | null>(null);
   const [autoCountLoading, setAutoCountLoading] = useState(false);
 
+  const [autoCountSidebarMounted, setAutoCountSidebarMounted] = useState(false);
+  const [isAutoCountOpen, setIsAutoCountOpen] = useState(false);
+  const [rotationInvariant, setRotationInvariant] = useState(true);
+  const [confidence, setConfidence] = useState(0.7);
+  const autoCountUnmountTimeoutRef = useRef<number | null>(null);
+  const isAutoCountOpenRef = useRef(isAutoCountOpen);
+  isAutoCountOpenRef.current = isAutoCountOpen;
+
   const prevJobIdForTreeRef = useRef<string | null>(null);
   const cadCanvasRef = useRef<CadPdfCanvasStackHandle>(null);
 
@@ -160,14 +229,20 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
   useEffect(() => {
     if (!trimmedJobId) {
       clearDrawerUnmountTimeout();
+      clearAutoCountUnmountTimeout();
       setTranslateOpen(false);
       setDrawerMounted(false);
+      setIsAutoCountOpen(false);
+      setAutoCountSidebarMounted(false);
     }
-  }, [trimmedJobId, clearDrawerUnmountTimeout]);
+  }, [trimmedJobId, clearDrawerUnmountTimeout, clearAutoCountUnmountTimeout]);
 
   useEffect(() => {
-    return () => clearDrawerUnmountTimeout();
-  }, [clearDrawerUnmountTimeout]);
+    return () => {
+      clearDrawerUnmountTimeout();
+      clearAutoCountUnmountTimeout();
+    };
+  }, [clearDrawerUnmountTimeout, clearAutoCountUnmountTimeout]);
 
   useEffect(() => {
     if (!trimmedJobId) {
@@ -318,7 +393,7 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
   }, [clearDrawerUnmountTimeout]);
 
   const handleAsideTransitionEnd = useCallback(
-    (e: React.TransitionEvent<HTMLDivElement>) => {
+    (e: { target: EventTarget; currentTarget: EventTarget; propertyName: string }) => {
       if (e.target !== e.currentTarget) return;
       if (e.propertyName !== "transform") return;
       if (!translateOpenRef.current) {
@@ -329,14 +404,58 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
     [clearDrawerUnmountTimeout]
   );
 
+  const closeAutoCountPanel = useCallback(() => {
+    setIsAutoCountOpen(false);
+    clearAutoCountUnmountTimeout();
+    if (typeof window === "undefined") return;
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      window.setTimeout(() => setAutoCountSidebarMounted(false), 0);
+      return;
+    }
+    autoCountUnmountTimeoutRef.current = window.setTimeout(() => {
+      autoCountUnmountTimeoutRef.current = null;
+      setAutoCountSidebarMounted(false);
+    }, 350);
+  }, [clearAutoCountUnmountTimeout]);
+
+  const openAutoCountPanel = useCallback(() => {
+    clearAutoCountUnmountTimeout();
+    if (!autoCountSidebarMounted) {
+      setAutoCountSidebarMounted(true);
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => setIsAutoCountOpen(true));
+      });
+    } else {
+      setIsAutoCountOpen(true);
+    }
+  }, [autoCountSidebarMounted, clearAutoCountUnmountTimeout]);
+
+  const handleAutoCountAsideTransitionEnd = useCallback(
+    (e: { target: EventTarget; currentTarget: EventTarget; propertyName: string }) => {
+      if (e.target !== e.currentTarget) return;
+      if (e.propertyName !== "transform") return;
+      if (!isAutoCountOpenRef.current) {
+        clearAutoCountUnmountTimeout();
+        setAutoCountSidebarMounted(false);
+      }
+    },
+    [clearAutoCountUnmountTimeout]
+  );
+
   useEffect(() => {
-    if (!drawerMounted || !translateOpen) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") closeDrawer();
+      if (e.key !== "Escape") return;
+      if (isAutoCountOpenRef.current) {
+        closeAutoCountPanel();
+        return;
+      }
+      if (translateOpenRef.current) {
+        closeDrawer();
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [drawerMounted, translateOpen, closeDrawer]);
+  }, [closeDrawer, closeAutoCountPanel]);
 
   const handleSelect = useCallback((id: string) => {
     setSelectedId(id);
@@ -565,8 +684,8 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
         job_id: trimmedJobId,
         file_path: selectedPdfPath.trim(),
         roi: roiBackend,
-        rotation_invariant: true,
-        confidence: 0.7,
+        rotation_invariant: rotationInvariant,
+        confidence,
       });
       const rawMatches = res.matches ?? [];
       const next: AutoCountBackendState = {
@@ -590,7 +709,14 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
     } finally {
       setAutoCountLoading(false);
     }
-  }, [trimmedJobId, selectedPdfPath, autoCountRoi, autoCountBackend]);
+  }, [
+    trimmedJobId,
+    selectedPdfPath,
+    autoCountRoi,
+    autoCountBackend,
+    rotationInvariant,
+    confidence,
+  ]);
 
   /**
    * Show the canvas chip whenever the panel is not open. Using `translateOpen` (not `drawerMounted`)
@@ -618,8 +744,13 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
                   <div className="pointer-events-auto w-fit max-w-full">{projectChipSticky}</div>
                 </div>
               )}
-              {showAutoCountBar ? (
-                <div className="pointer-events-none absolute right-2 top-2 z-30 flex flex-col items-end gap-2 sm:right-3 sm:top-3">
+              <AutoCountRightFloatingStack
+                showToolbar={showToolbar}
+                autoCountSidebarMounted={autoCountSidebarMounted}
+                isAutoCountOpen={isAutoCountOpen}
+                openAutoCountPanel={openAutoCountPanel}
+                showAnalyzeCard={showAutoCountBar}
+                analyzeCard={
                   <div className="pointer-events-auto flex flex-col gap-1.5 rounded-xl border border-border/70 bg-background/85 p-1.5 shadow-lg backdrop-blur-sm">
                     <Button
                       type="button"
@@ -653,8 +784,8 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
                       Clear
                     </Button>
                   </div>
-                </div>
-              ) : null}
+                }
+              />
               <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col">
                 {pdfPhase === "error" ? (
                   <div
@@ -697,10 +828,37 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
             </div>
             {showToolbar ? (
               <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 flex justify-center px-3 pb-5 sm:px-4 sm:pb-6">
-                <CadAnalyzerFloatingBridge />
+                <CadAnalyzerFloatingBridge
+                  onAutoCountActivate={openAutoCountPanel}
+                />
               </div>
             ) : null}
             {canvasDrawer}
+            {autoCountSidebarMounted ? (
+              <>
+                <button
+                  type="button"
+                  aria-label="Close auto count options"
+                  className={cn(
+                    "absolute inset-0 z-40 transition-opacity duration-300 ease-out motion-reduce:transition-none",
+                    "bg-foreground/[0.04] max-md:bg-foreground/[0.06]",
+                    isAutoCountOpen
+                      ? "opacity-100"
+                      : "pointer-events-none opacity-0"
+                  )}
+                  onClick={closeAutoCountPanel}
+                />
+                <AutoCountSidebar
+                  open={isAutoCountOpen}
+                  onClose={closeAutoCountPanel}
+                  rotationInvariant={rotationInvariant}
+                  onRotationInvariantChange={setRotationInvariant}
+                  confidence={confidence}
+                  onConfidenceChange={setConfidence}
+                  onTransitionEnd={handleAutoCountAsideTransitionEnd}
+                />
+              </>
+            ) : null}
           </div>
         </div>
       </div>
