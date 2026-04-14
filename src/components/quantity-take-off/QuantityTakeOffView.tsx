@@ -50,9 +50,13 @@ import {
   type QtoSavedObjectsFileV1,
 } from "@/lib/qtoSavedObjectsStorage";
 import { Button } from "@/components/ui/Button";
-import { AutoCountSidebar } from "@/components/AutoCountSidebar";
+import {
+  ToolOptionsSidebar,
+  type ToolSidebarMode,
+} from "@/components/quantity-take-off/ToolOptionsSidebar";
 import { ObjectMetadataSidebar } from "@/components/quantity-take-off/ObjectMetadataSidebar";
 import { postAutoCount } from "@/services/autoCountService";
+import { postSearchText } from "@/services/searchTextService";
 
 function findFileIdByStoragePath(
   nodes: FolderNode[],
@@ -125,14 +129,14 @@ function AutoCountRightFloatingStack({
   showToolbar,
   autoCountSidebarMounted,
   isAutoCountOpen,
-  openAutoCountPanel,
+  openSymbolOptionsPanel,
   showAnalyzeCard,
   analyzeCard,
 }: {
   showToolbar: boolean;
   autoCountSidebarMounted: boolean;
   isAutoCountOpen: boolean;
-  openAutoCountPanel: () => void;
+  openSymbolOptionsPanel: () => void;
   showAnalyzeCard: boolean;
   analyzeCard: ReactNode;
 }) {
@@ -152,7 +156,7 @@ function AutoCountRightFloatingStack({
       {showSymbolOptionsChip ? (
         <button
           type="button"
-          onClick={openAutoCountPanel}
+          onClick={openSymbolOptionsPanel}
           className="pointer-events-auto inline-flex max-w-full items-center gap-2 rounded-full border border-border/80 bg-card px-3 py-1.5 text-left text-xs font-medium text-foreground shadow-sm transition hover:bg-muted/70 sm:gap-2 sm:px-3.5 sm:py-1.5 sm:text-sm"
           aria-label="Open symbol options"
         >
@@ -168,8 +172,14 @@ function AutoCountRightFloatingStack({
   );
 }
 
-/** Full-viewport blocking overlay while Auto Count analyze runs (portal to `document.body` + max z-index). */
-function AutoCountAnalyzingOverlay({ open }: { open: boolean }) {
+/** Full-viewport blocking overlay for Auto Count analyze or Search Text (portal to `document.body`). */
+function BlockingStatusOverlay({
+  open,
+  message,
+}: {
+  open: boolean;
+  message: string;
+}) {
   useEffect(() => {
     if (!open) return;
     const prev = document.body.style.overflow;
@@ -196,15 +206,13 @@ function AutoCountAnalyzingOverlay({ open }: { open: boolean }) {
       aria-modal="true"
       aria-live="polite"
       aria-busy="true"
-      aria-label="Analyzing"
+      aria-label={message}
     >
       <Loader2
         className="h-11 w-11 shrink-0 animate-spin text-primary"
         aria-hidden
       />
-      <p className="text-base font-medium tracking-tight text-white">
-        Analyzing...
-      </p>
+      <p className="text-base font-medium tracking-tight text-white">{message}</p>
     </div>,
     document.body
   );
@@ -286,6 +294,12 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
 
   const [autoCountSidebarMounted, setAutoCountSidebarMounted] = useState(false);
   const [isAutoCountOpen, setIsAutoCountOpen] = useState(false);
+  /** Drives tool sidebar content and whether the floating Analyze button is shown */
+  const [lastToolAction, setLastToolAction] = useState<ToolSidebarMode>("autoCount");
+  const [searchTerm, setSearchTerm] = useState("");
+  const [caseSensitive, setCaseSensitive] = useState(false);
+  const [searchTextLoading, setSearchTextLoading] = useState(false);
+  const [searchTextError, setSearchTextError] = useState<string | null>(null);
   const [objectMetadataSidebarMounted, setObjectMetadataSidebarMounted] =
     useState(false);
   const [isObjectMetadataOpen, setIsObjectMetadataOpen] = useState(false);
@@ -540,7 +554,8 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
     }, 350);
   }, [clearAutoCountUnmountTimeout]);
 
-  const openAutoCountPanel = useCallback(() => {
+  const openToolOptionsPanel = useCallback((mode: ToolSidebarMode) => {
+    setLastToolAction(mode);
     clearAutoCountUnmountTimeout();
     if (!autoCountSidebarMounted) {
       setAutoCountSidebarMounted(true);
@@ -552,15 +567,19 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
     }
   }, [autoCountSidebarMounted, clearAutoCountUnmountTimeout]);
 
+  const handleAutoCountToolSelect = useCallback(() => {
+    setLastToolAction("autoCount");
+  }, []);
+
   /** Open symbol options only after a ROI is committed (mouse/touch release), not when picking the tool. */
   const handleAutoCountRoiChange = useCallback(
     (roi: AutoCountRoiCss | null) => {
       setAutoCountRoi(roi);
       if (roi != null) {
-        openAutoCountPanel();
+        openToolOptionsPanel("autoCount");
       }
     },
-    [openAutoCountPanel]
+    [openToolOptionsPanel]
   );
 
   const closeObjectMetadataPanel = useCallback(() => {
@@ -597,6 +616,62 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
     if (!autoCountBackend) return;
     openObjectMetadataPanel();
   }, [autoCountBackend, openObjectMetadataPanel]);
+
+  const handleSearchTextSubmit = useCallback(async () => {
+    const term = searchTerm.trim();
+    if (!term) {
+      setSearchTextError("Search text is required.");
+      return;
+    }
+    if (!trimmedJobId || !selectedPdfPath?.trim()) return;
+    setSearchTextError(null);
+    setSearchTextLoading(true);
+    try {
+      const res = await postSearchText({
+        job_id: trimmedJobId,
+        file_path: selectedPdfPath.trim(),
+        search_term: term,
+        case_sensitive: caseSensitive,
+      });
+      const rawMatches = res.matches ?? [];
+      const n = res.total_found ?? rawMatches.length ?? 0;
+      const pageNumber = 1;
+      const nextBackend: AutoCountBackendState = {
+        pageNumber,
+        roi: { x: 0, y: 0, width: 0, height: 0 },
+        matches: rawMatches,
+      };
+      setAutoCountBackend(nextBackend);
+      saveQtoAutoCount(trimmedJobId, selectedPdfPath.trim(), {
+        v: 1,
+        ...nextBackend,
+      });
+      setMetadataCount(n);
+      setMetadataObjectId("");
+      setMetadataObjectName("");
+      setMetadataErrors({});
+      setSelectedSavedObjectId(null);
+      setExpandedSavedId(null);
+      closeAutoCountPanel();
+      openObjectMetadataPanel();
+      toast.success(
+        n > 0 ? `Found ${n} match${n === 1 ? "" : "es"}` : "No matches"
+      );
+    } catch (e) {
+      console.log("[qto] postSearchText failed", e);
+      setSearchTextError("Search failed. Try again.");
+      toast.error("Search text failed.");
+    } finally {
+      setSearchTextLoading(false);
+    }
+  }, [
+    searchTerm,
+    caseSensitive,
+    trimmedJobId,
+    selectedPdfPath,
+    closeAutoCountPanel,
+    openObjectMetadataPanel,
+  ]);
 
   const handleAutoCountAsideTransitionEnd = useCallback(
     (e: { target: EventTarget; currentTarget: EventTarget; propertyName: string }) => {
@@ -837,6 +912,11 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
     setAutoCountRoi(null);
     setAutoCountBackend(null);
     setAutoCountLoading(false);
+    setSearchTerm("");
+    setCaseSensitive(false);
+    setSearchTextError(null);
+    setSearchTextLoading(false);
+    setLastToolAction("autoCount");
     setSelectedSavedObjectId(null);
     setExpandedSavedId(null);
     setSavedObjects([]);
@@ -845,7 +925,13 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
     setMetadataCount(0);
     setMetadataErrors({});
     closeObjectMetadataPanel();
-  }, [trimmedJobId, selectedPdfPath, closeObjectMetadataPanel]);
+    closeAutoCountPanel();
+  }, [
+    trimmedJobId,
+    selectedPdfPath,
+    closeObjectMetadataPanel,
+    closeAutoCountPanel,
+  ]);
 
   const selectedSavedEntry = useMemo(() => {
     if (!selectedSavedObjectId) return undefined;
@@ -864,6 +950,10 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
     const errs = validateObjectMetadataForm(metadataObjectId, metadataObjectName);
     setMetadataErrors(errs);
     if (Object.keys(errs).length > 0) return;
+    if (!Number.isFinite(metadataCount) || metadataCount < 0) {
+      toast.error("Count must be a non-negative number.");
+      return;
+    }
 
     const idTrim = metadataObjectId.trim();
     const nameTrim = metadataObjectName.trim();
@@ -1011,7 +1101,10 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
 
   return (
     <CadAnalyzerToolProvider>
-      <AutoCountAnalyzingOverlay open={autoCountLoading} />
+      <BlockingStatusOverlay
+        open={autoCountLoading || searchTextLoading}
+        message={searchTextLoading ? "Searching…" : "Analyzing…"}
+      />
       <div className="flex min-h-0 w-full max-w-full flex-1 flex-col bg-background">
         <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-none">
           <div
@@ -1029,36 +1122,39 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
                 showToolbar={showToolbar}
                 autoCountSidebarMounted={autoCountSidebarMounted}
                 isAutoCountOpen={isAutoCountOpen}
-                openAutoCountPanel={openAutoCountPanel}
+                openSymbolOptionsPanel={() => openToolOptionsPanel("autoCount")}
                 showAnalyzeCard={showAutoCountBar}
                 analyzeCard={
                   <div className="pointer-events-auto flex flex-col gap-1.5 rounded-xl border border-border/70 bg-background/85 p-1.5 shadow-lg backdrop-blur-sm">
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      className="h-9 min-w-[7.5rem] justify-center gap-1.5 border-primary/25 bg-background/60 text-foreground hover:bg-muted/80"
-                      disabled={
-                        (!autoCountRoi && !autoCountBackend) ||
-                        !trimmedJobId ||
-                        !selectedPdfPath?.trim() ||
-                        autoCountLoading
-                      }
-                      onClick={() => void handleAutoCountAnalyze()}
-                    >
-                      {autoCountLoading ? (
-                        <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
-                      ) : (
-                        <Search className="h-3.5 w-3.5 shrink-0" />
-                      )}
-                      Analyze
-                    </Button>
+                    {lastToolAction === "autoCount" ? (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="h-9 min-w-[7.5rem] justify-center gap-1.5 border-primary/25 bg-background/60 text-foreground hover:bg-muted/80"
+                        disabled={
+                          (!autoCountRoi && !autoCountBackend) ||
+                          !trimmedJobId ||
+                          !selectedPdfPath?.trim() ||
+                          autoCountLoading ||
+                          searchTextLoading
+                        }
+                        onClick={() => void handleAutoCountAnalyze()}
+                      >
+                        {autoCountLoading ? (
+                          <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
+                        ) : (
+                          <Search className="h-3.5 w-3.5 shrink-0" />
+                        )}
+                        Analyze
+                      </Button>
+                    ) : null}
                     <Button
                       type="button"
                       size="sm"
                       variant="outline"
                       className="h-9 min-w-[7.5rem] justify-center gap-1.5 border-border/80 bg-background/60 text-foreground hover:bg-muted/80"
-                      disabled={!autoCountBackend || autoCountLoading}
+                      disabled={!autoCountBackend || autoCountLoading || searchTextLoading}
                       onClick={tryOpenObjectMetadataPanel}
                       title={
                         autoCountBackend
@@ -1074,7 +1170,7 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
                       size="sm"
                       variant="ghost"
                       className="h-9 min-w-[7.5rem] justify-center gap-1.5 text-muted-foreground hover:bg-muted hover:text-foreground"
-                      disabled={autoCountLoading}
+                      disabled={autoCountLoading || searchTextLoading}
                       onClick={clearAutoCount}
                     >
                       <Trash2 className="h-3.5 w-3.5 shrink-0" />
@@ -1126,7 +1222,10 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
             </div>
             {showToolbar ? (
               <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 flex justify-center px-3 pb-5 sm:px-4 sm:pb-6">
-                <CadAnalyzerFloatingBridge />
+                <CadAnalyzerFloatingBridge
+                  onSearchTextSelect={() => openToolOptionsPanel("searchText")}
+                  onAutoCountToolSelect={handleAutoCountToolSelect}
+                />
               </div>
             ) : null}
             {canvasDrawer}
@@ -1144,13 +1243,29 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
                   )}
                   onClick={closeAutoCountPanel}
                 />
-                <AutoCountSidebar
+                <ToolOptionsSidebar
+                  mode={lastToolAction}
                   open={isAutoCountOpen}
                   onClose={closeAutoCountPanel}
                   rotationInvariant={rotationInvariant}
                   onRotationInvariantChange={setRotationInvariant}
                   confidence={confidence}
                   onConfidenceChange={setConfidence}
+                  searchTerm={searchTerm}
+                  onSearchTermChange={(v) => {
+                    setSearchTerm(v);
+                    if (searchTextError) setSearchTextError(null);
+                  }}
+                  caseSensitive={caseSensitive}
+                  onCaseSensitiveChange={setCaseSensitive}
+                  onSearchTextSubmit={() => void handleSearchTextSubmit()}
+                  searchTextLoading={searchTextLoading}
+                  searchTextError={searchTextError}
+                  searchSubmitDisabled={
+                    !trimmedJobId ||
+                    !selectedPdfPath?.trim() ||
+                    !searchTerm.trim()
+                  }
                   onTransitionEnd={handleAutoCountAsideTransitionEnd}
                 />
               </>

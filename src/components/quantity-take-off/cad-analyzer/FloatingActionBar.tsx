@@ -25,7 +25,7 @@ const TOOLS: {
   { id: "pointer", tooltip: "Select", icon: MousePointer2 },
   { id: "hand", tooltip: "Pan", icon: Hand },
   { id: "autoCount", tooltip: "Auto Count", icon: CircleDot },
-  { id: "textSearch", tooltip: "Text Search", icon: Type },
+  { id: "textSearch", tooltip: "Search Text", icon: Type },
   { id: "floorArea", tooltip: "Floor Area", icon: LayoutGrid },
   { id: "facade", tooltip: "Facade", icon: Building2 },
   { id: "doorFinder", tooltip: "Door Finder", icon: DoorOpen },

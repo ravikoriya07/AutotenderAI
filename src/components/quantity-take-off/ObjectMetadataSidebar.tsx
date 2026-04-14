@@ -144,7 +144,7 @@ export function ObjectMetadataSidebar({
               aria-readonly="true"
             />
             <p className="text-[11px] text-muted-foreground">
-              Pre-filled from the last analyze response.
+              Pre-filled from the last analyze or search response.
             </p>
           </div>
 

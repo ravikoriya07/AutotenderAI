@@ -723,7 +723,9 @@ export const CadPdfCanvasStack = forwardRef<
       ? isDragging
         ? "cursor-grabbing"
         : "cursor-grab"
-      : "cursor-crosshair";
+      : tool === "autoCount"
+        ? "cursor-crosshair"
+        : "cursor-default";
 
   const numPages = pdfDoc?.numPages ?? 0;
 
@@ -743,7 +745,9 @@ export const CadPdfCanvasStack = forwardRef<
       } else if (
         autoCountBackend &&
         autoCountBackend.pageNumber === pageNumber &&
-        metrics
+        metrics &&
+        autoCountBackend.roi.width > 0 &&
+        autoCountBackend.roi.height > 0
       ) {
         committed = backendRoiToScreenCss(autoCountBackend.roi, metrics);
       }
