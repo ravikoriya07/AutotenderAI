@@ -2,11 +2,13 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
   Loader2,
   LayoutGrid,
   LayoutPanelLeft,
+  List,
   Search,
   SlidersHorizontal,
   Trash2,
@@ -40,8 +42,16 @@ import {
   saveQtoAutoCount,
   type AutoCountBackendState,
 } from "@/lib/qtoAutoCountStorage";
+import {
+  appendQtoSavedObject,
+  clearQtoSavedObjects,
+  loadQtoSavedObjects,
+  type QtoSavedObjectEntryV1,
+  type QtoSavedObjectsFileV1,
+} from "@/lib/qtoSavedObjectsStorage";
 import { Button } from "@/components/ui/Button";
 import { AutoCountSidebar } from "@/components/AutoCountSidebar";
+import { ObjectMetadataSidebar } from "@/components/quantity-take-off/ObjectMetadataSidebar";
 import { postAutoCount } from "@/services/autoCountService";
 
 function findFileIdByStoragePath(
@@ -86,6 +96,24 @@ function treeLoadErrorMessage(e: unknown): string {
     }
   }
   return message;
+}
+
+function validateObjectMetadataForm(
+  objectId: string,
+  objectName: string
+): { objectId?: string; objectName?: string } {
+  const errors: { objectId?: string; objectName?: string } = {};
+  const idT = objectId.trim();
+  const nameT = objectName.trim();
+  if (!idT) errors.objectId = "Object ID is required.";
+  else if (idT.length > 200) {
+    errors.objectId = "Object ID must be 200 characters or fewer.";
+  }
+  if (!nameT) errors.objectName = "Object name is required.";
+  else if (nameT.length > 300) {
+    errors.objectName = "Object name must be 300 characters or fewer.";
+  }
+  return errors;
 }
 
 export type QuantityTakeOffViewProps = {
@@ -140,6 +168,48 @@ function AutoCountRightFloatingStack({
   );
 }
 
+/** Full-viewport blocking overlay while Auto Count analyze runs (portal to `document.body` + max z-index). */
+function AutoCountAnalyzingOverlay({ open }: { open: boolean }) {
+  useEffect(() => {
+    if (!open) return;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = prev;
+    };
+  }, [open]);
+
+  if (!open || typeof document === "undefined") return null;
+
+  return createPortal(
+    <div
+      className="pointer-events-auto fixed inset-0 flex flex-col items-center justify-center gap-4 touch-none bg-black/75 backdrop-blur-[3px]"
+      style={{
+        position: "fixed",
+        inset: 0,
+        width: "100vw",
+        minHeight: "100dvh",
+        zIndex: 2147483647,
+        margin: 0,
+      }}
+      role="dialog"
+      aria-modal="true"
+      aria-live="polite"
+      aria-busy="true"
+      aria-label="Analyzing"
+    >
+      <Loader2
+        className="h-11 w-11 shrink-0 animate-spin text-primary"
+        aria-hidden
+      />
+      <p className="text-base font-medium tracking-tight text-white">
+        Analyzing...
+      </p>
+    </div>,
+    document.body
+  );
+}
+
 /**
  * Light Figma-style layers panel: overlays the workspace only (no layout shift).
  * Full-width scrollable canvas; panel is absolute inside the card.
@@ -191,6 +261,13 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
     }
   }, []);
 
+  const clearObjectMetadataUnmountTimeout = useCallback(() => {
+    if (objectMetadataUnmountTimeoutRef.current != null) {
+      clearTimeout(objectMetadataUnmountTimeoutRef.current);
+      objectMetadataUnmountTimeoutRef.current = null;
+    }
+  }, []);
+
   const [treeNodes, setTreeNodes] = useState<FolderNode[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -209,11 +286,30 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
 
   const [autoCountSidebarMounted, setAutoCountSidebarMounted] = useState(false);
   const [isAutoCountOpen, setIsAutoCountOpen] = useState(false);
+  const [objectMetadataSidebarMounted, setObjectMetadataSidebarMounted] =
+    useState(false);
+  const [isObjectMetadataOpen, setIsObjectMetadataOpen] = useState(false);
   const [rotationInvariant, setRotationInvariant] = useState(true);
   const [confidence, setConfidence] = useState(0.7);
   const autoCountUnmountTimeoutRef = useRef<number | null>(null);
+  const objectMetadataUnmountTimeoutRef = useRef<number | null>(null);
   const isAutoCountOpenRef = useRef(isAutoCountOpen);
   isAutoCountOpenRef.current = isAutoCountOpen;
+  const isObjectMetadataOpenRef = useRef(isObjectMetadataOpen);
+  isObjectMetadataOpenRef.current = isObjectMetadataOpen;
+
+  const [savedObjects, setSavedObjects] = useState<QtoSavedObjectEntryV1[]>([]);
+  const [metadataObjectId, setMetadataObjectId] = useState("");
+  const [metadataObjectName, setMetadataObjectName] = useState("");
+  const [metadataCount, setMetadataCount] = useState(0);
+  const [metadataErrors, setMetadataErrors] = useState<{
+    objectId?: string;
+    objectName?: string;
+  }>({});
+  const [selectedSavedObjectId, setSelectedSavedObjectId] = useState<
+    string | null
+  >(null);
+  const [expandedSavedId, setExpandedSavedId] = useState<string | null>(null);
 
   const prevJobIdForTreeRef = useRef<string | null>(null);
   const cadCanvasRef = useRef<CadPdfCanvasStackHandle>(null);
@@ -234,15 +330,28 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
       setDrawerMounted(false);
       setIsAutoCountOpen(false);
       setAutoCountSidebarMounted(false);
+      setIsObjectMetadataOpen(false);
+      setObjectMetadataSidebarMounted(false);
+      clearObjectMetadataUnmountTimeout();
     }
-  }, [trimmedJobId, clearDrawerUnmountTimeout, clearAutoCountUnmountTimeout]);
+  }, [
+    trimmedJobId,
+    clearDrawerUnmountTimeout,
+    clearAutoCountUnmountTimeout,
+    clearObjectMetadataUnmountTimeout,
+  ]);
 
   useEffect(() => {
     return () => {
       clearDrawerUnmountTimeout();
       clearAutoCountUnmountTimeout();
+      clearObjectMetadataUnmountTimeout();
     };
-  }, [clearDrawerUnmountTimeout, clearAutoCountUnmountTimeout]);
+  }, [
+    clearDrawerUnmountTimeout,
+    clearAutoCountUnmountTimeout,
+    clearObjectMetadataUnmountTimeout,
+  ]);
 
   useEffect(() => {
     if (!trimmedJobId) {
@@ -320,6 +429,19 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
       setAutoCountRoi(null);
       setAutoCountBackend(null);
     }
+  }, [trimmedJobId, selectedPdfPath]);
+
+  useEffect(() => {
+    if (!trimmedJobId || !selectedPdfPath?.trim()) {
+      setSavedObjects([]);
+      return;
+    }
+    setSavedObjects(loadQtoSavedObjects(trimmedJobId, selectedPdfPath.trim()));
+  }, [trimmedJobId, selectedPdfPath]);
+
+  useEffect(() => {
+    setSelectedSavedObjectId(null);
+    setExpandedSavedId(null);
   }, [trimmedJobId, selectedPdfPath]);
 
   /** Highlight the file row that matches the open PDF (including after refresh). */
@@ -430,6 +552,52 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
     }
   }, [autoCountSidebarMounted, clearAutoCountUnmountTimeout]);
 
+  /** Open symbol options only after a ROI is committed (mouse/touch release), not when picking the tool. */
+  const handleAutoCountRoiChange = useCallback(
+    (roi: AutoCountRoiCss | null) => {
+      setAutoCountRoi(roi);
+      if (roi != null) {
+        openAutoCountPanel();
+      }
+    },
+    [openAutoCountPanel]
+  );
+
+  const closeObjectMetadataPanel = useCallback(() => {
+    setIsObjectMetadataOpen(false);
+    clearObjectMetadataUnmountTimeout();
+    if (typeof window === "undefined") return;
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      window.setTimeout(() => setObjectMetadataSidebarMounted(false), 0);
+      return;
+    }
+    objectMetadataUnmountTimeoutRef.current = window.setTimeout(() => {
+      objectMetadataUnmountTimeoutRef.current = null;
+      setObjectMetadataSidebarMounted(false);
+    }, 350);
+  }, [clearObjectMetadataUnmountTimeout]);
+
+  const openObjectMetadataPanel = useCallback(() => {
+    clearObjectMetadataUnmountTimeout();
+    if (!objectMetadataSidebarMounted) {
+      setObjectMetadataSidebarMounted(true);
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => setIsObjectMetadataOpen(true));
+      });
+    } else {
+      setIsObjectMetadataOpen(true);
+    }
+  }, [objectMetadataSidebarMounted, clearObjectMetadataUnmountTimeout]);
+
+  /**
+   * Object metadata is only available after a successful Analyze (or restored session with results).
+   * Use this for the "Object data" control — not immediately after Analyze in the handler (stale closure).
+   */
+  const tryOpenObjectMetadataPanel = useCallback(() => {
+    if (!autoCountBackend) return;
+    openObjectMetadataPanel();
+  }, [autoCountBackend, openObjectMetadataPanel]);
+
   const handleAutoCountAsideTransitionEnd = useCallback(
     (e: { target: EventTarget; currentTarget: EventTarget; propertyName: string }) => {
       if (e.target !== e.currentTarget) return;
@@ -442,9 +610,25 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
     [clearAutoCountUnmountTimeout]
   );
 
+  const handleObjectMetadataAsideTransitionEnd = useCallback(
+    (e: { target: EventTarget; currentTarget: EventTarget; propertyName: string }) => {
+      if (e.target !== e.currentTarget) return;
+      if (e.propertyName !== "transform") return;
+      if (!isObjectMetadataOpenRef.current) {
+        clearObjectMetadataUnmountTimeout();
+        setObjectMetadataSidebarMounted(false);
+      }
+    },
+    [clearObjectMetadataUnmountTimeout]
+  );
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
+      if (isObjectMetadataOpenRef.current) {
+        closeObjectMetadataPanel();
+        return;
+      }
       if (isAutoCountOpenRef.current) {
         closeAutoCountPanel();
         return;
@@ -455,7 +639,7 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [closeDrawer, closeAutoCountPanel]);
+  }, [closeDrawer, closeAutoCountPanel, closeObjectMetadataPanel]);
 
   const handleSelect = useCallback((id: string) => {
     setSelectedId(id);
@@ -646,12 +830,96 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
 
   const clearAutoCount = useCallback(() => {
     if (trimmedJobId && selectedPdfPath?.trim()) {
-      clearQtoAutoCount(trimmedJobId, selectedPdfPath.trim());
+      const path = selectedPdfPath.trim();
+      clearQtoAutoCount(trimmedJobId, path);
+      clearQtoSavedObjects(trimmedJobId, path);
     }
     setAutoCountRoi(null);
     setAutoCountBackend(null);
     setAutoCountLoading(false);
-  }, [trimmedJobId, selectedPdfPath]);
+    setSelectedSavedObjectId(null);
+    setExpandedSavedId(null);
+    setSavedObjects([]);
+    setMetadataObjectId("");
+    setMetadataObjectName("");
+    setMetadataCount(0);
+    setMetadataErrors({});
+    closeObjectMetadataPanel();
+  }, [trimmedJobId, selectedPdfPath, closeObjectMetadataPanel]);
+
+  const selectedSavedEntry = useMemo(() => {
+    if (!selectedSavedObjectId) return undefined;
+    return savedObjects.find((s) => s.id === selectedSavedObjectId);
+  }, [selectedSavedObjectId, savedObjects]);
+
+  const canvasAutoCountBackend =
+    selectedSavedEntry?.canvasSnapshot ?? autoCountBackend;
+  const emphasizeSavedHighlight = Boolean(selectedSavedEntry);
+
+  const handleSaveObjectMetadata = useCallback(() => {
+    if (!trimmedJobId || !selectedPdfPath?.trim() || !autoCountBackend) {
+      toast.error("Nothing to save. Run Analyze first.");
+      return;
+    }
+    const errs = validateObjectMetadataForm(metadataObjectId, metadataObjectName);
+    setMetadataErrors(errs);
+    if (Object.keys(errs).length > 0) return;
+
+    const idTrim = metadataObjectId.trim();
+    const nameTrim = metadataObjectName.trim();
+    const entry: QtoSavedObjectEntryV1 = {
+      v: 1,
+      id: crypto.randomUUID(),
+      objectId: idTrim,
+      objectName: nameTrim,
+      count: metadataCount,
+      savedAt: Date.now(),
+      canvasSnapshot: {
+        pageNumber: autoCountBackend.pageNumber,
+        roi: { ...autoCountBackend.roi },
+        matches: autoCountBackend.matches.map((m) => ({ ...m })),
+      },
+    };
+    const next = appendQtoSavedObject(
+      trimmedJobId,
+      selectedPdfPath.trim(),
+      entry
+    );
+    setSavedObjects(next);
+    setMetadataObjectId("");
+    setMetadataObjectName("");
+    setMetadataErrors({});
+    toast.success("Object saved.");
+  }, [
+    trimmedJobId,
+    selectedPdfPath,
+    autoCountBackend,
+    metadataObjectId,
+    metadataObjectName,
+    metadataCount,
+  ]);
+
+  const handleExportSavedObjectsJson = useCallback(() => {
+    if (!trimmedJobId || !selectedPdfPath?.trim() || savedObjects.length === 0)
+      return;
+    const payload: QtoSavedObjectsFileV1 = {
+      version: 1,
+      jobId: trimmedJobId,
+      filePath: selectedPdfPath.trim(),
+      exportedAt: Date.now(),
+      objects: savedObjects,
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], {
+      type: "application/json",
+    });
+    const a = document.createElement("a");
+    const safe = trimmedJobId.replace(/[^a-zA-Z0-9_-]+/g, "-").slice(0, 32);
+    a.href = URL.createObjectURL(blob);
+    a.download = `qto-saved-objects-${safe}-${Date.now()}.json`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+    toast.success("Export started.");
+  }, [trimmedJobId, selectedPdfPath, savedObjects]);
 
   const handleAutoCountAnalyze = useCallback(async () => {
     if (!trimmedJobId || !selectedPdfPath?.trim()) return;
@@ -703,6 +971,16 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
       toast.success(
         n > 0 ? `Found ${n} match${n === 1 ? "" : "es"}` : "No matches"
       );
+      setMetadataCount(n);
+      setMetadataObjectId("");
+      setMetadataObjectName("");
+      setMetadataErrors({});
+      setSelectedSavedObjectId(null);
+      setExpandedSavedId(null);
+      if (isAutoCountOpenRef.current) {
+        closeAutoCountPanel();
+      }
+      openObjectMetadataPanel();
     } catch (e) {
       console.log("[qto] postAutoCount failed", e);
       toast.error("Auto count failed.");
@@ -716,6 +994,8 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
     autoCountBackend,
     rotationInvariant,
     confidence,
+    closeAutoCountPanel,
+    openObjectMetadataPanel,
   ]);
 
   /**
@@ -731,6 +1011,7 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
 
   return (
     <CadAnalyzerToolProvider>
+      <AutoCountAnalyzingOverlay open={autoCountLoading} />
       <div className="flex min-h-0 w-full max-w-full flex-1 flex-col bg-background">
         <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-none">
           <div
@@ -775,6 +1056,22 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
                     <Button
                       type="button"
                       size="sm"
+                      variant="outline"
+                      className="h-9 min-w-[7.5rem] justify-center gap-1.5 border-border/80 bg-background/60 text-foreground hover:bg-muted/80"
+                      disabled={!autoCountBackend || autoCountLoading}
+                      onClick={tryOpenObjectMetadataPanel}
+                      title={
+                        autoCountBackend
+                          ? "Open object metadata and saved objects"
+                          : "Run Analyze first"
+                      }
+                    >
+                      <List className="h-3.5 w-3.5 shrink-0" />
+                      Object data
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
                       variant="ghost"
                       className="h-9 min-w-[7.5rem] justify-center gap-1.5 text-muted-foreground hover:bg-muted hover:text-foreground"
                       disabled={autoCountLoading}
@@ -812,8 +1109,9 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
                     pdfBlob={pdfBlob}
                     className="min-h-0 flex-1"
                     autoCountRoi={autoCountRoi}
-                    onAutoCountRoiChange={setAutoCountRoi}
-                    autoCountBackend={autoCountBackend}
+                    onAutoCountRoiChange={handleAutoCountRoiChange}
+                    autoCountBackend={canvasAutoCountBackend}
+                    emphasizeAutoCountHighlight={emphasizeSavedHighlight}
                   />
                 ) : (
                   <div className="flex w-full min-w-0 flex-1 flex-col items-center justify-center px-3 py-6 sm:px-4 sm:py-8">
@@ -828,9 +1126,7 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
             </div>
             {showToolbar ? (
               <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 flex justify-center px-3 pb-5 sm:px-4 sm:pb-6">
-                <CadAnalyzerFloatingBridge
-                  onAutoCountActivate={openAutoCountPanel}
-                />
+                <CadAnalyzerFloatingBridge />
               </div>
             ) : null}
             {canvasDrawer}
@@ -856,6 +1152,57 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
                   confidence={confidence}
                   onConfidenceChange={setConfidence}
                   onTransitionEnd={handleAutoCountAsideTransitionEnd}
+                />
+              </>
+            ) : null}
+            {objectMetadataSidebarMounted ? (
+              <>
+                <button
+                  type="button"
+                  aria-label="Close object metadata"
+                  className={cn(
+                    "absolute inset-0 z-[51] transition-opacity duration-300 ease-out motion-reduce:transition-none",
+                    "bg-foreground/[0.06] max-md:bg-foreground/[0.08]",
+                    isObjectMetadataOpen
+                      ? "opacity-100"
+                      : "pointer-events-none opacity-0"
+                  )}
+                  onClick={closeObjectMetadataPanel}
+                />
+                <ObjectMetadataSidebar
+                  open={isObjectMetadataOpen}
+                  onClose={closeObjectMetadataPanel}
+                  objectId={metadataObjectId}
+                  objectName={metadataObjectName}
+                  countDisplay={metadataCount}
+                  onObjectIdChange={(v) => {
+                    setMetadataObjectId(v);
+                    if (metadataErrors.objectId) {
+                      setMetadataErrors((prev) => ({ ...prev, objectId: undefined }));
+                    }
+                  }}
+                  onObjectNameChange={(v) => {
+                    setMetadataObjectName(v);
+                    if (metadataErrors.objectName) {
+                      setMetadataErrors((prev) => ({ ...prev, objectName: undefined }));
+                    }
+                  }}
+                  errors={metadataErrors}
+                  onSave={handleSaveObjectMetadata}
+                  saveDisabled={!autoCountBackend}
+                  savedObjects={savedObjects}
+                  selectedSavedId={selectedSavedObjectId}
+                  onSelectSaved={(id) => {
+                    setSelectedSavedObjectId((prev) =>
+                      prev === id ? null : id
+                    );
+                  }}
+                  expandedSavedId={expandedSavedId}
+                  onToggleExpand={(id) =>
+                    setExpandedSavedId((prev) => (prev === id ? null : id))
+                  }
+                  onExportAllJson={handleExportSavedObjectsJson}
+                  onTransitionEnd={handleObjectMetadataAsideTransitionEnd}
                 />
               </>
             ) : null}

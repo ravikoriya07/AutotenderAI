@@ -44,6 +44,8 @@ type PageAnnotationLayer = {
   committedRoi: CssRect | null;
   draftRoi: CssRect | null;
   matches: AutoCountMatch[];
+  /** Stronger strokes when a saved object is selected in the metadata panel */
+  emphasize?: boolean;
 };
 
 function drawPageAnnotations(
@@ -54,6 +56,7 @@ function drawPageAnnotations(
   cssH: number,
   layer: PageAnnotationLayer
 ) {
+  const emph = layer.emphasize === true;
   const sx = bufW / Math.max(cssW, 1);
   const sy = bufH / Math.max(cssH, 1);
   octx.setTransform(1, 0, 0, 1, 0, 0);
@@ -64,9 +67,13 @@ function drawPageAnnotations(
 
   if (layer.committedRoi) {
     const r = layer.committedRoi;
-    octx.strokeStyle = "#2563eb";
+    octx.strokeStyle = emph ? "#d97706" : "#2563eb";
+    octx.lineWidth = emph
+      ? Math.max(2.5, 3 / (window.devicePixelRatio || 1))
+      : Math.max(1.5, 2 / (window.devicePixelRatio || 1));
     octx.setLineDash([]);
     octx.strokeRect(r.x * sx, r.y * sy, r.width * sx, r.height * sy);
+    octx.lineWidth = Math.max(1.5, 2 / (window.devicePixelRatio || 1));
   }
   if (layer.draftRoi) {
     const r = layer.draftRoi;
@@ -91,10 +98,12 @@ function drawPageAnnotations(
     ) {
       continue;
     }
-    octx.fillStyle = "rgba(124, 58, 237, 0.22)";
+    octx.fillStyle = emph ? "rgba(217, 119, 6, 0.28)" : "rgba(124, 58, 237, 0.22)";
     octx.fillRect(mx, my, mw, mh);
-    octx.strokeStyle = "#6d28d9";
-    octx.lineWidth = Math.max(1.5, 2 / (window.devicePixelRatio || 1));
+    octx.strokeStyle = emph ? "#b45309" : "#6d28d9";
+    octx.lineWidth = emph
+      ? Math.max(2, 2.5 / (window.devicePixelRatio || 1))
+      : Math.max(1.5, 2 / (window.devicePixelRatio || 1));
     octx.strokeRect(mx, my, mw, mh);
   }
 }
@@ -315,6 +324,8 @@ export type CadPdfCanvasStackProps = {
   onAutoCountRoiChange?: (roi: AutoCountRoiCss | null) => void;
   /** Last analyze in backend space; overlay reprojects to CSS when layout/zoom changes */
   autoCountBackend?: AutoCountBackendState | null;
+  /** Thicker amber emphasis when a saved object is selected (metadata panel) */
+  emphasizeAutoCountHighlight?: boolean;
 };
 
 export type CadPdfCanvasStackHandle = {
@@ -350,6 +361,7 @@ export const CadPdfCanvasStack = forwardRef<
     autoCountRoi = null,
     onAutoCountRoiChange,
     autoCountBackend = null,
+    emphasizeAutoCountHighlight = false,
   },
   ref
 ) {
@@ -751,9 +763,14 @@ export const CadPdfCanvasStack = forwardRef<
         );
       }
 
-      return { committedRoi: committed, draftRoi: draft, matches };
+      return {
+        committedRoi: committed,
+        draftRoi: draft,
+        matches,
+        emphasize: emphasizeAutoCountHighlight,
+      };
     },
-    [autoCountRoi, autoCountBackend, draftRoi, metricsTick]
+    [autoCountRoi, autoCountBackend, draftRoi, metricsTick, emphasizeAutoCountHighlight]
   );
 
   const layersByPage = useMemo(() => {

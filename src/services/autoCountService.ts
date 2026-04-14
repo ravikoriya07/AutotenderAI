@@ -55,8 +55,12 @@ export async function postAutoCount(
   const { data } = await autoCountClient.post<AutoCountResponse>(
     "/auto_count",
     {
-      ...payload,
+      job_id: payload.job_id,
       file_path: toAutoCountApiFilePath(payload.file_path),
+      roi: payload.roi,
+      /** Must mirror UI "Detect rotated symbols": checked → true, unchecked → false */
+      rotation_invariant: Boolean(payload.rotation_invariant),
+      confidence: payload.confidence,
     },
     config
   );
