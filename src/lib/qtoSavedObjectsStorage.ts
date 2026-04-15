@@ -1,4 +1,5 @@
 import type { AutoCountBackendState } from "@/lib/qtoAutoCountStorage";
+import type { RoomFinderApiResponse } from "@/services/roomFinderService";
 import type { WallFinderApiResponse } from "@/services/wallFinderService";
 
 /** Persisted wall analysis for canvas replay (matches backend ROI + API body). */
@@ -8,18 +9,29 @@ export type WallFinderSavedSnapshotV1 = {
   response: WallFinderApiResponse;
 };
 
+/** Persisted room analysis for canvas replay. */
+export type RoomFinderSavedSnapshotV1 = {
+  pageNumber: number;
+  roi: AutoCountBackendState["roi"];
+  response: RoomFinderApiResponse;
+};
+
 export type QtoSavedObjectEntryV1 = {
   v: 1;
   id: string;
   objectId: string;
   objectName: string;
-  /** Match count, or total_walls for wall saves */
+  /** Match count, total_walls, or total_rooms */
   count: number;
   savedAt: number;
-  /** Wall finder saves only */
-  analysisKind?: "matches" | "walls";
+  analysisKind?: "matches" | "walls" | "rooms";
   totalWallLengthM?: number;
-  canvasSnapshot: AutoCountBackendState | WallFinderSavedSnapshotV1;
+  /** Room finder — combined area (m²) */
+  totalAreaM2?: number;
+  canvasSnapshot:
+    | AutoCountBackendState
+    | WallFinderSavedSnapshotV1
+    | RoomFinderSavedSnapshotV1;
 };
 
 export type QtoSavedObjectsFileV1 = {
@@ -77,7 +89,10 @@ function isValidEntry(x: unknown): x is QtoSavedObjectEntryV1 {
   if (isMatchSnapshot(sk)) {
     return true;
   }
-  if (isWallSnapshot(sk) && o.analysisKind === "walls") {
+  if (
+    (o.analysisKind === "walls" || o.analysisKind === "rooms") &&
+    isWallSnapshot(sk)
+  ) {
     return true;
   }
   return false;

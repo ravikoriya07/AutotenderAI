@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import type { QtoSavedObjectEntryV1 } from "@/lib/qtoSavedObjectsStorage";
 
-export type ObjectMetadataStatsMode = "count" | "wall";
+export type ObjectMetadataStatsMode = "count" | "wall" | "room";
 
 export type ObjectMetadataSidebarProps = {
   open: boolean;
@@ -20,6 +20,9 @@ export type ObjectMetadataSidebarProps = {
   /** Wall finder — read-only */
   totalWallLengthDisplay: string;
   totalWallsDisplay: number;
+  /** Room finder — read-only */
+  roomsFoundDisplay: number;
+  totalAreaM2Display: string;
   onObjectIdChange: (value: string) => void;
   onObjectNameChange: (value: string) => void;
   errors: { objectId?: string; objectName?: string };
@@ -47,6 +50,8 @@ export function ObjectMetadataSidebar({
   statsMode,
   totalWallLengthDisplay,
   totalWallsDisplay,
+  roomsFoundDisplay,
+  totalAreaM2Display,
   onObjectIdChange,
   onObjectNameChange,
   errors,
@@ -64,6 +69,8 @@ export function ObjectMetadataSidebar({
   const countId = React.useId();
   const wallLenId = React.useId();
   const wallNumId = React.useId();
+  const roomNumId = React.useId();
+  const roomAreaId = React.useId();
   const oid = React.useId();
   const oname = React.useId();
 
@@ -178,6 +185,44 @@ export function ObjectMetadataSidebar({
                 />
                 <p className="text-[11px] text-muted-foreground">
                   Pre-filled from the last wall analysis response.
+                </p>
+              </div>
+            </>
+          ) : statsMode === "room" ? (
+            <>
+              <div className="space-y-1.5">
+                <label
+                  htmlFor={roomNumId}
+                  className="text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground"
+                >
+                  Rooms found
+                </label>
+                <Input
+                  id={roomNumId}
+                  readOnly
+                  disabled
+                  value={String(roomsFoundDisplay)}
+                  className="cursor-not-allowed bg-muted/40 text-muted-foreground"
+                  aria-readonly="true"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <label
+                  htmlFor={roomAreaId}
+                  className="text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground"
+                >
+                  Total area (m²)
+                </label>
+                <Input
+                  id={roomAreaId}
+                  readOnly
+                  disabled
+                  value={totalAreaM2Display}
+                  className="cursor-not-allowed bg-muted/40 text-muted-foreground"
+                  aria-readonly="true"
+                />
+                <p className="text-[11px] text-muted-foreground">
+                  Pre-filled from the last room analysis response.
                 </p>
               </div>
             </>
@@ -296,6 +341,27 @@ export function ObjectMetadataSidebar({
                                   </span>
                                   <span className="tabular-nums font-medium text-foreground">
                                     {entry.count}
+                                  </span>
+                                </div>
+                              </>
+                            ) : entry.analysisKind === "rooms" ? (
+                              <>
+                                <div className="flex items-center justify-between gap-3">
+                                  <span className="text-muted-foreground">
+                                    Rooms found
+                                  </span>
+                                  <span className="tabular-nums font-medium text-foreground">
+                                    {entry.count}
+                                  </span>
+                                </div>
+                                <div className="mt-2 flex items-center justify-between gap-3">
+                                  <span className="text-muted-foreground">
+                                    Total area (m²)
+                                  </span>
+                                  <span className="tabular-nums font-medium text-foreground">
+                                    {entry.totalAreaM2 != null
+                                      ? entry.totalAreaM2.toFixed(2)
+                                      : "—"}
                                   </span>
                                 </div>
                               </>

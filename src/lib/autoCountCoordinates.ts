@@ -1,5 +1,7 @@
 import type { AutoCountMatch, AutoCountRoi } from "@/services/autoCountService";
 import type { WallFinderApiResponse } from "@/services/wallFinderService";
+import type { RoomFinderApiResponse } from "@/services/roomFinderService";
+import { pickRoomRowsFromResponse } from "@/services/roomFinderService";
 
 /** Raw `/auto_count` match row (backend may use w/h or width/height). */
 export type AutoCountApiMatch = {
@@ -257,4 +259,86 @@ export function wallFinderResponseToScreenDrawItems(
 ): WallSegmentScreen[] {
   const raw = pickWallSegmentsFromResponse(response);
   return wallApiSegmentsToScreenDrawItems(raw, metrics, roi);
+}
+
+/** One room polygon in CSS px for canvas overlay (`analyze_rooms`). */
+export type RoomPolygonScreen = {
+  cssPoly: { x: number; y: number }[];
+  centerX: number;
+  centerY: number;
+  areaM2: number;
+};
+
+function normalizeRoomPoint(p: unknown): { x: number; y: number } | null {
+  if (p == null || typeof p !== "object") return null;
+  const o = p as Record<string, unknown>;
+  const x = Number(o.x ?? o.X);
+  const y = Number(o.y ?? o.Y);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  return { x, y };
+}
+
+function polygonLooksRoiLocal(
+  pts: { x: number; y: number }[],
+  roi: AutoCountRoi
+): boolean {
+  if (roi.width <= 0 || roi.height <= 0 || pts.length === 0) return false;
+  const slack = 3;
+  for (const p of pts) {
+    if (
+      p.x < -slack ||
+      p.y < -slack ||
+      p.x > roi.width + slack ||
+      p.y > roi.height + slack
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function promotePolygonLocalToGlobal(
+  pts: { x: number; y: number }[],
+  roi: AutoCountRoi
+): { x: number; y: number }[] {
+  const { x: ox, y: oy } = roi;
+  return pts.map((p) => ({ x: p.x + ox, y: p.y + oy }));
+}
+
+/**
+ * `/analyze_rooms` room rows → filled polygons in CSS px (same backend scale as ROI).
+ */
+export function roomFinderResponseToScreenPolygons(
+  response: RoomFinderApiResponse,
+  metrics: AutoCountPageMetrics,
+  roi: AutoCountRoi
+): RoomPolygonScreen[] {
+  const rows = pickRoomRowsFromResponse(response);
+  const { fx, fy } = scaleFactorsXY(metrics);
+  const out: RoomPolygonScreen[] = [];
+
+  for (const row of rows) {
+    const polyRaw = row.polygon;
+    if (!Array.isArray(polyRaw) || polyRaw.length < 3) continue;
+    let pts: { x: number; y: number }[] = [];
+    for (const pt of polyRaw) {
+      const p = normalizeRoomPoint(pt);
+      if (p) pts.push(p);
+    }
+    if (pts.length < 3) continue;
+    if (polygonLooksRoiLocal(pts, roi)) {
+      pts = promotePolygonLocalToGlobal(pts, roi);
+    }
+    const sx = pts.reduce((s, p) => s + p.x, 0) / pts.length;
+    const sy = pts.reduce((s, p) => s + p.y, 0) / pts.length;
+    const areaM =
+      row.area_m2 != null && Number.isFinite(row.area_m2) ? row.area_m2 : 0;
+    out.push({
+      cssPoly: pts.map((p) => ({ x: p.x * fx, y: p.y * fy })),
+      centerX: sx * fx,
+      centerY: sy * fy,
+      areaM2: areaM,
+    });
+  }
+  return out;
 }

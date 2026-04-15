@@ -20,11 +20,14 @@ import {
   BACKEND_PDF_VIEWPORT_SCALE,
   backendMatchesToScreen,
   backendRoiToScreenCss,
+  roomFinderResponseToScreenPolygons,
   wallFinderResponseToScreenDrawItems,
   type AutoCountPageMetrics,
+  type RoomPolygonScreen,
   type WallSegmentScreen,
 } from "@/lib/autoCountCoordinates";
 import type { AutoCountBackendState } from "@/lib/qtoAutoCountStorage";
+import type { RoomFinderBackendState } from "@/lib/qtoRoomFinderStorage";
 import type { WallFinderBackendState } from "@/lib/qtoWallFinderStorage";
 import type { AutoCountMatch } from "@/services/autoCountService";
 import type { PDFDocumentProxy, PDFPageProxy, RenderTask } from "pdfjs-dist";
@@ -65,6 +68,10 @@ type PageAnnotationLayer = {
   matchesDoor: AutoCountMatch[];
   /** Wall Finder — segments with measurement labels (purple lines / red markers; not match boxes) */
   wallSegments: WallSegmentScreen[];
+  /** Room Finder — dashed ROI (blue) */
+  committedRoiRoom: CssRect | null;
+  /** Room Finder — filled green polygons + area labels */
+  roomPolygons: RoomPolygonScreen[];
   /** Stronger strokes when a saved object is selected in the metadata panel */
   emphasize?: boolean;
 };
@@ -203,6 +210,59 @@ function drawWallFinderSegments(
   }
 }
 
+/** Room Finder — filled polygons (green) + labels; coordinates are CSS px like wall segments. */
+function drawRoomFinderPolygons(
+  octx: CanvasRenderingContext2D,
+  sx: number,
+  sy: number,
+  polys: RoomPolygonScreen[],
+  emphasize: boolean
+) {
+  if (polys.length === 0) return;
+  const dpr = window.devicePixelRatio || 1;
+  const lineW = emphasize
+    ? Math.max(2, 2.5 / dpr)
+    : Math.max(1.5, 2 / dpr);
+  const fontSize = Math.max(11, Math.min(20, 14 * sx));
+
+  for (const poly of polys) {
+    const pts = poly.cssPoly;
+    if (pts.length < 3) continue;
+    octx.beginPath();
+    octx.moveTo(pts[0]!.x * sx, pts[0]!.y * sy);
+    for (let i = 1; i < pts.length; i++) {
+      octx.lineTo(pts[i]!.x * sx, pts[i]!.y * sy);
+    }
+    octx.closePath();
+    octx.fillStyle = emphasize
+      ? "rgba(22, 163, 74, 0.4)"
+      : "rgba(34, 197, 94, 0.32)";
+    octx.fill();
+    octx.strokeStyle = emphasize ? "#15803d" : "#16a34a";
+    octx.lineWidth = lineW;
+    octx.setLineDash([]);
+    octx.stroke();
+
+    const label =
+      poly.areaM2 > 0 && Number.isFinite(poly.areaM2)
+        ? `${poly.areaM2.toFixed(1)}m²`
+        : "—";
+    const lx = poly.centerX * sx;
+    const ly = poly.centerY * sy;
+    octx.font = `bold ${fontSize}px Inter, ui-sans-serif, system-ui, sans-serif`;
+    octx.textAlign = "center";
+    octx.textBaseline = "middle";
+    const tw = octx.measureText(label).width;
+    const pad = 4 * sx;
+    const boxW = tw + pad * 2;
+    const boxH = fontSize + 8;
+    octx.fillStyle = "rgba(255, 255, 255, 0.95)";
+    octx.fillRect(lx - boxW / 2, ly - boxH / 2, boxW, boxH);
+    octx.fillStyle = "#0f172a";
+    octx.fillText(label, lx, ly);
+  }
+}
+
 function drawPageAnnotations(
   octx: CanvasRenderingContext2D,
   bufW: number,
@@ -251,6 +311,17 @@ function drawPageAnnotations(
     octx.setLineDash([]);
     octx.lineWidth = Math.max(1.5, 2 / (window.devicePixelRatio || 1));
   }
+  if (layer.committedRoiRoom) {
+    const r = layer.committedRoiRoom;
+    octx.strokeStyle = emph ? "#1d4ed8" : "#2563eb";
+    octx.lineWidth = emph
+      ? Math.max(2.5, 3 / (window.devicePixelRatio || 1))
+      : Math.max(1.5, 2 / (window.devicePixelRatio || 1));
+    octx.setLineDash([6, 4]);
+    octx.strokeRect(r.x * sx, r.y * sy, r.width * sx, r.height * sy);
+    octx.setLineDash([]);
+    octx.lineWidth = Math.max(1.5, 2 / (window.devicePixelRatio || 1));
+  }
   if (layer.draftRoi) {
     const r = layer.draftRoi;
     octx.strokeStyle = "#60a5fa";
@@ -267,6 +338,7 @@ function drawPageAnnotations(
     variant: "doorFinder",
   });
   drawWallFinderSegments(octx, sx, sy, layer.wallSegments, emph);
+  drawRoomFinderPolygons(octx, sx, sy, layer.roomPolygons, emph);
 }
 
 type PdfPageRowProps = {
@@ -492,6 +564,9 @@ export type CadPdfCanvasStackProps = {
   wallFinderRoi?: AutoCountRoiCss | null;
   onWallFinderRoiChange?: (roi: AutoCountRoiCss | null) => void;
   wallFinderBackend?: WallFinderBackendState | null;
+  roomFinderRoi?: AutoCountRoiCss | null;
+  onRoomFinderRoiChange?: (roi: AutoCountRoiCss | null) => void;
+  roomFinderBackend?: RoomFinderBackendState | null;
   /** Thicker amber emphasis when a saved object is selected (metadata panel) */
   emphasizeAutoCountHighlight?: boolean;
 };
@@ -535,6 +610,9 @@ export const CadPdfCanvasStack = forwardRef<
     wallFinderRoi = null,
     onWallFinderRoiChange,
     wallFinderBackend = null,
+    roomFinderRoi = null,
+    onRoomFinderRoiChange,
+    roomFinderBackend = null,
     emphasizeAutoCountHighlight = false,
   },
   ref
@@ -591,7 +669,7 @@ export const CadPdfCanvasStack = forwardRef<
   } | null>(null);
   const [isRoiDragging, setIsRoiDragging] = useState(false);
   const roiDragRef = useRef<{
-    mode: "autoCount" | "doorFinder" | "wallFinder";
+    mode: "autoCount" | "doorFinder" | "wallFinder" | "roomFinder";
     pageIndex: number;
     startLocalX: number;
     startLocalY: number;
@@ -797,7 +875,9 @@ export const CadPdfCanvasStack = forwardRef<
         ? onDoorFinderRoiChange
         : d.mode === "wallFinder"
           ? onWallFinderRoiChange
-          : onAutoCountRoiChange;
+          : d.mode === "roomFinder"
+            ? onRoomFinderRoiChange
+            : onAutoCountRoiChange;
     if (!onCommit) return;
     const w = Math.abs(d.curLocalX - d.startLocalX);
     const h = Math.abs(d.curLocalY - d.startLocalY);
@@ -817,7 +897,12 @@ export const CadPdfCanvasStack = forwardRef<
       width: rect.width,
       height: rect.height,
     });
-  }, [onAutoCountRoiChange, onDoorFinderRoiChange, onWallFinderRoiChange]);
+  }, [
+    onAutoCountRoiChange,
+    onDoorFinderRoiChange,
+    onWallFinderRoiChange,
+    onRoomFinderRoiChange,
+  ]);
 
   const updateRoiDrag = useCallback(
     (clientX: number, clientY: number) => {
@@ -842,7 +927,8 @@ export const CadPdfCanvasStack = forwardRef<
       if (
         tool !== "autoCount" &&
         tool !== "doorFinder" &&
-        tool !== "wallFinder"
+        tool !== "wallFinder" &&
+        tool !== "roomFinder"
       )
         return;
       e.preventDefault();
@@ -858,7 +944,9 @@ export const CadPdfCanvasStack = forwardRef<
             ? "doorFinder"
             : tool === "wallFinder"
               ? "wallFinder"
-              : "autoCount",
+              : tool === "roomFinder"
+                ? "roomFinder"
+                : "autoCount",
         pageIndex,
         startLocalX: local.x,
         startLocalY: local.y,
@@ -918,7 +1006,8 @@ export const CadPdfCanvasStack = forwardRef<
         : "cursor-grab"
       : tool === "autoCount" ||
           tool === "doorFinder" ||
-          tool === "wallFinder"
+          tool === "wallFinder" ||
+          tool === "roomFinder"
         ? "cursor-crosshair"
         : "cursor-default";
 
@@ -983,6 +1072,24 @@ export const CadPdfCanvasStack = forwardRef<
         committedWall = backendRoiToScreenCss(wallFinderBackend.roi, metrics);
       }
 
+      let committedRoom: CssRect | null = null;
+      if (roomFinderRoi?.pageNumber === pageNumber) {
+        committedRoom = {
+          x: roomFinderRoi.x,
+          y: roomFinderRoi.y,
+          width: roomFinderRoi.width,
+          height: roomFinderRoi.height,
+        };
+      } else if (
+        roomFinderBackend &&
+        backendPageMatches(roomFinderBackend.pageNumber, pageNumber) &&
+        metrics &&
+        roomFinderBackend.roi.width > 0 &&
+        roomFinderBackend.roi.height > 0
+      ) {
+        committedRoom = backendRoiToScreenCss(roomFinderBackend.roi, metrics);
+      }
+
       const draft =
         draftRoi?.pageIndex === idx ? draftRoi.rect : null;
 
@@ -1023,14 +1130,29 @@ export const CadPdfCanvasStack = forwardRef<
         );
       }
 
+      let roomPolygons: RoomPolygonScreen[] = [];
+      if (
+        roomFinderBackend &&
+        backendPageMatches(roomFinderBackend.pageNumber, pageNumber) &&
+        metrics
+      ) {
+        roomPolygons = roomFinderResponseToScreenPolygons(
+          roomFinderBackend.response,
+          metrics,
+          roomFinderBackend.roi
+        );
+      }
+
       return {
         committedRoiAuto: committedAuto,
         committedRoiDoor: committedDoor,
         committedRoiWall: committedWall,
+        committedRoiRoom: committedRoom,
         draftRoi: draft,
         matchesAuto,
         matchesDoor,
         wallSegments,
+        roomPolygons,
         emphasize: emphasizeAutoCountHighlight,
       };
     },
@@ -1038,9 +1160,11 @@ export const CadPdfCanvasStack = forwardRef<
       autoCountRoi,
       doorFinderRoi,
       wallFinderRoi,
+      roomFinderRoi,
       autoCountBackend,
       doorFinderBackend,
       wallFinderBackend,
+      roomFinderBackend,
       draftRoi,
       metricsTick,
       emphasizeAutoCountHighlight,
@@ -1100,7 +1224,8 @@ export const CadPdfCanvasStack = forwardRef<
             </div>
             {tool === "autoCount" ||
             tool === "doorFinder" ||
-            tool === "wallFinder" ? (
+            tool === "wallFinder" ||
+            tool === "roomFinder" ? (
               <div
                 className="absolute inset-0 z-20 bg-transparent"
                 style={{ pointerEvents: "auto" }}
