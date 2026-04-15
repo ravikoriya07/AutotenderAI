@@ -163,52 +163,42 @@ export type QuantityTakeOffViewProps = {
   jobId: string;
 };
 
-/** Reopen chip when a canvas tool is active but the unified options panel is closed. */
+/** Reopen chip when the unified options panel is closed (any canvas tool, including Select / Pan). */
 function QtoRightSidebarReopenChip({
   showToolbar,
   autoCountSidebarMounted,
+  lastToolAction,
   openToolOptionsPanel,
 }: {
   showToolbar: boolean;
   autoCountSidebarMounted: boolean;
+  lastToolAction: ToolSidebarMode;
   openToolOptionsPanel: (mode: ToolSidebarMode) => void;
 }) {
   const { tool } = useCadAnalyzerTool();
-  const showChip =
-    showToolbar &&
-    (tool === "autoCount" ||
-      tool === "doorFinder" ||
-      tool === "wallFinder" ||
-      tool === "roomFinder" ||
-      tool === "textSearch") &&
-    !autoCountSidebarMounted;
+  const isNavigationTool = tool === "pointer" || tool === "hand";
+  const showChip = showToolbar && !autoCountSidebarMounted;
 
-  const toolOptionsModeFromBar = (): ToolSidebarMode => {
-    if (tool === "doorFinder") return "doorFinder";
-    if (tool === "wallFinder") return "wallFinder";
-    if (tool === "roomFinder") return "roomFinder";
-    if (tool === "textSearch") return "searchText";
-    return "autoCount";
-  };
-
-  const chipLabel =
-    tool === "doorFinder"
+  const chipLabel = isNavigationTool
+    ? "Your saved items"
+    : lastToolAction === "doorFinder"
       ? "Door finder options"
-      : tool === "wallFinder"
+      : lastToolAction === "wallFinder"
         ? "Wall finder options"
-        : tool === "roomFinder"
+        : lastToolAction === "roomFinder"
           ? "Room finder options"
-          : tool === "textSearch"
+          : lastToolAction === "searchText"
             ? "Search text options"
             : "Symbol options";
-  const chipAria =
-    tool === "doorFinder"
+  const chipAria = isNavigationTool
+    ? "Open your saved items and export"
+    : lastToolAction === "doorFinder"
       ? "Open door finder options"
-      : tool === "wallFinder"
+      : lastToolAction === "wallFinder"
         ? "Open wall finder options"
-        : tool === "roomFinder"
+        : lastToolAction === "roomFinder"
           ? "Open room finder options"
-          : tool === "textSearch"
+          : lastToolAction === "searchText"
             ? "Open search text options"
             : "Open symbol options";
 
@@ -218,7 +208,7 @@ function QtoRightSidebarReopenChip({
     <div className="pointer-events-none absolute right-2 top-2 z-30 flex flex-col items-end gap-2 sm:right-3 sm:top-3">
       <button
         type="button"
-        onClick={() => openToolOptionsPanel(toolOptionsModeFromBar())}
+        onClick={() => openToolOptionsPanel(lastToolAction)}
         className="pointer-events-auto inline-flex max-w-full items-center gap-2 rounded-full border border-border/80 bg-card px-3 py-1.5 text-left text-xs font-medium text-foreground shadow-sm transition hover:bg-muted/70 sm:gap-2 sm:px-3.5 sm:py-1.5 sm:text-sm"
         aria-label={chipAria}
       >
@@ -230,6 +220,15 @@ function QtoRightSidebarReopenChip({
       </button>
     </div>
   );
+}
+
+/** When tick increments (e.g. right options panel closed), select Pan so the user can move/zoom without ROI capture. */
+function CadToolPanOnTick({ tick }: { tick: number }) {
+  const { setTool } = useCadAnalyzerTool();
+  useEffect(() => {
+    if (tick > 0) setTool("hand");
+  }, [tick, setTool]);
+  return null;
 }
 
 /** Full-viewport blocking overlay for Auto Count analyze or Search Text (portal to `document.body`). */
@@ -402,6 +401,8 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
     string | null
   >(null);
   const [expandedSavedId, setExpandedSavedId] = useState<string | null>(null);
+  const [panToolAfterSidebarCloseTick, setPanToolAfterSidebarCloseTick] =
+    useState(0);
 
   const prevJobIdForTreeRef = useRef<string | null>(null);
   const prevQtoToolRef = useRef<ToolSidebarMode | null>(null);
@@ -697,6 +698,9 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
   );
 
   const closeAutoCountPanel = useCallback(() => {
+    if (isAutoCountOpenRef.current) {
+      setPanToolAfterSidebarCloseTick((t) => t + 1);
+    }
     setIsAutoCountOpen(false);
     clearAutoCountUnmountTimeout();
     if (typeof window === "undefined") return;
@@ -1126,14 +1130,28 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
     return savedObjects.find((s) => s.id === selectedSavedObjectId);
   }, [selectedSavedObjectId, savedObjects]);
 
+  /** Saved snapshots stay on the canvas; exclude the row selected for emphasis so we do not double-draw it. */
+  const persistedSavedOverlaysForCanvas = useMemo(
+    () => savedObjects.filter((s) => s.id !== selectedSavedObjectId),
+    [savedObjects, selectedSavedObjectId]
+  );
+
   const canvasAutoCountBackend = useMemo(() => {
     if (!selectedSavedEntry) return autoCountBackend;
     if (selectedSavedEntry.analysisKind === "walls") return autoCountBackend;
     return selectedSavedEntry.canvasSnapshot as AutoCountBackendState;
   }, [selectedSavedEntry, autoCountBackend]);
 
-  const canvasDoorFinderBackend =
-    selectedSavedEntry != null ? null : doorFinderBackend;
+  const canvasDoorFinderBackend = useMemo(() => {
+    if (!selectedSavedEntry) return doorFinderBackend;
+    if (
+      selectedSavedEntry.analysisKind === "walls" ||
+      selectedSavedEntry.analysisKind === "rooms"
+    ) {
+      return doorFinderBackend;
+    }
+    return null;
+  }, [selectedSavedEntry, doorFinderBackend]);
 
   const canvasWallFinderBackend = useMemo((): WallFinderBackendState | null => {
     if (!selectedSavedEntry) return wallFinderBackend;
@@ -1667,6 +1685,35 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
     wallFinderLoading ||
     roomFinderLoading;
 
+  /** Clear removes session analysis, ROIs, saved items, and search text — disable when there is nothing to remove. */
+  const hasClearableQtoData = useMemo(
+    () =>
+      savedObjects.length > 0 ||
+      autoCountRoi != null ||
+      autoCountBackend != null ||
+      doorFinderRoi != null ||
+      doorFinderBackend != null ||
+      wallFinderRoi != null ||
+      wallFinderBackend != null ||
+      roomFinderRoi != null ||
+      roomFinderBackend != null ||
+      searchTerm.trim().length > 0,
+    [
+      savedObjects.length,
+      autoCountRoi,
+      autoCountBackend,
+      doorFinderRoi,
+      doorFinderBackend,
+      wallFinderRoi,
+      wallFinderBackend,
+      roomFinderRoi,
+      roomFinderBackend,
+      searchTerm,
+    ]
+  );
+
+  const clearActionDisabled = analyzeBusy || !hasClearableQtoData;
+
   const primaryAnalyzeLabel = useMemo(() => {
     switch (lastToolAction) {
       case "autoCount":
@@ -1677,6 +1724,8 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
         return "Find Walls";
       case "roomFinder":
         return "Find Rooms";
+      case "searchText":
+        return "Search";
       default:
         return "Analyze";
     }
@@ -1692,6 +1741,8 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
         return wallFinderLoading;
       case "roomFinder":
         return roomFinderLoading;
+      case "searchText":
+        return searchTextLoading;
       default:
         return false;
     }
@@ -1701,6 +1752,7 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
     doorFinderLoading,
     wallFinderLoading,
     roomFinderLoading,
+    searchTextLoading,
   ]);
 
   const primaryAnalyzeDisabled = useMemo(() => {
@@ -1714,6 +1766,8 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
         return !wallFinderRoi && !wallFinderBackend;
       case "roomFinder":
         return !roomFinderRoi && !roomFinderBackend;
+      case "searchText":
+        return !searchTerm.trim();
       default:
         return true;
     }
@@ -1730,6 +1784,7 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
     wallFinderBackend,
     roomFinderRoi,
     roomFinderBackend,
+    searchTerm,
   ]);
 
   const runPrimaryAnalyze = useCallback(() => {
@@ -1742,6 +1797,8 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
         return void handleWallFinderAnalyze();
       case "roomFinder":
         return void handleRoomFinderAnalyze();
+      case "searchText":
+        return void handleSearchTextSubmit();
       default:
         return;
     }
@@ -1751,10 +1808,12 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
     handleDoorFinderAnalyze,
     handleWallFinderAnalyze,
     handleRoomFinderAnalyze,
+    handleSearchTextSubmit,
   ]);
 
   return (
     <CadAnalyzerToolProvider>
+      <CadToolPanOnTick tick={panToolAfterSidebarCloseTick} />
       <BlockingStatusOverlay
         open={
           autoCountLoading ||
@@ -1781,6 +1840,7 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
               <QtoRightSidebarReopenChip
                 showToolbar={showToolbar}
                 autoCountSidebarMounted={autoCountSidebarMounted}
+                lastToolAction={lastToolAction}
                 openToolOptionsPanel={openToolOptionsPanel}
               />
               <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col">
@@ -1821,6 +1881,7 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
                     onRoomFinderRoiChange={handleRoomFinderRoiChange}
                     roomFinderBackend={canvasRoomFinderBackend}
                     emphasizeAutoCountHighlight={emphasizeSavedHighlight}
+                    persistedSavedOverlays={persistedSavedOverlaysForCanvas}
                   />
                 ) : (
                   <div className="flex w-full min-w-0 flex-1 flex-col items-center justify-center px-3 py-6 sm:px-4 sm:py-8">
@@ -1874,23 +1935,16 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
                   }}
                   caseSensitive={caseSensitive}
                   onCaseSensitiveChange={setCaseSensitive}
-                  onSearchTextSubmit={() => void handleSearchTextSubmit()}
                   searchTextLoading={searchTextLoading}
                   searchTextError={searchTextError}
-                  searchSubmitDisabled={
-                    !trimmedJobId ||
-                    !selectedPdfPath?.trim() ||
-                    !searchTerm.trim()
-                  }
                   onTransitionEnd={handleAutoCountAsideTransitionEnd}
                   objectDataSectionRef={objectDataSectionRef}
-                  showRoiAnalyzeActions={lastToolAction !== "searchText"}
                   primaryAnalyzeLabel={primaryAnalyzeLabel}
                   onPrimaryAnalyze={runPrimaryAnalyze}
                   primaryAnalyzeDisabled={primaryAnalyzeDisabled}
                   primaryAnalyzeLoading={primaryAnalyzeLoading}
                   onClear={clearAutoCount}
-                  clearDisabled={analyzeBusy}
+                  clearDisabled={clearActionDisabled}
                   showObjectDataForm={objectDataFormVisible}
                   objectMetadata={{
                     objectId: metadataObjectId,

@@ -46,28 +46,48 @@ function storageKey(jobId: string, path: string): string {
   return `qto-saved-objects:v1:${jobId}:${encodeURIComponent(path)}`;
 }
 
-function isMatchSnapshot(
-  snap: Record<string, unknown>
+export function isMatchCanvasSnapshot(
+  snap: unknown
 ): snap is AutoCountBackendState {
+  if (!snap || typeof snap !== "object") return false;
+  const s = snap as Record<string, unknown>;
   return (
-    typeof snap.pageNumber === "number" &&
-    snap.roi != null &&
-    typeof snap.roi === "object" &&
-    typeof (snap.roi as { x?: unknown }).x === "number" &&
-    Array.isArray(snap.matches)
+    typeof s.pageNumber === "number" &&
+    s.roi != null &&
+    typeof s.roi === "object" &&
+    typeof (s.roi as { x?: unknown }).x === "number" &&
+    Array.isArray(s.matches)
   );
 }
 
-function isWallSnapshot(
-  snap: Record<string, unknown>
+export function isWallCanvasSnapshot(
+  snap: unknown
 ): snap is WallFinderSavedSnapshotV1 {
+  if (!snap || typeof snap !== "object") return false;
+  const s = snap as Record<string, unknown>;
   return (
-    typeof snap.pageNumber === "number" &&
-    snap.roi != null &&
-    typeof snap.roi === "object" &&
-    typeof (snap.roi as { x?: unknown }).x === "number" &&
-    snap.response != null &&
-    typeof snap.response === "object"
+    typeof s.pageNumber === "number" &&
+    s.roi != null &&
+    typeof s.roi === "object" &&
+    typeof (s.roi as { x?: unknown }).x === "number" &&
+    s.response != null &&
+    typeof s.response === "object"
+  );
+}
+
+/** Same structural check as wall snapshot; narrows `response` to {@link RoomFinderApiResponse}. */
+export function isRoomCanvasSnapshot(
+  snap: unknown
+): snap is RoomFinderSavedSnapshotV1 {
+  if (!snap || typeof snap !== "object") return false;
+  const s = snap as Record<string, unknown>;
+  return (
+    typeof s.pageNumber === "number" &&
+    s.roi != null &&
+    typeof s.roi === "object" &&
+    typeof (s.roi as { x?: unknown }).x === "number" &&
+    s.response != null &&
+    typeof s.response === "object"
   );
 }
 
@@ -86,12 +106,12 @@ function isValidEntry(x: unknown): x is QtoSavedObjectEntryV1 {
     Number.isFinite(o.count) &&
     typeof o.savedAt === "number";
   if (!base) return false;
-  if (isMatchSnapshot(sk)) {
+  if (isMatchCanvasSnapshot(sk)) {
     return true;
   }
   if (
     (o.analysisKind === "walls" || o.analysisKind === "rooms") &&
-    isWallSnapshot(sk)
+    isWallCanvasSnapshot(sk)
   ) {
     return true;
   }

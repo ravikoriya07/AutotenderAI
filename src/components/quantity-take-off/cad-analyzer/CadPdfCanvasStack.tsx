@@ -27,6 +27,12 @@ import {
   type WallSegmentScreen,
 } from "@/lib/autoCountCoordinates";
 import type { AutoCountBackendState } from "@/lib/qtoAutoCountStorage";
+import {
+  isMatchCanvasSnapshot,
+  isRoomCanvasSnapshot,
+  isWallCanvasSnapshot,
+  type QtoSavedObjectEntryV1,
+} from "@/lib/qtoSavedObjectsStorage";
 import type { RoomFinderBackendState } from "@/lib/qtoRoomFinderStorage";
 import type { WallFinderBackendState } from "@/lib/qtoWallFinderStorage";
 import type { AutoCountMatch } from "@/services/autoCountService";
@@ -569,6 +575,8 @@ export type CadPdfCanvasStackProps = {
   roomFinderBackend?: RoomFinderBackendState | null;
   /** Thicker amber emphasis when a saved object is selected (metadata panel) */
   emphasizeAutoCountHighlight?: boolean;
+  /** Persisted saved analyses — merged into the overlay so they stay visible across tools */
+  persistedSavedOverlays?: QtoSavedObjectEntryV1[];
 };
 
 export type CadPdfCanvasStackHandle = {
@@ -614,6 +622,7 @@ export const CadPdfCanvasStack = forwardRef<
     onRoomFinderRoiChange,
     roomFinderBackend = null,
     emphasizeAutoCountHighlight = false,
+    persistedSavedOverlays = [],
   },
   ref
 ) {
@@ -1143,6 +1152,43 @@ export const CadPdfCanvasStack = forwardRef<
         );
       }
 
+      if (metrics && persistedSavedOverlays.length > 0) {
+        for (const entry of persistedSavedOverlays) {
+          const snap = entry.canvasSnapshot;
+          if (isMatchCanvasSnapshot(snap) && snap.pageNumber === pageNumber) {
+            matchesAuto.push(
+              ...backendMatchesToScreen(snap.matches, metrics)
+            );
+          }
+          if (
+            entry.analysisKind === "walls" &&
+            isWallCanvasSnapshot(snap) &&
+            backendPageMatches(snap.pageNumber, pageNumber)
+          ) {
+            wallSegments.push(
+              ...wallFinderResponseToScreenDrawItems(
+                snap.response,
+                metrics,
+                snap.roi
+              )
+            );
+          }
+          if (
+            entry.analysisKind === "rooms" &&
+            isRoomCanvasSnapshot(snap) &&
+            backendPageMatches(snap.pageNumber, pageNumber)
+          ) {
+            roomPolygons.push(
+              ...roomFinderResponseToScreenPolygons(
+                snap.response,
+                metrics,
+                snap.roi
+              )
+            );
+          }
+        }
+      }
+
       return {
         committedRoiAuto: committedAuto,
         committedRoiDoor: committedDoor,
@@ -1168,6 +1214,7 @@ export const CadPdfCanvasStack = forwardRef<
       draftRoi,
       metricsTick,
       emphasizeAutoCountHighlight,
+      persistedSavedOverlays,
     ]
   );
 

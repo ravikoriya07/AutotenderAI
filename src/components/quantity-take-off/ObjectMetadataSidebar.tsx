@@ -255,7 +255,7 @@ export function ObjectMetadataPanelContent({
       >
         <div className="flex items-center justify-between gap-2">
           <h4 className="text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
-            Saved objects
+            Your items
           </h4>
           <span
             className="inline-flex min-w-[1.5rem] items-center justify-center rounded-full bg-primary px-2 py-0.5 text-[10px] font-semibold tabular-nums text-primary-foreground"
@@ -267,7 +267,7 @@ export function ObjectMetadataPanelContent({
 
         {savedObjects.length === 0 ? (
           <p className="rounded-lg border border-dashed border-border/80 px-3 py-4 text-center text-sm text-muted-foreground">
-            No saved objects yet
+            No items saved yet
           </p>
         ) : (
           <ul className="space-y-2" role="list">

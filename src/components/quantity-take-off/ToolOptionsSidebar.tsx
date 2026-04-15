@@ -1,9 +1,8 @@
 "use client";
 
 import * as React from "react";
-import { Loader2, X } from "lucide-react";
+import { X } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 
 export type ToolSidebarMode =
@@ -25,10 +24,8 @@ export type ToolOptionsControlsProps = {
   onSearchTermChange: (value: string) => void;
   caseSensitive: boolean;
   onCaseSensitiveChange: (value: boolean) => void;
-  onSearchTextSubmit: () => void;
   searchTextLoading: boolean;
   searchTextError: string | null;
-  searchSubmitDisabled: boolean;
 };
 
 export type ToolOptionsSidebarProps = ToolOptionsControlsProps & {
@@ -51,10 +48,8 @@ export function ToolOptionsControls({
   onSearchTermChange,
   caseSensitive,
   onCaseSensitiveChange,
-  onSearchTextSubmit,
   searchTextLoading,
   searchTextError,
-  searchSubmitDisabled,
 }: ToolOptionsControlsProps) {
   return (
     <>
@@ -161,22 +156,6 @@ export function ToolOptionsControls({
               Case sensitive
             </span>
           </label>
-
-          <Button
-            type="button"
-            className="h-10 w-full"
-            disabled={searchSubmitDisabled || searchTextLoading}
-            onClick={onSearchTextSubmit}
-          >
-            {searchTextLoading ? (
-              <>
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden />
-                Searching…
-              </>
-            ) : (
-              "Search"
-            )}
-          </Button>
         </section>
       )}
     </>
