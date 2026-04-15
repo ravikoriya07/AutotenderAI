@@ -36,6 +36,7 @@ import {
   type CadPdfCanvasStackHandle,
 } from "@/components/quantity-take-off/cad-analyzer/CadPdfCanvasStack";
 import {
+  pickWallSegmentsFromResponse,
   screenRectToBackend,
   type AutoCountApiMatch,
 } from "@/lib/autoCountCoordinates";
@@ -51,6 +52,7 @@ import {
   loadQtoSavedObjects,
   type QtoSavedObjectEntryV1,
   type QtoSavedObjectsFileV1,
+  type WallFinderSavedSnapshotV1,
 } from "@/lib/qtoSavedObjectsStorage";
 import { Button } from "@/components/ui/Button";
 import {
@@ -62,13 +64,32 @@ import {
   loadQtoDoorFinder,
   saveQtoDoorFinder,
 } from "@/lib/qtoDoorFinderStorage";
-import { ObjectMetadataSidebar } from "@/components/quantity-take-off/ObjectMetadataSidebar";
+import {
+  clearQtoWallFinder,
+  loadQtoWallFinder,
+  saveQtoWallFinder,
+  type WallFinderBackendState,
+} from "@/lib/qtoWallFinderStorage";
+import {
+  ObjectMetadataSidebar,
+  type ObjectMetadataStatsMode,
+} from "@/components/quantity-take-off/ObjectMetadataSidebar";
 import { postAutoCount } from "@/services/autoCountService";
 import { postSearchText } from "@/services/searchTextService";
 import { postAnalyzeDoors } from "@/services/doorFinderService";
+import {
+  postAnalyzeWalls,
+  type WallFinderApiSegment,
+} from "@/services/wallFinderService";
 import { createClientId } from "@/lib/createClientId";
 
-type LastAnalyzeKind = "autoCount" | "doorFinder" | "searchText";
+const WALL_FINDER_PIXEL_TO_M = 0.01;
+
+type LastAnalyzeKind =
+  | "autoCount"
+  | "doorFinder"
+  | "wallFinder"
+  | "searchText";
 
 function findFileIdByStoragePath(
   nodes: FolderNode[],
@@ -155,8 +176,29 @@ function AutoCountRightFloatingStack({
   const { tool } = useCadAnalyzerTool();
   const showSymbolOptionsChip =
     showToolbar &&
-    (tool === "autoCount" || tool === "doorFinder") &&
+    (tool === "autoCount" ||
+      tool === "doorFinder" ||
+      tool === "wallFinder") &&
     !autoCountSidebarMounted;
+
+  const toolOptionsModeFromBar = (): ToolSidebarMode => {
+    if (tool === "doorFinder") return "doorFinder";
+    if (tool === "wallFinder") return "wallFinder";
+    return "autoCount";
+  };
+
+  const chipLabel =
+    tool === "doorFinder"
+      ? "Door finder options"
+      : tool === "wallFinder"
+        ? "Wall finder options"
+        : "Symbol options";
+  const chipAria =
+    tool === "doorFinder"
+      ? "Open door finder options"
+      : tool === "wallFinder"
+        ? "Open wall finder options"
+        : "Open symbol options";
 
   if (!showSymbolOptionsChip && !showAnalyzeCard) return null;
 
@@ -170,21 +212,15 @@ function AutoCountRightFloatingStack({
       {showSymbolOptionsChip ? (
         <button
           type="button"
-          onClick={() =>
-            openToolOptionsPanel(tool === "doorFinder" ? "doorFinder" : "autoCount")
-          }
+          onClick={() => openToolOptionsPanel(toolOptionsModeFromBar())}
           className="pointer-events-auto inline-flex max-w-full items-center gap-2 rounded-full border border-border/80 bg-card px-3 py-1.5 text-left text-xs font-medium text-foreground shadow-sm transition hover:bg-muted/70 sm:gap-2 sm:px-3.5 sm:py-1.5 sm:text-sm"
-          aria-label={
-            tool === "doorFinder" ? "Open door finder options" : "Open symbol options"
-          }
+          aria-label={chipAria}
         >
           <SlidersHorizontal
             className="h-3.5 w-3.5 shrink-0 text-muted-foreground sm:h-4 sm:w-4"
             aria-hidden
           />
-          <span className="min-w-0 truncate">
-            {tool === "doorFinder" ? "Door finder options" : "Symbol options"}
-          </span>
+          <span className="min-w-0 truncate">{chipLabel}</span>
         </button>
       ) : null}
       {showAnalyzeCard ? analyzeCard : null}
@@ -335,6 +371,15 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
     []
   );
   const [doorFinderLoading, setDoorFinderLoading] = useState(false);
+  const [wallFinderRoi, setWallFinderRoi] = useState<AutoCountRoiCss | null>(
+    null
+  );
+  const [wallFinderBackend, setWallFinderBackend] =
+    useState<WallFinderBackendState | null>(null);
+  const [wallFinderResults, setWallFinderResults] = useState<
+    WallFinderApiSegment[]
+  >([]);
+  const [wallFinderLoading, setWallFinderLoading] = useState(false);
   const [lastAnalyzeKind, setLastAnalyzeKind] =
     useState<LastAnalyzeKind>("autoCount");
   const autoCountUnmountTimeoutRef = useRef<number | null>(null);
@@ -459,18 +504,23 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
   useEffect(() => {
     setAutoCountLoading(false);
     setDoorFinderLoading(false);
+    setWallFinderLoading(false);
     if (!trimmedJobId || !selectedPdfPath?.trim()) {
       setAutoCountRoi(null);
       setAutoCountBackend(null);
       setDoorFinderRoi(null);
       setDoorFinderBackend(null);
       setDoorFinderResults([]);
+      setWallFinderRoi(null);
+      setWallFinderBackend(null);
+      setWallFinderResults([]);
       setLastAnalyzeKind("autoCount");
       return;
     }
     const path = selectedPdfPath.trim();
     const storedAc = loadQtoAutoCount(trimmedJobId, path);
     const storedDf = loadQtoDoorFinder(trimmedJobId, path);
+    const storedWf = loadQtoWallFinder(trimmedJobId, path);
     if (storedAc) {
       setAutoCountBackend({
         pageNumber: storedAc.pageNumber,
@@ -491,9 +541,24 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
       setDoorFinderBackend(null);
       setDoorFinderResults([]);
     }
+    if (storedWf) {
+      setWallFinderBackend({
+        pageNumber: storedWf.pageNumber,
+        roi: storedWf.roi,
+        response: storedWf.response,
+      });
+      setWallFinderResults(
+        pickWallSegmentsFromResponse(storedWf.response) as WallFinderApiSegment[]
+      );
+    } else {
+      setWallFinderBackend(null);
+      setWallFinderResults([]);
+    }
     setAutoCountRoi(null);
     setDoorFinderRoi(null);
-    if (storedDf && !storedAc) setLastAnalyzeKind("doorFinder");
+    setWallFinderRoi(null);
+    if (storedWf && !storedAc && !storedDf) setLastAnalyzeKind("wallFinder");
+    else if (storedDf && !storedAc) setLastAnalyzeKind("doorFinder");
     else if (storedAc) setLastAnalyzeKind("autoCount");
     else setLastAnalyzeKind("autoCount");
   }, [trimmedJobId, selectedPdfPath]);
@@ -628,6 +693,10 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
     setLastToolAction("doorFinder");
   }, []);
 
+  const handleWallFinderToolSelect = useCallback(() => {
+    setLastToolAction("wallFinder");
+  }, []);
+
   /** Open symbol options only after a ROI is committed (mouse/touch release), not when picking the tool. */
   const handleAutoCountRoiChange = useCallback(
     (roi: AutoCountRoiCss | null) => {
@@ -644,6 +713,16 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
       setDoorFinderRoi(roi);
       if (roi != null) {
         openToolOptionsPanel("doorFinder");
+      }
+    },
+    [openToolOptionsPanel]
+  );
+
+  const handleWallFinderRoiChange = useCallback(
+    (roi: AutoCountRoiCss | null) => {
+      setWallFinderRoi(roi);
+      if (roi != null) {
+        openToolOptionsPanel("wallFinder");
       }
     },
     [openToolOptionsPanel]
@@ -680,14 +759,19 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
     return autoCountBackend;
   }, [lastAnalyzeKind, doorFinderBackend, autoCountBackend]);
 
+  const hasObjectMetadataSource = useMemo(() => {
+    if (lastAnalyzeKind === "wallFinder") return wallFinderBackend != null;
+    return metadataBackend != null;
+  }, [lastAnalyzeKind, wallFinderBackend, metadataBackend]);
+
   /**
    * Object metadata is only available after a successful Analyze (or restored session with results).
    * Use this for the "Object data" control — not immediately after Analyze in the handler (stale closure).
    */
   const tryOpenObjectMetadataPanel = useCallback(() => {
-    if (!metadataBackend) return;
+    if (!hasObjectMetadataSource) return;
     openObjectMetadataPanel();
-  }, [metadataBackend, openObjectMetadataPanel]);
+  }, [hasObjectMetadataSource, openObjectMetadataPanel]);
 
   const handleSearchTextSubmit = useCallback(async () => {
     const term = searchTerm.trim();
@@ -981,6 +1065,7 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
       const path = selectedPdfPath.trim();
       clearQtoAutoCount(trimmedJobId, path);
       clearQtoDoorFinder(trimmedJobId, path);
+      clearQtoWallFinder(trimmedJobId, path);
       clearQtoSavedObjects(trimmedJobId, path);
     }
     setAutoCountRoi(null);
@@ -988,8 +1073,12 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
     setDoorFinderRoi(null);
     setDoorFinderBackend(null);
     setDoorFinderResults([]);
+    setWallFinderRoi(null);
+    setWallFinderBackend(null);
+    setWallFinderResults([]);
     setAutoCountLoading(false);
     setDoorFinderLoading(false);
+    setWallFinderLoading(false);
     setSearchTerm("");
     setCaseSensitive(false);
     setSearchTextError(null);
@@ -1016,27 +1105,91 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
     return savedObjects.find((s) => s.id === selectedSavedObjectId);
   }, [selectedSavedObjectId, savedObjects]);
 
-  const canvasAutoCountBackend =
-    selectedSavedEntry?.canvasSnapshot ?? autoCountBackend;
+  const canvasAutoCountBackend = useMemo(() => {
+    if (!selectedSavedEntry) return autoCountBackend;
+    if (selectedSavedEntry.analysisKind === "walls") return autoCountBackend;
+    return selectedSavedEntry.canvasSnapshot as AutoCountBackendState;
+  }, [selectedSavedEntry, autoCountBackend]);
+
   const canvasDoorFinderBackend =
     selectedSavedEntry != null ? null : doorFinderBackend;
+
+  const canvasWallFinderBackend = useMemo((): WallFinderBackendState | null => {
+    if (!selectedSavedEntry) return wallFinderBackend;
+    if (selectedSavedEntry.analysisKind === "walls") {
+      const s = selectedSavedEntry.canvasSnapshot as WallFinderSavedSnapshotV1;
+      return {
+        pageNumber: s.pageNumber,
+        roi: s.roi,
+        response: s.response,
+      };
+    }
+    return null;
+  }, [selectedSavedEntry, wallFinderBackend]);
+
   const emphasizeSavedHighlight = Boolean(selectedSavedEntry);
 
   const handleSaveObjectMetadata = useCallback(() => {
-    if (!trimmedJobId || !selectedPdfPath?.trim() || !metadataBackend) {
+    if (!trimmedJobId || !selectedPdfPath?.trim()) {
       toast.error("Nothing to save. Run Analyze first.");
       return;
     }
     const errs = validateObjectMetadataForm(metadataObjectId, metadataObjectName);
     setMetadataErrors(errs);
     if (Object.keys(errs).length > 0) return;
+
+    const idTrim = metadataObjectId.trim();
+    const nameTrim = metadataObjectName.trim();
+
+    if (lastAnalyzeKind === "wallFinder") {
+      if (!wallFinderBackend) {
+        toast.error("Nothing to save. Run Analyze first.");
+        return;
+      }
+      const tw = wallFinderBackend.response.total_walls ?? 0;
+      const tl = wallFinderBackend.response.total_length_m ?? 0;
+      if (!Number.isFinite(tw) || tw < 0) {
+        toast.error("Invalid wall count from analysis.");
+        return;
+      }
+      const snap: WallFinderSavedSnapshotV1 = {
+        pageNumber: wallFinderBackend.pageNumber,
+        roi: { ...wallFinderBackend.roi },
+        response: wallFinderBackend.response,
+      };
+      const entry: QtoSavedObjectEntryV1 = {
+        v: 1,
+        id: createClientId(),
+        objectId: idTrim,
+        objectName: nameTrim,
+        count: tw,
+        savedAt: Date.now(),
+        analysisKind: "walls",
+        totalWallLengthM: tl,
+        canvasSnapshot: snap,
+      };
+      const next = appendQtoSavedObject(
+        trimmedJobId,
+        selectedPdfPath.trim(),
+        entry
+      );
+      setSavedObjects(next);
+      setMetadataObjectId("");
+      setMetadataObjectName("");
+      setMetadataErrors({});
+      toast.success("Object saved.");
+      return;
+    }
+
+    if (!metadataBackend) {
+      toast.error("Nothing to save. Run Analyze first.");
+      return;
+    }
     if (!Number.isFinite(metadataCount) || metadataCount < 0) {
       toast.error("Count must be a non-negative number.");
       return;
     }
 
-    const idTrim = metadataObjectId.trim();
-    const nameTrim = metadataObjectName.trim();
     const entry: QtoSavedObjectEntryV1 = {
       v: 1,
       id: createClientId(),
@@ -1063,6 +1216,8 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
   }, [
     trimmedJobId,
     selectedPdfPath,
+    lastAnalyzeKind,
+    wallFinderBackend,
     metadataBackend,
     metadataObjectId,
     metadataObjectName,
@@ -1247,6 +1402,96 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
     openObjectMetadataPanel,
   ]);
 
+  const handleWallFinderAnalyze = useCallback(async () => {
+    if (!trimmedJobId || !selectedPdfPath?.trim()) return;
+    if (!wallFinderRoi && !wallFinderBackend) return;
+
+    const analyzedPage =
+      wallFinderRoi?.pageNumber ?? wallFinderBackend!.pageNumber;
+    const metrics = cadCanvasRef.current?.getAutoCountPageMetrics(
+      analyzedPage
+    );
+    if (!metrics) {
+      toast.error("Page layout not ready. Wait for the PDF to finish rendering.");
+      return;
+    }
+    const roiBackend = wallFinderRoi
+      ? screenRectToBackend(
+          {
+            x: wallFinderRoi.x,
+            y: wallFinderRoi.y,
+            width: wallFinderRoi.width,
+            height: wallFinderRoi.height,
+          },
+          metrics
+        )
+      : wallFinderBackend!.roi;
+
+    setWallFinderLoading(true);
+    try {
+      const res = await postAnalyzeWalls({
+        job_id: trimmedJobId,
+        file_path: selectedPdfPath.trim(),
+        roi: roiBackend,
+        pixel_to_meter: WALL_FINDER_PIXEL_TO_M,
+        confidence,
+      });
+      const segs = pickWallSegmentsFromResponse(res);
+      setWallFinderResults(segs as WallFinderApiSegment[]);
+      const next: WallFinderBackendState = {
+        pageNumber: analyzedPage,
+        roi: roiBackend,
+        response: res,
+      };
+      setWallFinderBackend(next);
+      setWallFinderRoi(null);
+      setLastAnalyzeKind("wallFinder");
+      saveQtoWallFinder(trimmedJobId, selectedPdfPath.trim(), {
+        v: 1,
+        ...next,
+      });
+      const nw = res.total_walls ?? segs.length ?? 0;
+      toast.success(
+        res.success === false
+          ? "Wall analysis completed with issues."
+          : nw > 0
+            ? `Found ${nw} wall segment${nw === 1 ? "" : "s"}`
+            : "No walls found in region"
+      );
+      setMetadataObjectId("");
+      setMetadataObjectName("");
+      setMetadataErrors({});
+      setSelectedSavedObjectId(null);
+      setExpandedSavedId(null);
+      if (isAutoCountOpenRef.current) {
+        closeAutoCountPanel();
+      }
+      openObjectMetadataPanel();
+    } catch (e) {
+      console.log("[qto] postAnalyzeWalls failed", e);
+      toast.error("Wall finder failed.");
+    } finally {
+      setWallFinderLoading(false);
+    }
+  }, [
+    trimmedJobId,
+    selectedPdfPath,
+    wallFinderRoi,
+    wallFinderBackend,
+    confidence,
+    closeAutoCountPanel,
+    openObjectMetadataPanel,
+  ]);
+
+  const objectMetadataStatsMode: ObjectMetadataStatsMode =
+    lastAnalyzeKind === "wallFinder" ? "wall" : "count";
+  const totalWallLengthDisplay = useMemo(() => {
+    const m = wallFinderBackend?.response?.total_length_m;
+    if (m == null || !Number.isFinite(m)) return "—";
+    return `${m.toFixed(2)} m`;
+  }, [wallFinderBackend]);
+  const totalWallsDisplay = wallFinderBackend?.response?.total_walls ?? 0;
+
   /**
    * Show the canvas chip whenever the panel is not open. Using `translateOpen` (not `drawerMounted`)
    * restores the chip immediately on outside click; `drawerMounted` can lag until transition end.
@@ -1259,12 +1504,19 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
     (autoCountRoi != null ||
       autoCountBackend != null ||
       doorFinderRoi != null ||
-      doorFinderBackend != null);
+      doorFinderBackend != null ||
+      wallFinderRoi != null ||
+      wallFinderBackend != null);
 
   return (
     <CadAnalyzerToolProvider>
       <BlockingStatusOverlay
-        open={autoCountLoading || searchTextLoading || doorFinderLoading}
+        open={
+          autoCountLoading ||
+          searchTextLoading ||
+          doorFinderLoading ||
+          wallFinderLoading
+        }
         message={searchTextLoading ? "Searching…" : "Analyzing…"}
       />
       <div className="flex min-h-0 w-full max-w-full flex-1 flex-col bg-background">
@@ -1300,7 +1552,8 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
                           !selectedPdfPath?.trim() ||
                           autoCountLoading ||
                           searchTextLoading ||
-                          doorFinderLoading
+                          doorFinderLoading ||
+                          wallFinderLoading
                         }
                         onClick={() => void handleAutoCountAnalyze()}
                       >
@@ -1323,11 +1576,36 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
                           !selectedPdfPath?.trim() ||
                           autoCountLoading ||
                           searchTextLoading ||
-                          doorFinderLoading
+                          doorFinderLoading ||
+                          wallFinderLoading
                         }
                         onClick={() => void handleDoorFinderAnalyze()}
                       >
                         {doorFinderLoading ? (
+                          <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
+                        ) : (
+                          <Search className="h-3.5 w-3.5 shrink-0" />
+                        )}
+                        Analyze
+                      </Button>
+                    ) : lastToolAction === "wallFinder" ? (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="h-9 min-w-[7.5rem] justify-center gap-1.5 border-primary/25 bg-background/60 text-foreground hover:bg-muted/80"
+                        disabled={
+                          (!wallFinderRoi && !wallFinderBackend) ||
+                          !trimmedJobId ||
+                          !selectedPdfPath?.trim() ||
+                          autoCountLoading ||
+                          searchTextLoading ||
+                          doorFinderLoading ||
+                          wallFinderLoading
+                        }
+                        onClick={() => void handleWallFinderAnalyze()}
+                      >
+                        {wallFinderLoading ? (
                           <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
                         ) : (
                           <Search className="h-3.5 w-3.5 shrink-0" />
@@ -1341,14 +1619,15 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
                       variant="outline"
                       className="h-9 min-w-[7.5rem] justify-center gap-1.5 border-border/80 bg-background/60 text-foreground hover:bg-muted/80"
                       disabled={
-                        !metadataBackend ||
+                        !hasObjectMetadataSource ||
                         autoCountLoading ||
                         searchTextLoading ||
-                        doorFinderLoading
+                        doorFinderLoading ||
+                        wallFinderLoading
                       }
                       onClick={tryOpenObjectMetadataPanel}
                       title={
-                        metadataBackend
+                        hasObjectMetadataSource
                           ? "Open object metadata and saved objects"
                           : "Run Analyze first"
                       }
@@ -1362,7 +1641,10 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
                       variant="ghost"
                       className="h-9 min-w-[7.5rem] justify-center gap-1.5 text-muted-foreground hover:bg-muted hover:text-foreground"
                       disabled={
-                        autoCountLoading || searchTextLoading || doorFinderLoading
+                        autoCountLoading ||
+                        searchTextLoading ||
+                        doorFinderLoading ||
+                        wallFinderLoading
                       }
                       onClick={clearAutoCount}
                     >
@@ -1403,6 +1685,9 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
                     onDoorFinderRoiChange={handleDoorFinderRoiChange}
                     autoCountBackend={canvasAutoCountBackend}
                     doorFinderBackend={canvasDoorFinderBackend}
+                    wallFinderRoi={wallFinderRoi}
+                    onWallFinderRoiChange={handleWallFinderRoiChange}
+                    wallFinderBackend={canvasWallFinderBackend}
                     emphasizeAutoCountHighlight={emphasizeSavedHighlight}
                   />
                 ) : (
@@ -1422,6 +1707,7 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
                   onSearchTextSelect={() => openToolOptionsPanel("searchText")}
                   onAutoCountToolSelect={handleAutoCountToolSelect}
                   onDoorFinderToolSelect={handleDoorFinderToolSelect}
+                  onWallFinderToolSelect={handleWallFinderToolSelect}
                 />
               </div>
             ) : null}
@@ -1487,6 +1773,9 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
                   objectId={metadataObjectId}
                   objectName={metadataObjectName}
                   countDisplay={metadataCount}
+                  statsMode={objectMetadataStatsMode}
+                  totalWallLengthDisplay={totalWallLengthDisplay}
+                  totalWallsDisplay={totalWallsDisplay}
                   onObjectIdChange={(v) => {
                     setMetadataObjectId(v);
                     if (metadataErrors.objectId) {
@@ -1501,7 +1790,7 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
                   }}
                   errors={metadataErrors}
                   onSave={handleSaveObjectMetadata}
-                  saveDisabled={!metadataBackend}
+                  saveDisabled={!hasObjectMetadataSource}
                   savedObjects={savedObjects}
                   selectedSavedId={selectedSavedObjectId}
                   onSelectSaved={(id) => {

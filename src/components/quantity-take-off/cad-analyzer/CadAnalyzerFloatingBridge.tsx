@@ -11,6 +11,8 @@ export type CadAnalyzerFloatingBridgeProps = {
   onAutoCountToolSelect?: () => void;
   /** User selected Door Finder from the bar. */
   onDoorFinderToolSelect?: () => void;
+  /** User selected Wall Finder from the bar. */
+  onWallFinderToolSelect?: () => void;
 };
 
 /** Renders the bottom bar using tool context (must be inside `CadAnalyzerToolProvider`). */
@@ -18,6 +20,7 @@ export function CadAnalyzerFloatingBridge({
   onSearchTextSelect,
   onAutoCountToolSelect,
   onDoorFinderToolSelect,
+  onWallFinderToolSelect,
 }: CadAnalyzerFloatingBridgeProps) {
   const { tool, setTool } = useCadAnalyzerTool();
 
@@ -29,6 +32,9 @@ export function CadAnalyzerFloatingBridge({
       if (t === "doorFinder" && tool === "doorFinder") {
         return;
       }
+      if (t === "wallFinder" && tool === "wallFinder") {
+        return;
+      }
       setTool(t);
       if (t === "textSearch") {
         onSearchTextSelect?.();
@@ -36,9 +42,18 @@ export function CadAnalyzerFloatingBridge({
         onAutoCountToolSelect?.();
       } else if (t === "doorFinder") {
         onDoorFinderToolSelect?.();
+      } else if (t === "wallFinder") {
+        onWallFinderToolSelect?.();
       }
     },
-    [setTool, tool, onSearchTextSelect, onAutoCountToolSelect, onDoorFinderToolSelect]
+    [
+      setTool,
+      tool,
+      onSearchTextSelect,
+      onAutoCountToolSelect,
+      onDoorFinderToolSelect,
+      onWallFinderToolSelect,
+    ]
   );
 
   return <FloatingActionBar activeTool={tool} onToolChange={handleToolChange} />;

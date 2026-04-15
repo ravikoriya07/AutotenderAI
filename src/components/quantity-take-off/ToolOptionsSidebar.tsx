@@ -6,7 +6,11 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 
-export type ToolSidebarMode = "autoCount" | "searchText" | "doorFinder";
+export type ToolSidebarMode =
+  | "autoCount"
+  | "searchText"
+  | "doorFinder"
+  | "wallFinder";
 
 export type ToolOptionsSidebarProps = {
   mode: ToolSidebarMode;
@@ -57,13 +61,17 @@ export function ToolOptionsSidebar({
       ? "Auto count"
       : mode === "doorFinder"
         ? "Door finder"
-        : "Search text";
+        : mode === "wallFinder"
+          ? "Wall finder"
+          : "Search text";
   const ariaLabel =
     mode === "autoCount"
       ? "Auto count options"
       : mode === "doorFinder"
         ? "Door finder options"
-        : "Search text";
+        : mode === "wallFinder"
+          ? "Wall finder options"
+          : "Search text";
 
   return (
     <aside
@@ -98,10 +106,16 @@ export function ToolOptionsSidebar({
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-2.5 pb-3 pt-3 sm:px-3 sm:pb-4 sm:pt-3.5">
-        {mode === "autoCount" || mode === "doorFinder" ? (
+        {mode === "autoCount" ||
+        mode === "doorFinder" ||
+        mode === "wallFinder" ? (
           <section className="space-y-4">
             <h3 className="text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
-              {mode === "doorFinder" ? "Door finder" : "Symbol options"}
+              {mode === "doorFinder"
+                ? "Door finder"
+                : mode === "wallFinder"
+                  ? "Wall finder"
+                  : "Symbol options"}
             </h3>
 
             {mode === "autoCount" ? (

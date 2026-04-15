@@ -7,12 +7,19 @@ import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import type { QtoSavedObjectEntryV1 } from "@/lib/qtoSavedObjectsStorage";
 
+export type ObjectMetadataStatsMode = "count" | "wall";
+
 export type ObjectMetadataSidebarProps = {
   open: boolean;
   onClose: () => void;
   objectId: string;
   objectName: string;
+  /** Symbol / door / search — read-only count */
   countDisplay: number;
+  statsMode: ObjectMetadataStatsMode;
+  /** Wall finder — read-only */
+  totalWallLengthDisplay: string;
+  totalWallsDisplay: number;
   onObjectIdChange: (value: string) => void;
   onObjectNameChange: (value: string) => void;
   errors: { objectId?: string; objectName?: string };
@@ -37,6 +44,9 @@ export function ObjectMetadataSidebar({
   objectId,
   objectName,
   countDisplay,
+  statsMode,
+  totalWallLengthDisplay,
+  totalWallsDisplay,
   onObjectIdChange,
   onObjectNameChange,
   errors,
@@ -52,6 +62,8 @@ export function ObjectMetadataSidebar({
   onTransitionEnd,
 }: ObjectMetadataSidebarProps) {
   const countId = React.useId();
+  const wallLenId = React.useId();
+  const wallNumId = React.useId();
   const oid = React.useId();
   const oname = React.useId();
 
@@ -131,22 +143,62 @@ export function ObjectMetadataSidebar({
             ) : null}
           </div>
 
-          <div className="space-y-1.5">
-            <label htmlFor={countId} className="text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
-              Count <span className="text-destructive">*</span>
-            </label>
-            <Input
-              id={countId}
-              readOnly
-              disabled
-              value={String(countDisplay)}
-              className="cursor-not-allowed bg-muted/40 text-muted-foreground"
-              aria-readonly="true"
-            />
-            <p className="text-[11px] text-muted-foreground">
-              Pre-filled from the last analyze or search response.
-            </p>
-          </div>
+          {statsMode === "wall" ? (
+            <>
+              <div className="space-y-1.5">
+                <label
+                  htmlFor={wallLenId}
+                  className="text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground"
+                >
+                  Total wall length
+                </label>
+                <Input
+                  id={wallLenId}
+                  readOnly
+                  disabled
+                  value={totalWallLengthDisplay}
+                  className="cursor-not-allowed bg-muted/40 text-muted-foreground"
+                  aria-readonly="true"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <label
+                  htmlFor={wallNumId}
+                  className="text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground"
+                >
+                  Total walls
+                </label>
+                <Input
+                  id={wallNumId}
+                  readOnly
+                  disabled
+                  value={String(totalWallsDisplay)}
+                  className="cursor-not-allowed bg-muted/40 text-muted-foreground"
+                  aria-readonly="true"
+                />
+                <p className="text-[11px] text-muted-foreground">
+                  Pre-filled from the last wall analysis response.
+                </p>
+              </div>
+            </>
+          ) : (
+            <div className="space-y-1.5">
+              <label htmlFor={countId} className="text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+                Count <span className="text-destructive">*</span>
+              </label>
+              <Input
+                id={countId}
+                readOnly
+                disabled
+                value={String(countDisplay)}
+                className="cursor-not-allowed bg-muted/40 text-muted-foreground"
+                aria-readonly="true"
+              />
+              <p className="text-[11px] text-muted-foreground">
+                Pre-filled from the last analyze or search response.
+              </p>
+            </div>
+          )}
 
           <Button
             type="button"
@@ -226,12 +278,35 @@ export function ObjectMetadataSidebar({
                         </div>
                         {expanded ? (
                           <div className="border-t border-border/50 px-3 py-2.5 text-sm">
-                            <div className="flex items-center justify-between gap-3">
-                              <span className="text-muted-foreground">Count</span>
-                              <span className="tabular-nums font-medium text-foreground">
-                                {entry.count}
-                              </span>
-                            </div>
+                            {entry.analysisKind === "walls" ? (
+                              <>
+                                <div className="flex items-center justify-between gap-3">
+                                  <span className="text-muted-foreground">
+                                    Total wall length
+                                  </span>
+                                  <span className="tabular-nums font-medium text-foreground">
+                                    {entry.totalWallLengthM != null
+                                      ? `${entry.totalWallLengthM.toFixed(2)} m`
+                                      : "—"}
+                                  </span>
+                                </div>
+                                <div className="mt-2 flex items-center justify-between gap-3">
+                                  <span className="text-muted-foreground">
+                                    Total walls
+                                  </span>
+                                  <span className="tabular-nums font-medium text-foreground">
+                                    {entry.count}
+                                  </span>
+                                </div>
+                              </>
+                            ) : (
+                              <div className="flex items-center justify-between gap-3">
+                                <span className="text-muted-foreground">Count</span>
+                                <span className="tabular-nums font-medium text-foreground">
+                                  {entry.count}
+                                </span>
+                              </div>
+                            )}
                             <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 border-t border-border/40 pt-2 text-xs text-muted-foreground">
                               <span>ID: {entry.objectId}</span>
                               <span>Name: {entry.objectName}</span>

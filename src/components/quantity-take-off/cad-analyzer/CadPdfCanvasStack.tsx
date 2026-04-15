@@ -20,15 +20,27 @@ import {
   BACKEND_PDF_VIEWPORT_SCALE,
   backendMatchesToScreen,
   backendRoiToScreenCss,
+  wallFinderResponseToScreenDrawItems,
   type AutoCountPageMetrics,
+  type WallSegmentScreen,
 } from "@/lib/autoCountCoordinates";
 import type { AutoCountBackendState } from "@/lib/qtoAutoCountStorage";
+import type { WallFinderBackendState } from "@/lib/qtoWallFinderStorage";
 import type { AutoCountMatch } from "@/services/autoCountService";
 import type { PDFDocumentProxy, PDFPageProxy, RenderTask } from "pdfjs-dist";
 
 /** Avoid GPU/memory blowups on extreme zoom. */
 const MAX_CANVAS_EDGE_PX = 8192;
 const MAX_BASE_FIT = 4;
+
+/** Backend may send page as string (persisted JSON); compare numerically. */
+function backendPageMatches(
+  backendPage: number | string | undefined,
+  pageNumber: number
+): boolean {
+  const n = Number(backendPage);
+  return Number.isFinite(n) && n === pageNumber;
+}
 
 export type AutoCountRoiCss = {
   pageNumber: number;
@@ -45,10 +57,14 @@ type PageAnnotationLayer = {
   committedRoiAuto: CssRect | null;
   /** Door Finder ROI (emerald) */
   committedRoiDoor: CssRect | null;
+  /** Wall Finder ROI (amber ring) */
+  committedRoiWall: CssRect | null;
   draftRoi: CssRect | null;
   matchesAuto: AutoCountMatch[];
   /** Door Finder — teal boxes */
   matchesDoor: AutoCountMatch[];
+  /** Wall Finder — segments with measurement labels (purple lines / red markers; not match boxes) */
+  wallSegments: WallSegmentScreen[];
   /** Stronger strokes when a saved object is selected in the metadata panel */
   emphasize?: boolean;
 };
@@ -104,6 +120,89 @@ function drawMatchBoxes(
   }
 }
 
+/** Wall Finder visualization (aligned with `Quantitites_Project/static/script.js` `drawOverlay` wall branch). */
+function drawWallFinderSegments(
+  octx: CanvasRenderingContext2D,
+  sx: number,
+  sy: number,
+  segments: WallSegmentScreen[],
+  emphasize: boolean
+) {
+  if (segments.length === 0) return;
+
+  const dpr = window.devicePixelRatio || 1;
+  const lineW = emphasize
+    ? Math.max(3, 5 / dpr)
+    : Math.max(2.5, 4 / dpr);
+  const dotR = Math.max(3, 4 / dpr);
+  const fontSize = Math.max(11, Math.min(20, 14 * sx));
+
+  for (const seg of segments) {
+    const x1 = seg.x1 * sx;
+    const y1 = seg.y1 * sy;
+    const x2 = seg.x2 * sx;
+    const y2 = seg.y2 * sy;
+    if (
+      !Number.isFinite(x1) ||
+      !Number.isFinite(y1) ||
+      !Number.isFinite(x2) ||
+      !Number.isFinite(y2)
+    ) {
+      continue;
+    }
+
+    octx.beginPath();
+    octx.moveTo(x1, y1);
+    octx.lineTo(x2, y2);
+    octx.strokeStyle = emphasize
+      ? "rgba(91, 33, 182, 0.95)"
+      : "rgba(128, 0, 128, 0.85)";
+    octx.lineWidth = lineW;
+    octx.lineCap = "round";
+    octx.lineJoin = "round";
+    octx.setLineDash([]);
+    octx.stroke();
+
+    octx.beginPath();
+    octx.arc(x1, y1, dotR, 0, Math.PI * 2);
+    octx.fillStyle = "#ef4444";
+    octx.fill();
+    octx.beginPath();
+    octx.arc(x2, y2, dotR, 0, Math.PI * 2);
+    octx.fillStyle = "#ef4444";
+    octx.fill();
+
+    const midX = (x1 + x2) / 2;
+    const midY = (y1 + y2) / 2;
+    const dx = x2 - x1;
+    const dy = y2 - y1;
+    const vertical = Math.abs(dy) >= Math.abs(dx) * 1.1;
+
+    const text =
+      seg.lengthM > 0 && Number.isFinite(seg.lengthM)
+        ? `${seg.lengthM.toFixed(2)}m`
+        : "—";
+    octx.font = `bold ${fontSize}px Inter, ui-sans-serif, system-ui, sans-serif`;
+    octx.textAlign = "center";
+    octx.textBaseline = "middle";
+    const tw = octx.measureText(text).width;
+    const pad = 4 * sx;
+    const boxW = tw + pad * 2;
+    const boxH = fontSize + 8;
+
+    octx.save();
+    octx.translate(midX, midY);
+    if (vertical) {
+      octx.rotate(-Math.PI / 2);
+    }
+    octx.fillStyle = "rgba(255, 255, 255, 0.92)";
+    octx.fillRect(-boxW / 2, -boxH / 2, boxW, boxH);
+    octx.fillStyle = "#ef4444";
+    octx.fillText(text, 0, 0);
+    octx.restore();
+  }
+}
+
 function drawPageAnnotations(
   octx: CanvasRenderingContext2D,
   bufW: number,
@@ -141,6 +240,17 @@ function drawPageAnnotations(
     octx.strokeRect(r.x * sx, r.y * sy, r.width * sx, r.height * sy);
     octx.lineWidth = Math.max(1.5, 2 / (window.devicePixelRatio || 1));
   }
+  if (layer.committedRoiWall) {
+    const r = layer.committedRoiWall;
+    octx.strokeStyle = emph ? "#1d4ed8" : "#2563eb";
+    octx.lineWidth = emph
+      ? Math.max(2.5, 3 / (window.devicePixelRatio || 1))
+      : Math.max(1.5, 2 / (window.devicePixelRatio || 1));
+    octx.setLineDash([8, 4]);
+    octx.strokeRect(r.x * sx, r.y * sy, r.width * sx, r.height * sy);
+    octx.setLineDash([]);
+    octx.lineWidth = Math.max(1.5, 2 / (window.devicePixelRatio || 1));
+  }
   if (layer.draftRoi) {
     const r = layer.draftRoi;
     octx.strokeStyle = "#60a5fa";
@@ -156,6 +266,7 @@ function drawPageAnnotations(
     emphasize: emph,
     variant: "doorFinder",
   });
+  drawWallFinderSegments(octx, sx, sy, layer.wallSegments, emph);
 }
 
 type PdfPageRowProps = {
@@ -378,6 +489,9 @@ export type CadPdfCanvasStackProps = {
   /** Last analyze in backend space; overlay reprojects to CSS when layout/zoom changes */
   autoCountBackend?: AutoCountBackendState | null;
   doorFinderBackend?: AutoCountBackendState | null;
+  wallFinderRoi?: AutoCountRoiCss | null;
+  onWallFinderRoiChange?: (roi: AutoCountRoiCss | null) => void;
+  wallFinderBackend?: WallFinderBackendState | null;
   /** Thicker amber emphasis when a saved object is selected (metadata panel) */
   emphasizeAutoCountHighlight?: boolean;
 };
@@ -418,6 +532,9 @@ export const CadPdfCanvasStack = forwardRef<
     onDoorFinderRoiChange,
     autoCountBackend = null,
     doorFinderBackend = null,
+    wallFinderRoi = null,
+    onWallFinderRoiChange,
+    wallFinderBackend = null,
     emphasizeAutoCountHighlight = false,
   },
   ref
@@ -474,7 +591,7 @@ export const CadPdfCanvasStack = forwardRef<
   } | null>(null);
   const [isRoiDragging, setIsRoiDragging] = useState(false);
   const roiDragRef = useRef<{
-    mode: "autoCount" | "doorFinder";
+    mode: "autoCount" | "doorFinder" | "wallFinder";
     pageIndex: number;
     startLocalX: number;
     startLocalY: number;
@@ -676,7 +793,11 @@ export const CadPdfCanvasStack = forwardRef<
     setIsRoiDragging(false);
     if (!d) return;
     const onCommit =
-      d.mode === "doorFinder" ? onDoorFinderRoiChange : onAutoCountRoiChange;
+      d.mode === "doorFinder"
+        ? onDoorFinderRoiChange
+        : d.mode === "wallFinder"
+          ? onWallFinderRoiChange
+          : onAutoCountRoiChange;
     if (!onCommit) return;
     const w = Math.abs(d.curLocalX - d.startLocalX);
     const h = Math.abs(d.curLocalY - d.startLocalY);
@@ -696,7 +817,7 @@ export const CadPdfCanvasStack = forwardRef<
       width: rect.width,
       height: rect.height,
     });
-  }, [onAutoCountRoiChange, onDoorFinderRoiChange]);
+  }, [onAutoCountRoiChange, onDoorFinderRoiChange, onWallFinderRoiChange]);
 
   const updateRoiDrag = useCallback(
     (clientX: number, clientY: number) => {
@@ -718,7 +839,12 @@ export const CadPdfCanvasStack = forwardRef<
 
   const onRoiPointerDown = useCallback(
     (e: ReactMouseEvent | ReactTouchEvent) => {
-      if (tool !== "autoCount" && tool !== "doorFinder") return;
+      if (
+        tool !== "autoCount" &&
+        tool !== "doorFinder" &&
+        tool !== "wallFinder"
+      )
+        return;
       e.preventDefault();
       e.stopPropagation();
       const clientX = "touches" in e ? e.touches[0].clientX : e.clientX;
@@ -727,7 +853,12 @@ export const CadPdfCanvasStack = forwardRef<
       if (pageIndex < 0) return;
       const local = clientToPageLocal(clientX, clientY, pageIndex);
       roiDragRef.current = {
-        mode: tool === "doorFinder" ? "doorFinder" : "autoCount",
+        mode:
+          tool === "doorFinder"
+            ? "doorFinder"
+            : tool === "wallFinder"
+              ? "wallFinder"
+              : "autoCount",
         pageIndex,
         startLocalX: local.x,
         startLocalY: local.y,
@@ -785,7 +916,9 @@ export const CadPdfCanvasStack = forwardRef<
       ? isDragging
         ? "cursor-grabbing"
         : "cursor-grab"
-      : tool === "autoCount" || tool === "doorFinder"
+      : tool === "autoCount" ||
+          tool === "doorFinder" ||
+          tool === "wallFinder"
         ? "cursor-crosshair"
         : "cursor-default";
 
@@ -832,6 +965,24 @@ export const CadPdfCanvasStack = forwardRef<
         committedDoor = backendRoiToScreenCss(doorFinderBackend.roi, metrics);
       }
 
+      let committedWall: CssRect | null = null;
+      if (wallFinderRoi?.pageNumber === pageNumber) {
+        committedWall = {
+          x: wallFinderRoi.x,
+          y: wallFinderRoi.y,
+          width: wallFinderRoi.width,
+          height: wallFinderRoi.height,
+        };
+      } else if (
+        wallFinderBackend &&
+        backendPageMatches(wallFinderBackend.pageNumber, pageNumber) &&
+        metrics &&
+        wallFinderBackend.roi.width > 0 &&
+        wallFinderBackend.roi.height > 0
+      ) {
+        committedWall = backendRoiToScreenCss(wallFinderBackend.roi, metrics);
+      }
+
       const draft =
         draftRoi?.pageIndex === idx ? draftRoi.rect : null;
 
@@ -859,20 +1010,37 @@ export const CadPdfCanvasStack = forwardRef<
         );
       }
 
+      let wallSegments: WallSegmentScreen[] = [];
+      if (
+        wallFinderBackend &&
+        backendPageMatches(wallFinderBackend.pageNumber, pageNumber) &&
+        metrics
+      ) {
+        wallSegments = wallFinderResponseToScreenDrawItems(
+          wallFinderBackend.response,
+          metrics,
+          wallFinderBackend.roi
+        );
+      }
+
       return {
         committedRoiAuto: committedAuto,
         committedRoiDoor: committedDoor,
+        committedRoiWall: committedWall,
         draftRoi: draft,
         matchesAuto,
         matchesDoor,
+        wallSegments,
         emphasize: emphasizeAutoCountHighlight,
       };
     },
     [
       autoCountRoi,
       doorFinderRoi,
+      wallFinderRoi,
       autoCountBackend,
       doorFinderBackend,
+      wallFinderBackend,
       draftRoi,
       metricsTick,
       emphasizeAutoCountHighlight,
@@ -930,7 +1098,9 @@ export const CadPdfCanvasStack = forwardRef<
                 />
               ))}
             </div>
-            {tool === "autoCount" || tool === "doorFinder" ? (
+            {tool === "autoCount" ||
+            tool === "doorFinder" ||
+            tool === "wallFinder" ? (
               <div
                 className="absolute inset-0 z-20 bg-transparent"
                 style={{ pointerEvents: "auto" }}
