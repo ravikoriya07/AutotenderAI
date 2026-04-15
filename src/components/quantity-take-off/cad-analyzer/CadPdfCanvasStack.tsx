@@ -41,12 +41,68 @@ export type AutoCountRoiCss = {
 type CssRect = { x: number; y: number; width: number; height: number };
 
 type PageAnnotationLayer = {
-  committedRoi: CssRect | null;
+  /** Auto Count ROI (blue) */
+  committedRoiAuto: CssRect | null;
+  /** Door Finder ROI (emerald) */
+  committedRoiDoor: CssRect | null;
   draftRoi: CssRect | null;
-  matches: AutoCountMatch[];
+  matchesAuto: AutoCountMatch[];
+  /** Door Finder — teal boxes */
+  matchesDoor: AutoCountMatch[];
   /** Stronger strokes when a saved object is selected in the metadata panel */
   emphasize?: boolean;
 };
+
+function drawMatchBoxes(
+  octx: CanvasRenderingContext2D,
+  sx: number,
+  sy: number,
+  matches: AutoCountMatch[],
+  opts: { emphasize: boolean; variant: "autoCount" | "doorFinder" }
+) {
+  const emph = opts.emphasize;
+  const fill =
+    opts.variant === "doorFinder"
+      ? emph
+        ? "rgba(13, 148, 136, 0.35)"
+        : "rgba(20, 184, 166, 0.24)"
+      : emph
+        ? "rgba(217, 119, 6, 0.28)"
+        : "rgba(124, 58, 237, 0.22)";
+  const stroke =
+    opts.variant === "doorFinder"
+      ? emph
+        ? "#0f766e"
+        : "#0d9488"
+      : emph
+        ? "#b45309"
+        : "#6d28d9";
+
+  for (const m of matches) {
+    octx.setLineDash([]);
+    const mx = m.x * sx;
+    const my = m.y * sy;
+    const mw = m.w * sx;
+    const mh = m.h * sy;
+    if (
+      !Number.isFinite(mx) ||
+      !Number.isFinite(my) ||
+      !Number.isFinite(mw) ||
+      !Number.isFinite(mh) ||
+      mw <= 0 ||
+      mh <= 0
+    ) {
+      continue;
+    }
+    octx.fillStyle = fill;
+    octx.fillRect(mx, my, mw, mh);
+    octx.strokeStyle = stroke;
+    octx.lineWidth = emph
+      ? Math.max(2, 2.5 / (window.devicePixelRatio || 1))
+      : Math.max(1.5, 2 / (window.devicePixelRatio || 1));
+    octx.strokeRect(mx, my, mw, mh);
+  }
+}
 
 function drawPageAnnotations(
   octx: CanvasRenderingContext2D,
@@ -65,9 +121,19 @@ function drawPageAnnotations(
   octx.clearRect(0, 0, bufW, bufH);
   octx.lineWidth = Math.max(1.5, 2 / (window.devicePixelRatio || 1));
 
-  if (layer.committedRoi) {
-    const r = layer.committedRoi;
+  if (layer.committedRoiAuto) {
+    const r = layer.committedRoiAuto;
     octx.strokeStyle = emph ? "#d97706" : "#2563eb";
+    octx.lineWidth = emph
+      ? Math.max(2.5, 3 / (window.devicePixelRatio || 1))
+      : Math.max(1.5, 2 / (window.devicePixelRatio || 1));
+    octx.setLineDash([]);
+    octx.strokeRect(r.x * sx, r.y * sy, r.width * sx, r.height * sy);
+    octx.lineWidth = Math.max(1.5, 2 / (window.devicePixelRatio || 1));
+  }
+  if (layer.committedRoiDoor) {
+    const r = layer.committedRoiDoor;
+    octx.strokeStyle = emph ? "#0f766e" : "#059669";
     octx.lineWidth = emph
       ? Math.max(2.5, 3 / (window.devicePixelRatio || 1))
       : Math.max(1.5, 2 / (window.devicePixelRatio || 1));
@@ -82,30 +148,14 @@ function drawPageAnnotations(
     octx.strokeRect(r.x * sx, r.y * sy, r.width * sx, r.height * sy);
     octx.setLineDash([]);
   }
-  for (const m of layer.matches) {
-    octx.setLineDash([]);
-    const mx = m.x * sx;
-    const my = m.y * sy;
-    const mw = m.w * sx;
-    const mh = m.h * sy;
-    if (
-      !Number.isFinite(mx) ||
-      !Number.isFinite(my) ||
-      !Number.isFinite(mw) ||
-      !Number.isFinite(mh) ||
-      mw <= 0 ||
-      mh <= 0
-    ) {
-      continue;
-    }
-    octx.fillStyle = emph ? "rgba(217, 119, 6, 0.28)" : "rgba(124, 58, 237, 0.22)";
-    octx.fillRect(mx, my, mw, mh);
-    octx.strokeStyle = emph ? "#b45309" : "#6d28d9";
-    octx.lineWidth = emph
-      ? Math.max(2, 2.5 / (window.devicePixelRatio || 1))
-      : Math.max(1.5, 2 / (window.devicePixelRatio || 1));
-    octx.strokeRect(mx, my, mw, mh);
-  }
+  drawMatchBoxes(octx, sx, sy, layer.matchesAuto, {
+    emphasize: emph,
+    variant: "autoCount",
+  });
+  drawMatchBoxes(octx, sx, sy, layer.matchesDoor, {
+    emphasize: emph,
+    variant: "doorFinder",
+  });
 }
 
 type PdfPageRowProps = {
@@ -322,8 +372,12 @@ export type CadPdfCanvasStackProps = {
   /** Controlled ROI in CSS px relative to the page box; null = none */
   autoCountRoi?: AutoCountRoiCss | null;
   onAutoCountRoiChange?: (roi: AutoCountRoiCss | null) => void;
+  /** Door Finder ROI (same coordinate system as Auto Count) */
+  doorFinderRoi?: AutoCountRoiCss | null;
+  onDoorFinderRoiChange?: (roi: AutoCountRoiCss | null) => void;
   /** Last analyze in backend space; overlay reprojects to CSS when layout/zoom changes */
   autoCountBackend?: AutoCountBackendState | null;
+  doorFinderBackend?: AutoCountBackendState | null;
   /** Thicker amber emphasis when a saved object is selected (metadata panel) */
   emphasizeAutoCountHighlight?: boolean;
 };
@@ -360,7 +414,10 @@ export const CadPdfCanvasStack = forwardRef<
     className,
     autoCountRoi = null,
     onAutoCountRoiChange,
+    doorFinderRoi = null,
+    onDoorFinderRoiChange,
     autoCountBackend = null,
+    doorFinderBackend = null,
     emphasizeAutoCountHighlight = false,
   },
   ref
@@ -417,6 +474,7 @@ export const CadPdfCanvasStack = forwardRef<
   } | null>(null);
   const [isRoiDragging, setIsRoiDragging] = useState(false);
   const roiDragRef = useRef<{
+    mode: "autoCount" | "doorFinder";
     pageIndex: number;
     startLocalX: number;
     startLocalY: number;
@@ -616,7 +674,10 @@ export const CadPdfCanvasStack = forwardRef<
     roiDragRef.current = null;
     setDraftRoi(null);
     setIsRoiDragging(false);
-    if (!d || !onAutoCountRoiChange) return;
+    if (!d) return;
+    const onCommit =
+      d.mode === "doorFinder" ? onDoorFinderRoiChange : onAutoCountRoiChange;
+    if (!onCommit) return;
     const w = Math.abs(d.curLocalX - d.startLocalX);
     const h = Math.abs(d.curLocalY - d.startLocalY);
     if (w < 4 || h < 4) {
@@ -628,14 +689,14 @@ export const CadPdfCanvasStack = forwardRef<
       d.curLocalX,
       d.curLocalY
     );
-    onAutoCountRoiChange({
+    onCommit({
       pageNumber: d.pageIndex + 1,
       x: rect.x,
       y: rect.y,
       width: rect.width,
       height: rect.height,
     });
-  }, [onAutoCountRoiChange]);
+  }, [onAutoCountRoiChange, onDoorFinderRoiChange]);
 
   const updateRoiDrag = useCallback(
     (clientX: number, clientY: number) => {
@@ -655,9 +716,9 @@ export const CadPdfCanvasStack = forwardRef<
     [clientToPageLocal]
   );
 
-  const onAutoCountPointerDown = useCallback(
+  const onRoiPointerDown = useCallback(
     (e: ReactMouseEvent | ReactTouchEvent) => {
-      if (tool !== "autoCount") return;
+      if (tool !== "autoCount" && tool !== "doorFinder") return;
       e.preventDefault();
       e.stopPropagation();
       const clientX = "touches" in e ? e.touches[0].clientX : e.clientX;
@@ -666,6 +727,7 @@ export const CadPdfCanvasStack = forwardRef<
       if (pageIndex < 0) return;
       const local = clientToPageLocal(clientX, clientY, pageIndex);
       roiDragRef.current = {
+        mode: tool === "doorFinder" ? "doorFinder" : "autoCount",
         pageIndex,
         startLocalX: local.x,
         startLocalY: local.y,
@@ -723,7 +785,7 @@ export const CadPdfCanvasStack = forwardRef<
       ? isDragging
         ? "cursor-grabbing"
         : "cursor-grab"
-      : tool === "autoCount"
+      : tool === "autoCount" || tool === "doorFinder"
         ? "cursor-crosshair"
         : "cursor-default";
 
@@ -734,9 +796,9 @@ export const CadPdfCanvasStack = forwardRef<
       const idx = pageNumber - 1;
       const metrics = pageMetricsRef.current.get(pageNumber);
 
-      let committed: CssRect | null = null;
+      let committedAuto: CssRect | null = null;
       if (autoCountRoi?.pageNumber === pageNumber) {
-        committed = {
+        committedAuto = {
           x: autoCountRoi.x,
           y: autoCountRoi.y,
           width: autoCountRoi.width,
@@ -749,32 +811,72 @@ export const CadPdfCanvasStack = forwardRef<
         autoCountBackend.roi.width > 0 &&
         autoCountBackend.roi.height > 0
       ) {
-        committed = backendRoiToScreenCss(autoCountBackend.roi, metrics);
+        committedAuto = backendRoiToScreenCss(autoCountBackend.roi, metrics);
+      }
+
+      let committedDoor: CssRect | null = null;
+      if (doorFinderRoi?.pageNumber === pageNumber) {
+        committedDoor = {
+          x: doorFinderRoi.x,
+          y: doorFinderRoi.y,
+          width: doorFinderRoi.width,
+          height: doorFinderRoi.height,
+        };
+      } else if (
+        doorFinderBackend &&
+        doorFinderBackend.pageNumber === pageNumber &&
+        metrics &&
+        doorFinderBackend.roi.width > 0 &&
+        doorFinderBackend.roi.height > 0
+      ) {
+        committedDoor = backendRoiToScreenCss(doorFinderBackend.roi, metrics);
       }
 
       const draft =
         draftRoi?.pageIndex === idx ? draftRoi.rect : null;
 
-      let matches: AutoCountMatch[] = [];
+      let matchesAuto: AutoCountMatch[] = [];
       if (
         autoCountBackend &&
         autoCountBackend.pageNumber === pageNumber &&
         metrics
       ) {
-        matches = backendMatchesToScreen(
+        matchesAuto = backendMatchesToScreen(
           autoCountBackend.matches,
           metrics
         );
       }
 
+      let matchesDoor: AutoCountMatch[] = [];
+      if (
+        doorFinderBackend &&
+        doorFinderBackend.pageNumber === pageNumber &&
+        metrics
+      ) {
+        matchesDoor = backendMatchesToScreen(
+          doorFinderBackend.matches,
+          metrics
+        );
+      }
+
       return {
-        committedRoi: committed,
+        committedRoiAuto: committedAuto,
+        committedRoiDoor: committedDoor,
         draftRoi: draft,
-        matches,
+        matchesAuto,
+        matchesDoor,
         emphasize: emphasizeAutoCountHighlight,
       };
     },
-    [autoCountRoi, autoCountBackend, draftRoi, metricsTick, emphasizeAutoCountHighlight]
+    [
+      autoCountRoi,
+      doorFinderRoi,
+      autoCountBackend,
+      doorFinderBackend,
+      draftRoi,
+      metricsTick,
+      emphasizeAutoCountHighlight,
+    ]
   );
 
   const layersByPage = useMemo(() => {
@@ -828,12 +930,12 @@ export const CadPdfCanvasStack = forwardRef<
                 />
               ))}
             </div>
-            {tool === "autoCount" ? (
+            {tool === "autoCount" || tool === "doorFinder" ? (
               <div
                 className="absolute inset-0 z-20 bg-transparent"
                 style={{ pointerEvents: "auto" }}
-                onMouseDown={onAutoCountPointerDown}
-                onTouchStart={onAutoCountPointerDown}
+                onMouseDown={onRoiPointerDown}
+                onTouchStart={onRoiPointerDown}
                 aria-hidden
               />
             ) : null}

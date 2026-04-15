@@ -6,7 +6,7 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 
-export type ToolSidebarMode = "autoCount" | "searchText";
+export type ToolSidebarMode = "autoCount" | "searchText" | "doorFinder";
 
 export type ToolOptionsSidebarProps = {
   mode: ToolSidebarMode;
@@ -52,8 +52,18 @@ export function ToolOptionsSidebar({
   searchTextError,
   searchSubmitDisabled,
 }: ToolOptionsSidebarProps) {
-  const title = mode === "autoCount" ? "Auto count" : "Search text";
-  const ariaLabel = mode === "autoCount" ? "Auto count options" : "Search text";
+  const title =
+    mode === "autoCount"
+      ? "Auto count"
+      : mode === "doorFinder"
+        ? "Door finder"
+        : "Search text";
+  const ariaLabel =
+    mode === "autoCount"
+      ? "Auto count options"
+      : mode === "doorFinder"
+        ? "Door finder options"
+        : "Search text";
 
   return (
     <aside
@@ -88,23 +98,25 @@ export function ToolOptionsSidebar({
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-2.5 pb-3 pt-3 sm:px-3 sm:pb-4 sm:pt-3.5">
-        {mode === "autoCount" ? (
+        {mode === "autoCount" || mode === "doorFinder" ? (
           <section className="space-y-4">
             <h3 className="text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
-              Symbol options
+              {mode === "doorFinder" ? "Door finder" : "Symbol options"}
             </h3>
 
-            <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-border/60 bg-card/50 px-2.5 py-2.5 transition-colors hover:bg-muted/40 sm:px-3">
-              <input
-                type="checkbox"
-                className="mt-0.5 size-4 shrink-0 rounded border-border text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30"
-                checked={rotationInvariant}
-                onChange={(e) => onRotationInvariantChange(e.target.checked)}
-              />
-              <span className="text-sm leading-snug text-foreground">
-                Detect rotated symbols
-              </span>
-            </label>
+            {mode === "autoCount" ? (
+              <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-border/60 bg-card/50 px-2.5 py-2.5 transition-colors hover:bg-muted/40 sm:px-3">
+                <input
+                  type="checkbox"
+                  className="mt-0.5 size-4 shrink-0 rounded border-border text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30"
+                  checked={rotationInvariant}
+                  onChange={(e) => onRotationInvariantChange(e.target.checked)}
+                />
+                <span className="text-sm leading-snug text-foreground">
+                  Detect rotated symbols
+                </span>
+              </label>
+            ) : null}
 
             <div className="space-y-2">
               <div className="text-sm font-medium leading-tight text-foreground">
