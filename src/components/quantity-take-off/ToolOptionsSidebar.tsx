@@ -8,6 +8,8 @@ import { Input } from "@/components/ui/Input";
 export type ToolSidebarMode =
   | "autoCount"
   | "searchText"
+  | "floorArea"
+  | "facade"
   | "doorFinder"
   | "wallFinder"
   | "roomFinder";
@@ -53,19 +55,28 @@ export function ToolOptionsControls({
 }: ToolOptionsControlsProps) {
   return (
     <>
-      {mode === "autoCount" ||
-      mode === "doorFinder" ||
-      mode === "wallFinder" ||
-      mode === "roomFinder" ? (
+      {mode === "floorArea" ? (
+        <section>
+          <h3 className="text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+            Floor area
+          </h3>
+        </section>
+      ) : mode === "autoCount" ||
+        mode === "facade" ||
+        mode === "doorFinder" ||
+        mode === "wallFinder" ||
+        mode === "roomFinder" ? (
         <section className="space-y-4">
           <h3 className="text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
-            {mode === "doorFinder"
-              ? "Door finder"
-              : mode === "wallFinder"
-                ? "Wall finder"
-                : mode === "roomFinder"
-                  ? "Room finder"
-                  : "Symbol options"}
+            {mode === "facade"
+              ? "Facade"
+              : mode === "doorFinder"
+                ? "Door finder"
+                : mode === "wallFinder"
+                  ? "Wall finder"
+                  : mode === "roomFinder"
+                    ? "Room finder"
+                    : "Symbol options"}
           </h3>
 
           {mode === "autoCount" ? (
@@ -176,23 +187,31 @@ export function ToolOptionsSidebar({
   const title =
     mode === "autoCount"
       ? "Auto count"
-      : mode === "doorFinder"
-        ? "Door finder"
-        : mode === "wallFinder"
-          ? "Wall finder"
-          : mode === "roomFinder"
-            ? "Room finder"
-            : "Search text";
+      : mode === "floorArea"
+        ? "Floor area"
+        : mode === "facade"
+          ? "Facade"
+          : mode === "doorFinder"
+            ? "Door finder"
+            : mode === "wallFinder"
+              ? "Wall finder"
+              : mode === "roomFinder"
+                ? "Room finder"
+                : "Search text";
   const ariaLabel =
     mode === "autoCount"
       ? "Auto count options"
-      : mode === "doorFinder"
-        ? "Door finder options"
-        : mode === "wallFinder"
-          ? "Wall finder options"
-          : mode === "roomFinder"
-            ? "Room finder options"
-            : "Search text";
+      : mode === "floorArea"
+        ? "Floor area options"
+        : mode === "facade"
+          ? "Facade options"
+          : mode === "doorFinder"
+            ? "Door finder options"
+            : mode === "wallFinder"
+              ? "Wall finder options"
+              : mode === "roomFinder"
+                ? "Room finder options"
+                : "Search text";
 
   return (
     <aside

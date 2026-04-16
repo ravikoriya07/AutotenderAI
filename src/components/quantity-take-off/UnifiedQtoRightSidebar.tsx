@@ -44,6 +44,10 @@ function headerTitle(mode: ToolSidebarMode): string {
   switch (mode) {
     case "autoCount":
       return "Auto count options";
+    case "floorArea":
+      return "Floor area options";
+    case "facade":
+      return "Facade options";
     case "doorFinder":
       return "Door finder options";
     case "wallFinder":
@@ -61,6 +65,10 @@ function ariaLabel(mode: ToolSidebarMode): string {
   switch (mode) {
     case "autoCount":
       return "Auto count options";
+    case "floorArea":
+      return "Floor area options";
+    case "facade":
+      return "Facade options";
     case "doorFinder":
       return "Door finder options";
     case "wallFinder":

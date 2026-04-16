@@ -30,9 +30,13 @@ import {
   CadPdfCanvasStack,
   type AutoCountRoiCss,
   type CadPdfCanvasStackHandle,
+  type FloorAreaCssRegion,
 } from "@/components/quantity-take-off/cad-analyzer/CadPdfCanvasStack";
 import {
+  floorPolygonAnalysisToPreviewBackend,
+  floorPolygonBackendToScreenCss,
   pickWallSegmentsFromResponse,
+  screenPointToBackend,
   screenRectToBackend,
   type AutoCountApiMatch,
 } from "@/lib/autoCountCoordinates";
@@ -83,18 +87,40 @@ import {
 import {
   pickRoomRowsFromResponse,
   postAnalyzeRooms,
+  ROOM_FINDER_DEFAULT_PIXEL_TO_METER,
   type RoomFinderRoomRow,
 } from "@/services/roomFinderService";
+import {
+  FLOOR_EXTRACT_PIXEL_TO_METER,
+  postExtractFloor,
+} from "@/services/floorExtractorService";
+import {
+  clearQtoFloorExtractor,
+  loadQtoFloorExtractor,
+  saveQtoFloorExtractor,
+  type FloorExtractionPersistedV1,
+} from "@/lib/qtoFloorExtractorStorage";
+import {
+  clearQtoFacade,
+  loadQtoFacade,
+  saveQtoFacade,
+  type FacadeBackendState,
+} from "@/lib/qtoFacadeStorage";
+import {
+  FACADE_PIXEL_TO_METER,
+  postAnalyzeFacade,
+} from "@/services/facadeAnalyzerService";
 import { createClientId } from "@/lib/createClientId";
 
 const WALL_FINDER_PIXEL_TO_M = 0.01;
-const ROOM_FINDER_PIXEL_TO_M = 0.01;
 
 type LastAnalyzeKind =
   | "autoCount"
   | "doorFinder"
+  | "facade"
   | "wallFinder"
   | "roomFinder"
+  | "floorArea"
   | "searchText";
 
 function findFileIdByStoragePath(
@@ -183,24 +209,32 @@ function QtoRightSidebarReopenChip({
     ? "Your saved items"
     : lastToolAction === "doorFinder"
       ? "Door finder options"
-      : lastToolAction === "wallFinder"
-        ? "Wall finder options"
-        : lastToolAction === "roomFinder"
-          ? "Room finder options"
-          : lastToolAction === "searchText"
-            ? "Search text options"
-            : "Symbol options";
+      : lastToolAction === "facade"
+        ? "Facade options"
+        : lastToolAction === "wallFinder"
+          ? "Wall finder options"
+          : lastToolAction === "roomFinder"
+            ? "Room finder options"
+            : lastToolAction === "floorArea"
+              ? "Floor area options"
+              : lastToolAction === "searchText"
+                ? "Search text options"
+                : "Symbol options";
   const chipAria = isNavigationTool
     ? "Open your saved items and export"
     : lastToolAction === "doorFinder"
       ? "Open door finder options"
-      : lastToolAction === "wallFinder"
-        ? "Open wall finder options"
-        : lastToolAction === "roomFinder"
-          ? "Open room finder options"
-          : lastToolAction === "searchText"
-            ? "Open search text options"
-            : "Open symbol options";
+      : lastToolAction === "facade"
+        ? "Open facade options"
+        : lastToolAction === "wallFinder"
+          ? "Open wall finder options"
+          : lastToolAction === "roomFinder"
+            ? "Open room finder options"
+            : lastToolAction === "floorArea"
+              ? "Open floor area options"
+              : lastToolAction === "searchText"
+                ? "Open search text options"
+                : "Open symbol options";
 
   if (!showChip) return null;
 
@@ -366,6 +400,11 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
     []
   );
   const [doorFinderLoading, setDoorFinderLoading] = useState(false);
+  const [facadeRoi, setFacadeRoi] = useState<AutoCountRoiCss | null>(null);
+  const [facadeBackend, setFacadeBackend] = useState<FacadeBackendState | null>(
+    null
+  );
+  const [facadeLoading, setFacadeLoading] = useState(false);
   const [wallFinderRoi, setWallFinderRoi] = useState<AutoCountRoiCss | null>(
     null
   );
@@ -382,6 +421,19 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
     useState<RoomFinderBackendState | null>(null);
   const [roomResults, setRoomResults] = useState<RoomFinderRoomRow[]>([]);
   const [roomFinderLoading, setRoomFinderLoading] = useState(false);
+  /** Floor `/extract_floor` — accumulated regions + optional pending click */
+  const [floorExtractions, setFloorExtractions] = useState<
+    FloorExtractionPersistedV1[]
+  >([]);
+  const [floorPendingSeed, setFloorPendingSeed] = useState<{
+    pageNumber: number;
+    x: number;
+    y: number;
+  } | null>(null);
+  const [floorExtractorLoading, setFloorExtractorLoading] = useState(false);
+  const [lastFloorNewAreaM2, setLastFloorNewAreaM2] = useState<number | null>(
+    null
+  );
   const [lastAnalyzeKind, setLastAnalyzeKind] =
     useState<LastAnalyzeKind>("autoCount");
   const autoCountUnmountTimeoutRef = useRef<number | null>(null);
@@ -510,6 +562,7 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
   useEffect(() => {
     setAutoCountLoading(false);
     setDoorFinderLoading(false);
+    setFacadeLoading(false);
     setWallFinderLoading(false);
     if (!trimmedJobId || !selectedPdfPath?.trim()) {
       setAutoCountRoi(null);
@@ -517,12 +570,17 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
       setDoorFinderRoi(null);
       setDoorFinderBackend(null);
       setDoorFinderResults([]);
+      setFacadeRoi(null);
+      setFacadeBackend(null);
       setWallFinderRoi(null);
       setWallFinderBackend(null);
       setWallFinderResults([]);
       setRoomFinderRoi(null);
       setRoomFinderBackend(null);
       setRoomResults([]);
+      setFloorExtractions([]);
+      setFloorPendingSeed(null);
+      setLastFloorNewAreaM2(null);
       setLastAnalyzeKind("autoCount");
       setObjectDataFormVisible(false);
       return;
@@ -530,8 +588,10 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
     const path = selectedPdfPath.trim();
     const storedAc = loadQtoAutoCount(trimmedJobId, path);
     const storedDf = loadQtoDoorFinder(trimmedJobId, path);
+    const storedFacade = loadQtoFacade(trimmedJobId, path);
     const storedWf = loadQtoWallFinder(trimmedJobId, path);
     const storedRf = loadQtoRoomFinder(trimmedJobId, path);
+    const storedFloor = loadQtoFloorExtractor(trimmedJobId, path);
     if (storedAc) {
       setAutoCountBackend({
         pageNumber: storedAc.pageNumber,
@@ -551,6 +611,15 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
     } else {
       setDoorFinderBackend(null);
       setDoorFinderResults([]);
+    }
+    if (storedFacade) {
+      setFacadeBackend({
+        pageNumber: storedFacade.pageNumber,
+        roi: storedFacade.roi,
+        response: storedFacade.response,
+      });
+    } else {
+      setFacadeBackend(null);
     }
     if (storedWf) {
       setWallFinderBackend({
@@ -576,18 +645,38 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
       setRoomFinderBackend(null);
       setRoomResults([]);
     }
+    if (storedFloor?.extractions?.length) {
+      setFloorExtractions(storedFloor.extractions);
+      const last =
+        storedFloor.extractions[storedFloor.extractions.length - 1];
+      setLastFloorNewAreaM2(last?.areaM2 ?? null);
+    } else {
+      setFloorExtractions([]);
+      setLastFloorNewAreaM2(null);
+    }
     setAutoCountRoi(null);
     setDoorFinderRoi(null);
+    setFacadeRoi(null);
     setWallFinderRoi(null);
     setRoomFinderRoi(null);
+    setFloorPendingSeed(null);
     if (storedAc) setLastAnalyzeKind("autoCount");
     else if (storedDf) setLastAnalyzeKind("doorFinder");
+    else if (storedFacade) setLastAnalyzeKind("facade");
     else if (storedWf) setLastAnalyzeKind("wallFinder");
     else if (storedRf) setLastAnalyzeKind("roomFinder");
+    else if (storedFloor?.extractions?.length) setLastAnalyzeKind("floorArea");
     else setLastAnalyzeKind("autoCount");
 
     setObjectDataFormVisible(
-      Boolean(storedAc || storedDf || storedWf || storedRf)
+      Boolean(
+        storedAc ||
+          storedDf ||
+          storedFacade ||
+          storedWf ||
+          storedRf ||
+          storedFloor?.extractions?.length
+      )
     );
   }, [trimmedJobId, selectedPdfPath]);
 
@@ -735,6 +824,10 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
     setLastToolAction("doorFinder");
   }, []);
 
+  const handleFacadeToolSelect = useCallback(() => {
+    setLastToolAction("facade");
+  }, []);
+
   const handleWallFinderToolSelect = useCallback(() => {
     setLastToolAction("wallFinder");
   }, []);
@@ -764,6 +857,16 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
     [openToolOptionsPanel]
   );
 
+  const handleFacadeRoiChange = useCallback(
+    (roi: AutoCountRoiCss | null) => {
+      setFacadeRoi(roi);
+      if (roi != null) {
+        openToolOptionsPanel("facade");
+      }
+    },
+    [openToolOptionsPanel]
+  );
+
   const handleWallFinderRoiChange = useCallback(
     (roi: AutoCountRoiCss | null) => {
       setWallFinderRoi(roi);
@@ -784,6 +887,137 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
     [openToolOptionsPanel]
   );
 
+  const handleFloorAreaToolSelect = useCallback(() => {
+    setLastToolAction("floorArea");
+  }, []);
+
+  const handleFloorAreaPlaceSeed = useCallback(
+    (pageNumber: number, xCss: number, yCss: number) => {
+      setFloorPendingSeed({ pageNumber, x: xCss, y: yCss });
+      openToolOptionsPanel("floorArea");
+    },
+    [openToolOptionsPanel]
+  );
+
+  const handleFloorExtract = useCallback(async () => {
+    if (!trimmedJobId || !selectedPdfPath?.trim()) return;
+    if (!floorPendingSeed) {
+      toast.error("Click inside a room on the drawing to set a seed point.");
+      return;
+    }
+    const pageNum = floorPendingSeed.pageNumber;
+    const metrics = cadCanvasRef.current?.getAutoCountPageMetrics(pageNum);
+    if (!metrics) {
+      toast.error("Page layout not ready. Wait for the PDF to finish rendering.");
+      return;
+    }
+    const seedBackend = screenPointToBackend(
+      floorPendingSeed.x,
+      floorPendingSeed.y,
+      metrics
+    );
+    setFloorExtractorLoading(true);
+    try {
+      const res = await postExtractFloor({
+        job_id: trimmedJobId,
+        file_path: selectedPdfPath.trim(),
+        seed: { x: seedBackend.x, y: seedBackend.y },
+        pixel_to_meter: FLOOR_EXTRACT_PIXEL_TO_METER,
+      });
+      if (res.success === false || res.error) {
+        toast.error(String(res.error ?? "Floor extraction failed."));
+        return;
+      }
+      const area = res.new_area ?? 0;
+      let cssPoly: { x: number; y: number }[] = [];
+      const rawPoly = res.polygon ?? res.current_polygon;
+      if (Array.isArray(rawPoly) && rawPoly.length >= 3) {
+        const pts = rawPoly.map((p) => ({
+          x: Number((p as { x?: unknown }).x),
+          y: Number((p as { y?: unknown }).y),
+        }));
+        const maxX = Math.max(...pts.map((p) => p.x));
+        const toPreview =
+          maxX > metrics.backendBaseWidth * 1.15
+            ? floorPolygonAnalysisToPreviewBackend(pts)
+            : pts;
+        cssPoly = floorPolygonBackendToScreenCss(toPreview, metrics);
+      }
+      const id = createClientId();
+      const extraction: FloorExtractionPersistedV1 = {
+        id,
+        pageNumber: pageNum,
+        seedBackend,
+        seedCss: { x: floorPendingSeed.x, y: floorPendingSeed.y },
+        cssPoly,
+        areaM2: area,
+      };
+      setFloorExtractions((prev) => {
+        const next = [...prev, extraction];
+        saveQtoFloorExtractor(trimmedJobId, selectedPdfPath.trim(), {
+          v: 1,
+          extractions: next,
+        });
+        return next;
+      });
+      setLastFloorNewAreaM2(area);
+      setFloorPendingSeed(null);
+      setLastAnalyzeKind("floorArea");
+      setMetadataCount(0);
+      setMetadataObjectId("");
+      setMetadataObjectName("");
+      setMetadataErrors({});
+      setObjectDataFormVisible(true);
+      scrollToObjectDataSection();
+      toast.success(
+        Number.isFinite(area) && area > 0
+          ? `Floor area: ${area.toFixed(2)} m²`
+          : "Floor extraction completed."
+      );
+    } catch (e) {
+      console.log("[qto] postExtractFloor failed", e);
+      toast.error("Floor extraction failed.");
+    } finally {
+      setFloorExtractorLoading(false);
+    }
+  }, [
+    trimmedJobId,
+    selectedPdfPath,
+    floorPendingSeed,
+    scrollToObjectDataSection,
+  ]);
+
+  const floorAreaCanvasSeeds = useMemo(() => {
+    const list: Array<{ pageNumber: number; x: number; y: number }> = [];
+    for (const ex of floorExtractions) {
+      list.push({
+        pageNumber: ex.pageNumber,
+        x: ex.seedCss.x,
+        y: ex.seedCss.y,
+      });
+    }
+    if (floorPendingSeed) {
+      list.push({
+        pageNumber: floorPendingSeed.pageNumber,
+        x: floorPendingSeed.x,
+        y: floorPendingSeed.y,
+      });
+    }
+    return list;
+  }, [floorExtractions, floorPendingSeed]);
+
+  const floorAreaCanvasRegions = useMemo((): Array<
+    FloorAreaCssRegion & { pageNumber: number }
+  > => {
+    return floorExtractions.map((ex) => ({
+      pageNumber: ex.pageNumber,
+      id: ex.id,
+      cssPoly: ex.cssPoly,
+      areaM2: ex.areaM2,
+      seedCss: ex.seedCss,
+    }));
+  }, [floorExtractions]);
+
   const metadataBackend = useMemo(() => {
     if (lastAnalyzeKind === "doorFinder") return doorFinderBackend;
     return autoCountBackend;
@@ -792,8 +1026,17 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
   const hasObjectMetadataSource = useMemo(() => {
     if (lastAnalyzeKind === "wallFinder") return wallFinderBackend != null;
     if (lastAnalyzeKind === "roomFinder") return roomFinderBackend != null;
+    if (lastAnalyzeKind === "floorArea") return floorExtractions.length > 0;
+    if (lastAnalyzeKind === "facade") return facadeBackend != null;
     return metadataBackend != null;
-  }, [lastAnalyzeKind, wallFinderBackend, roomFinderBackend, metadataBackend]);
+  }, [
+    lastAnalyzeKind,
+    wallFinderBackend,
+    roomFinderBackend,
+    metadataBackend,
+    floorExtractions.length,
+    facadeBackend,
+  ]);
 
   const handleSearchTextSubmit = useCallback(async () => {
     const term = searchTerm.trim();
@@ -1086,8 +1329,10 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
       const path = selectedPdfPath.trim();
       clearQtoAutoCount(trimmedJobId, path);
       clearQtoDoorFinder(trimmedJobId, path);
+      clearQtoFacade(trimmedJobId, path);
       clearQtoWallFinder(trimmedJobId, path);
       clearQtoRoomFinder(trimmedJobId, path);
+      clearQtoFloorExtractor(trimmedJobId, path);
       clearQtoSavedObjects(trimmedJobId, path);
     }
     setAutoCountRoi(null);
@@ -1095,14 +1340,21 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
     setDoorFinderRoi(null);
     setDoorFinderBackend(null);
     setDoorFinderResults([]);
+    setFacadeRoi(null);
+    setFacadeBackend(null);
     setWallFinderRoi(null);
     setWallFinderBackend(null);
     setWallFinderResults([]);
     setRoomFinderRoi(null);
     setRoomFinderBackend(null);
     setRoomResults([]);
+    setFloorExtractions([]);
+    setFloorPendingSeed(null);
+    setLastFloorNewAreaM2(null);
+    setFloorExtractorLoading(false);
     setAutoCountLoading(false);
     setDoorFinderLoading(false);
+    setFacadeLoading(false);
     setWallFinderLoading(false);
     setRoomFinderLoading(false);
     setSearchTerm("");
@@ -1491,6 +1743,85 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
     scrollToObjectDataSection,
   ]);
 
+  const handleFacadeAnalyze = useCallback(async () => {
+    if (!trimmedJobId || !selectedPdfPath?.trim()) return;
+    if (!facadeRoi && !facadeBackend) return;
+
+    const analyzedPage =
+      facadeRoi?.pageNumber ?? facadeBackend!.pageNumber;
+    const metrics = cadCanvasRef.current?.getAutoCountPageMetrics(
+      analyzedPage
+    );
+    if (!metrics) {
+      toast.error("Page layout not ready. Wait for the PDF to finish rendering.");
+      return;
+    }
+    const roiBackend = facadeRoi
+      ? screenRectToBackend(
+          {
+            x: facadeRoi.x,
+            y: facadeRoi.y,
+            width: facadeRoi.width,
+            height: facadeRoi.height,
+          },
+          metrics
+        )
+      : facadeBackend!.roi;
+
+    setFacadeLoading(true);
+    try {
+      const res = await postAnalyzeFacade({
+        job_id: trimmedJobId,
+        file_path: selectedPdfPath.trim(),
+        roi: roiBackend,
+        pixel_to_meter: FACADE_PIXEL_TO_METER,
+        confidence,
+      });
+      if (res.success === false || res.error) {
+        toast.error(String(res.error ?? "Facade analysis failed."));
+        return;
+      }
+      const next: FacadeBackendState = {
+        pageNumber: analyzedPage,
+        roi: roiBackend,
+        response: res,
+      };
+      setFacadeBackend(next);
+      setFacadeRoi(null);
+      setLastAnalyzeKind("facade");
+      saveQtoFacade(trimmedJobId, selectedPdfPath.trim(), {
+        v: 1,
+        ...next,
+      });
+      const nw = res.window_count ?? res.dimensions?.length ?? 0;
+      toast.success(
+        nw > 0
+          ? `Found ${nw} window${nw === 1 ? "" : "s"}`
+          : "No windows detected in region"
+      );
+      setMetadataCount(nw);
+      setMetadataObjectId("");
+      setMetadataObjectName("");
+      setMetadataErrors({});
+      setSelectedSavedObjectId(null);
+      setExpandedSavedId(null);
+      setObjectDataFormVisible(true);
+      scrollToObjectDataSection();
+    } catch (e) {
+      console.log("[qto] postAnalyzeFacade failed", e);
+      toast.error("Facade analysis failed.");
+    } finally {
+      setFacadeLoading(false);
+    }
+  }, [
+    trimmedJobId,
+    selectedPdfPath,
+    facadeRoi,
+    facadeBackend,
+    confidence,
+    scrollToObjectDataSection,
+  ]);
+
   const handleWallFinderAnalyze = useCallback(async () => {
     if (!trimmedJobId || !selectedPdfPath?.trim()) return;
     if (!wallFinderRoi && !wallFinderBackend) return;
@@ -1600,7 +1931,7 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
         job_id: trimmedJobId,
         file_path: selectedPdfPath.trim(),
         roi: roiBackend,
-        pixel_to_meter: ROOM_FINDER_PIXEL_TO_M,
+        pixel_to_meter: ROOM_FINDER_DEFAULT_PIXEL_TO_METER,
         confidence,
       });
       const rows = pickRoomRowsFromResponse(res);
@@ -1652,7 +1983,11 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
       ? "wall"
       : lastAnalyzeKind === "roomFinder"
         ? "room"
-        : "count";
+        : lastAnalyzeKind === "floorArea"
+          ? "floor"
+          : lastAnalyzeKind === "facade"
+            ? "facade"
+            : "count";
   const totalWallLengthDisplay = useMemo(() => {
     const m = wallFinderBackend?.response?.total_length_m;
     if (m == null || !Number.isFinite(m)) return "—";
@@ -1670,6 +2005,23 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
     if (m == null || !Number.isFinite(m)) return "—";
     return m.toFixed(2);
   }, [roomFinderBackend]);
+  const floorAreaM2Display = useMemo(() => {
+    if (lastFloorNewAreaM2 == null || !Number.isFinite(lastFloorNewAreaM2)) {
+      return "—";
+    }
+    return lastFloorNewAreaM2.toFixed(2);
+  }, [lastFloorNewAreaM2]);
+  const facadeWindowCountDisplay = useMemo(() => {
+    if (lastAnalyzeKind !== "facade") return 0;
+    const r = facadeBackend?.response;
+    return r?.window_count ?? r?.dimensions?.length ?? 0;
+  }, [lastAnalyzeKind, facadeBackend]);
+  const facadeNetWindowAreaM2Display = useMemo(() => {
+    if (lastAnalyzeKind !== "facade") return "—";
+    const w = facadeBackend?.response?.window_area;
+    if (w == null || !Number.isFinite(w)) return "—";
+    return w.toFixed(2);
+  }, [lastAnalyzeKind, facadeBackend]);
 
   /**
    * Show the canvas chip whenever the panel is not open. Using `translateOpen` (not `drawerMounted`)
@@ -1682,8 +2034,10 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
     autoCountLoading ||
     searchTextLoading ||
     doorFinderLoading ||
+    facadeLoading ||
     wallFinderLoading ||
-    roomFinderLoading;
+    roomFinderLoading ||
+    floorExtractorLoading;
 
   /** Clear removes session analysis, ROIs, saved items, and search text — disable when there is nothing to remove. */
   const hasClearableQtoData = useMemo(
@@ -1693,10 +2047,14 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
       autoCountBackend != null ||
       doorFinderRoi != null ||
       doorFinderBackend != null ||
+      facadeRoi != null ||
+      facadeBackend != null ||
       wallFinderRoi != null ||
       wallFinderBackend != null ||
       roomFinderRoi != null ||
       roomFinderBackend != null ||
+      floorExtractions.length > 0 ||
+      floorPendingSeed != null ||
       searchTerm.trim().length > 0,
     [
       savedObjects.length,
@@ -1704,10 +2062,14 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
       autoCountBackend,
       doorFinderRoi,
       doorFinderBackend,
+      facadeRoi,
+      facadeBackend,
       wallFinderRoi,
       wallFinderBackend,
       roomFinderRoi,
       roomFinderBackend,
+      floorExtractions.length,
+      floorPendingSeed,
       searchTerm,
     ]
   );
@@ -1720,10 +2082,14 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
         return "Analyze";
       case "doorFinder":
         return "Find Doors";
+      case "facade":
+        return "Analyze Facade";
       case "wallFinder":
         return "Find Walls";
       case "roomFinder":
         return "Find Rooms";
+      case "floorArea":
+        return "Calculate Area";
       case "searchText":
         return "Search";
       default:
@@ -1737,10 +2103,14 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
         return autoCountLoading;
       case "doorFinder":
         return doorFinderLoading;
+      case "facade":
+        return facadeLoading;
       case "wallFinder":
         return wallFinderLoading;
       case "roomFinder":
         return roomFinderLoading;
+      case "floorArea":
+        return floorExtractorLoading;
       case "searchText":
         return searchTextLoading;
       default:
@@ -1750,8 +2120,10 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
     lastToolAction,
     autoCountLoading,
     doorFinderLoading,
+    facadeLoading,
     wallFinderLoading,
     roomFinderLoading,
+    floorExtractorLoading,
     searchTextLoading,
   ]);
 
@@ -1762,10 +2134,14 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
         return !autoCountRoi && !autoCountBackend;
       case "doorFinder":
         return !doorFinderRoi && !doorFinderBackend;
+      case "facade":
+        return !facadeRoi && !facadeBackend;
       case "wallFinder":
         return !wallFinderRoi && !wallFinderBackend;
       case "roomFinder":
         return !roomFinderRoi && !roomFinderBackend;
+      case "floorArea":
+        return floorPendingSeed == null;
       case "searchText":
         return !searchTerm.trim();
       default:
@@ -1780,10 +2156,13 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
     autoCountBackend,
     doorFinderRoi,
     doorFinderBackend,
+    facadeRoi,
+    facadeBackend,
     wallFinderRoi,
     wallFinderBackend,
     roomFinderRoi,
     roomFinderBackend,
+    floorPendingSeed,
     searchTerm,
   ]);
 
@@ -1793,10 +2172,14 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
         return void handleAutoCountAnalyze();
       case "doorFinder":
         return void handleDoorFinderAnalyze();
+      case "facade":
+        return void handleFacadeAnalyze();
       case "wallFinder":
         return void handleWallFinderAnalyze();
       case "roomFinder":
         return void handleRoomFinderAnalyze();
+      case "floorArea":
+        return void handleFloorExtract();
       case "searchText":
         return void handleSearchTextSubmit();
       default:
@@ -1806,8 +2189,10 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
     lastToolAction,
     handleAutoCountAnalyze,
     handleDoorFinderAnalyze,
+    handleFacadeAnalyze,
     handleWallFinderAnalyze,
     handleRoomFinderAnalyze,
+    handleFloorExtract,
     handleSearchTextSubmit,
   ]);
 
@@ -1819,8 +2204,10 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
           autoCountLoading ||
           searchTextLoading ||
           doorFinderLoading ||
+          facadeLoading ||
           wallFinderLoading ||
-          roomFinderLoading
+          roomFinderLoading ||
+          floorExtractorLoading
         }
         message={searchTextLoading ? "Searching…" : "Analyzing…"}
       />
@@ -1874,14 +2261,21 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
                     onDoorFinderRoiChange={handleDoorFinderRoiChange}
                     autoCountBackend={canvasAutoCountBackend}
                     doorFinderBackend={canvasDoorFinderBackend}
+                    facadeRoi={facadeRoi}
+                    onFacadeRoiChange={handleFacadeRoiChange}
+                    facadeBackend={facadeBackend}
                     wallFinderRoi={wallFinderRoi}
                     onWallFinderRoiChange={handleWallFinderRoiChange}
                     wallFinderBackend={canvasWallFinderBackend}
                     roomFinderRoi={roomFinderRoi}
                     onRoomFinderRoiChange={handleRoomFinderRoiChange}
                     roomFinderBackend={canvasRoomFinderBackend}
+                    roomFinderPixelToMeter={ROOM_FINDER_DEFAULT_PIXEL_TO_METER}
                     emphasizeAutoCountHighlight={emphasizeSavedHighlight}
                     persistedSavedOverlays={persistedSavedOverlaysForCanvas}
+                    floorAreaSeeds={floorAreaCanvasSeeds}
+                    floorAreaRegions={floorAreaCanvasRegions}
+                    onFloorAreaClick={handleFloorAreaPlaceSeed}
                   />
                 ) : (
                   <div className="flex w-full min-w-0 flex-1 flex-col items-center justify-center px-3 py-6 sm:px-4 sm:py-8">
@@ -1902,6 +2296,8 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
                   onDoorFinderToolSelect={handleDoorFinderToolSelect}
                   onWallFinderToolSelect={handleWallFinderToolSelect}
                   onRoomFinderToolSelect={handleRoomFinderToolSelect}
+                  onFloorAreaToolSelect={handleFloorAreaToolSelect}
+                  onFacadeToolSelect={handleFacadeToolSelect}
                 />
               </div>
             ) : null}
@@ -1955,6 +2351,9 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
                     totalWallsDisplay,
                     roomsFoundDisplay,
                     totalAreaM2Display,
+                    floorAreaM2Display,
+                    facadeWindowCountDisplay,
+                    facadeNetWindowAreaM2Display,
                     onObjectIdChange: (v) => {
                       setMetadataObjectId(v);
                       if (metadataErrors.objectId) {
@@ -1975,7 +2374,10 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
                     },
                     errors: metadataErrors,
                     onSave: handleSaveObjectMetadata,
-                    saveDisabled: !hasObjectMetadataSource,
+                    saveDisabled:
+                      !hasObjectMetadataSource ||
+                      lastAnalyzeKind === "floorArea" ||
+                      lastAnalyzeKind === "facade",
                     savedObjects,
                     selectedSavedId: selectedSavedObjectId,
                     onSelectSaved: (id) => {

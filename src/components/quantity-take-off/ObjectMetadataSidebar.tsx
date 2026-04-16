@@ -7,7 +7,12 @@ import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import type { QtoSavedObjectEntryV1 } from "@/lib/qtoSavedObjectsStorage";
 
-export type ObjectMetadataStatsMode = "count" | "wall" | "room";
+export type ObjectMetadataStatsMode =
+  | "count"
+  | "wall"
+  | "room"
+  | "floor"
+  | "facade";
 
 export type ObjectMetadataPanelContentProps = {
   objectId: string;
@@ -21,6 +26,11 @@ export type ObjectMetadataPanelContentProps = {
   /** Room finder — read-only */
   roomsFoundDisplay: number;
   totalAreaM2Display: string;
+  /** Floor area — last extraction (m²) */
+  floorAreaM2Display: string;
+  /** Facade — read-only */
+  facadeWindowCountDisplay: number;
+  facadeNetWindowAreaM2Display: string;
   onObjectIdChange: (value: string) => void;
   onObjectNameChange: (value: string) => void;
   errors: { objectId?: string; objectName?: string };
@@ -52,6 +62,9 @@ export function ObjectMetadataPanelContent({
   totalWallsDisplay,
   roomsFoundDisplay,
   totalAreaM2Display,
+  floorAreaM2Display,
+  facadeWindowCountDisplay,
+  facadeNetWindowAreaM2Display,
   onObjectIdChange,
   onObjectNameChange,
   errors,
@@ -73,6 +86,9 @@ export function ObjectMetadataPanelContent({
   const wallNumId = React.useId();
   const roomNumId = React.useId();
   const roomAreaId = React.useId();
+  const floorAreaId = React.useId();
+  const facadeWinCountId = React.useId();
+  const facadeWinAreaId = React.useId();
   const oid = React.useId();
   const oname = React.useId();
 
@@ -213,6 +229,64 @@ export function ObjectMetadataPanelContent({
               />
               <p className="text-[11px] text-muted-foreground">
                 Pre-filled from the last room analysis response.
+              </p>
+            </div>
+          </>
+        ) : statsMode === "floor" ? (
+          <div className="space-y-1.5">
+            <label
+              htmlFor={floorAreaId}
+              className="text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground"
+            >
+              Area (m²)
+            </label>
+            <Input
+              id={floorAreaId}
+              readOnly
+              disabled
+              value={floorAreaM2Display}
+              className="cursor-not-allowed bg-muted/40 text-muted-foreground"
+              aria-readonly="true"
+            />
+            <p className="text-[11px] text-muted-foreground">
+              Pre-filled from the last floor extraction response.
+            </p>
+          </div>
+        ) : statsMode === "facade" ? (
+          <>
+            <div className="space-y-1.5">
+              <label
+                htmlFor={facadeWinCountId}
+                className="text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground"
+              >
+                Window count
+              </label>
+              <Input
+                id={facadeWinCountId}
+                readOnly
+                disabled
+                value={String(facadeWindowCountDisplay)}
+                className="cursor-not-allowed bg-muted/40 text-muted-foreground"
+                aria-readonly="true"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <label
+                htmlFor={facadeWinAreaId}
+                className="text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground"
+              >
+                Net window area (m²)
+              </label>
+              <Input
+                id={facadeWinAreaId}
+                readOnly
+                disabled
+                value={facadeNetWindowAreaM2Display}
+                className="cursor-not-allowed bg-muted/40 text-muted-foreground"
+                aria-readonly="true"
+              />
+              <p className="text-[11px] text-muted-foreground">
+                Pre-filled from the last facade analysis response.
               </p>
             </div>
           </>

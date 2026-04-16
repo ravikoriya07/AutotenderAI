@@ -213,16 +213,25 @@ function ProjectActionsCell({
   const menuRef = useRef<HTMLDivElement>(null);
   const [mounted, setMounted] = useState(false);
   const [menuStyle, setMenuStyle] = useState<CSSProperties>({});
+  /** Avoid portaling for the duplicate row hidden via CSS (md vs mobile); its rect is 0×0 and clamps to the top-left. */
+  const [canShowMenu, setCanShowMenu] = useState(false);
 
   useEffect(() => {
     setMounted(true);
   }, []);
 
   useLayoutEffect(() => {
-    if (!open || !wrapRef.current) return;
+    if (!open || !wrapRef.current) {
+      setCanShowMenu(false);
+      return;
+    }
     const el = wrapRef.current;
     const update = () => {
       const rect = el.getBoundingClientRect();
+      if (rect.width === 0 && rect.height === 0) {
+        setCanShowMenu(false);
+        return;
+      }
       const vw = window.innerWidth;
       const vh = window.innerHeight;
       const spaceBelow = vh - rect.bottom;
@@ -241,6 +250,7 @@ function ProjectActionsCell({
         width: ACTION_MENU_WIDTH,
         zIndex: 200,
       });
+      setCanShowMenu(true);
     };
     update();
     window.addEventListener("scroll", update, true);
@@ -262,7 +272,11 @@ function ProjectActionsCell({
       }
       onClose();
     }
-    if (open) {
+    // Only the instance that actually portaled the menu should handle outside
+    // dismiss. The duplicate row (md vs mobile) has open=true but canShowMenu
+    // false: its menuRef is unset and wrapRef does not contain the portaled
+    // node, so mousedown would close before menu item click fires.
+    if (open && canShowMenu) {
       document.addEventListener("mousedown", handlePointer);
       document.addEventListener("touchstart", handlePointer);
     }
@@ -270,16 +284,16 @@ function ProjectActionsCell({
       document.removeEventListener("mousedown", handlePointer);
       document.removeEventListener("touchstart", handlePointer);
     };
-  }, [open, onClose]);
+  }, [open, canShowMenu, onClose]);
 
   useEffect(() => {
-    if (!open) return;
+    if (!open || !canShowMenu) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [open, onClose]);
+  }, [open, canShowMenu, onClose]);
 
   const menu = open ? (
     <div
@@ -367,7 +381,9 @@ function ProjectActionsCell({
       >
         <MoreVertical className="h-4 w-4 text-muted-foreground" />
       </button>
-      {mounted && menu ? createPortal(menu, document.body) : null}
+      {mounted && menu && canShowMenu
+        ? createPortal(menu, document.body)
+        : null}
     </div>
   );
 }

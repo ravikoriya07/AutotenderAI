@@ -1,7 +1,12 @@
 import type { AutoCountMatch, AutoCountRoi } from "@/services/autoCountService";
+import type { FacadeDimension } from "@/services/facadeAnalyzerService";
 import type { WallFinderApiResponse } from "@/services/wallFinderService";
 import type { RoomFinderApiResponse } from "@/services/roomFinderService";
-import { pickRoomRowsFromResponse } from "@/services/roomFinderService";
+import {
+  pickRoomRowsFromResponse,
+  readRoomAreaM2FromRow,
+  ROOM_FINDER_DEFAULT_PIXEL_TO_METER,
+} from "@/services/roomFinderService";
 
 /** Raw `/auto_count` match row (backend may use w/h or width/height). */
 export type AutoCountApiMatch = {
@@ -52,6 +57,43 @@ export function screenRectToBackend(
   };
 }
 
+/** Single point in CSS page space → backend preview scale (same as ROI corners). */
+export function screenPointToBackend(
+  xCss: number,
+  yCss: number,
+  metrics: AutoCountPageMetrics
+): { x: number; y: number } {
+  const { fx, fy } = scaleFactorsXY(metrics);
+  return {
+    x: Math.round(xCss / fx),
+    y: Math.round(yCss / fy),
+  };
+}
+
+/** Quantitites_Project uses ANALYSIS_ZOOM=4 vs PREVIEW_ZOOM=2 for floor extraction raster. */
+const FLOOR_ANALYSIS_TO_PREVIEW = 0.5;
+
+/**
+ * Maps polygon vertices from analysis raster space to preview/backend space (scale-2).
+ */
+export function floorPolygonAnalysisToPreviewBackend(
+  pts: { x: number; y: number }[]
+): { x: number; y: number }[] {
+  return pts.map((p) => ({
+    x: p.x * FLOOR_ANALYSIS_TO_PREVIEW,
+    y: p.y * FLOOR_ANALYSIS_TO_PREVIEW,
+  }));
+}
+
+/** Preview/backend points → CSS px for canvas overlay. */
+export function floorPolygonBackendToScreenCss(
+  pts: { x: number; y: number }[],
+  metrics: AutoCountPageMetrics
+): { x: number; y: number }[] {
+  const { fx, fy } = scaleFactorsXY(metrics);
+  return pts.map((p) => ({ x: p.x * fx, y: p.y * fy }));
+}
+
 /** Converts backend ROI (scale-2 space) to CSS px for overlay using current layout metrics. */
 export function backendRoiToScreenCss(
   roi: AutoCountRoi,
@@ -79,11 +121,12 @@ function pickWH(m: AutoCountApiMatch): { w: number; h: number } {
  * Converts API match boxes from backend space to CSS px for overlay drawing.
  */
 export function backendMatchesToScreen(
-  matches: AutoCountApiMatch[],
+  matches: AutoCountApiMatch[] | undefined | null,
   metrics: AutoCountPageMetrics
 ): AutoCountMatch[] {
   const { fx, fy } = scaleFactorsXY(metrics);
-  return matches.map((m) => {
+  const rows = Array.isArray(matches) ? matches : [];
+  return rows.map((m) => {
     const { w, h } = pickWH(m);
     const scoreRaw = m.score ?? m.confidence ?? 0;
     return {
@@ -94,6 +137,46 @@ export function backendMatchesToScreen(
       score: Number(scoreRaw),
     };
   });
+}
+
+/**
+ * `/analyze_facade` `dimensions[]` → CSS boxes + numeric ids for overlay (skips rows without bbox).
+ */
+export function facadeDimensionsToScreenBoxes(
+  dimensions: FacadeDimension[] | undefined | null,
+  metrics: AutoCountPageMetrics
+): { box: AutoCountMatch; id: number }[] {
+  if (!Array.isArray(dimensions)) return [];
+  const out: { box: AutoCountMatch; id: number }[] = [];
+  for (const d of dimensions) {
+    const x = d.x;
+    const y = d.y;
+    const wRaw = d.w ?? d.width;
+    const hRaw = d.h ?? d.height;
+    if (x == null || y == null || wRaw == null || hRaw == null) continue;
+    const row: AutoCountApiMatch = {
+      x: Number(x),
+      y: Number(y),
+      w: Number(wRaw),
+      h: Number(hRaw),
+      score: 1,
+    };
+    const screen = backendMatchesToScreen([row], metrics)[0];
+    if (
+      !screen ||
+      !Number.isFinite(screen.w) ||
+      !Number.isFinite(screen.h) ||
+      screen.w <= 0 ||
+      screen.h <= 0
+    ) {
+      continue;
+    }
+    out.push({
+      box: screen,
+      id: Number.isFinite(d.id) ? d.id : out.length + 1,
+    });
+  }
+  return out;
 }
 
 /** Wall `/analyze_walls` segment in CSS px + metadata for labels (see Quantitites_Project `drawOverlay` wall mode). */
@@ -278,65 +361,77 @@ function normalizeRoomPoint(p: unknown): { x: number; y: number } | null {
   return { x, y };
 }
 
-function polygonLooksRoiLocal(
-  pts: { x: number; y: number }[],
-  roi: AutoCountRoi
-): boolean {
-  if (roi.width <= 0 || roi.height <= 0 || pts.length === 0) return false;
-  const slack = 3;
-  for (const p of pts) {
-    if (
-      p.x < -slack ||
-      p.y < -slack ||
-      p.x > roi.width + slack ||
-      p.y > roi.height + slack
-    ) {
-      return false;
-    }
+/** Shoelace area in backend pixel units (same space as ROI / polygon vertices). */
+function polygonAreaAbsBackendPx2(
+  pts: { x: number; y: number }[]
+): number {
+  if (pts.length < 3) return 0;
+  let sum = 0;
+  for (let i = 0; i < pts.length; i++) {
+    const j = (i + 1) % pts.length;
+    const a = pts[i]!;
+    const b = pts[j]!;
+    sum += a.x * b.y - b.x * a.y;
   }
-  return true;
-}
-
-function promotePolygonLocalToGlobal(
-  pts: { x: number; y: number }[],
-  roi: AutoCountRoi
-): { x: number; y: number }[] {
-  const { x: ox, y: oy } = roi;
-  return pts.map((p) => ({ x: p.x + ox, y: p.y + oy }));
+  return Math.abs(sum) / 2;
 }
 
 /**
  * `/analyze_rooms` room rows → filled polygons in CSS px (same backend scale as ROI).
+ *
+ * Polygons from the shared backend are already page-global in pdf.js viewport space
+ * at {@link BACKEND_PDF_VIEWPORT_SCALE} (see Quantitites_Project `logic_analyze_rooms`,
+ * which adds crop offsets before responding). They must not be shifted by ROI again.
  */
 export function roomFinderResponseToScreenPolygons(
   response: RoomFinderApiResponse,
   metrics: AutoCountPageMetrics,
-  roi: AutoCountRoi
+  pixelToMeter: number = ROOM_FINDER_DEFAULT_PIXEL_TO_METER
 ): RoomPolygonScreen[] {
   const rows = pickRoomRowsFromResponse(response);
   const { fx, fy } = scaleFactorsXY(metrics);
+  const mpx =
+    Number.isFinite(pixelToMeter) && pixelToMeter > 0
+      ? pixelToMeter
+      : ROOM_FINDER_DEFAULT_PIXEL_TO_METER;
   const out: RoomPolygonScreen[] = [];
 
   for (const row of rows) {
     const polyRaw = row.polygon;
     if (!Array.isArray(polyRaw) || polyRaw.length < 3) continue;
-    let pts: { x: number; y: number }[] = [];
+    const pts: { x: number; y: number }[] = [];
     for (const pt of polyRaw) {
       const p = normalizeRoomPoint(pt);
       if (p) pts.push(p);
     }
     if (pts.length < 3) continue;
-    if (polygonLooksRoiLocal(pts, roi)) {
-      pts = promotePolygonLocalToGlobal(pts, roi);
+
+    const cxPoly = pts.reduce((acc, p) => acc + p.x, 0) / pts.length;
+    const cyPoly = pts.reduce((acc, p) => acc + p.y, 0) / pts.length;
+    let centerBx = cxPoly;
+    let centerBy = cyPoly;
+    if (
+      row.center &&
+      Number.isFinite(row.center.x) &&
+      Number.isFinite(row.center.y)
+    ) {
+      centerBx = row.center.x;
+      centerBy = row.center.y;
     }
-    const sx = pts.reduce((s, p) => s + p.x, 0) / pts.length;
-    const sy = pts.reduce((s, p) => s + p.y, 0) / pts.length;
-    const areaM =
-      row.area_m2 != null && Number.isFinite(row.area_m2) ? row.area_m2 : 0;
+
+    const fromApi = readRoomAreaM2FromRow(row);
+    const px2 = polygonAreaAbsBackendPx2(pts);
+    let areaM =
+      fromApi != null && Number.isFinite(fromApi) && fromApi > 0
+        ? fromApi
+        : px2 * mpx * mpx;
+    if (!Number.isFinite(areaM) || areaM < 0) {
+      areaM = 0;
+    }
     out.push({
       cssPoly: pts.map((p) => ({ x: p.x * fx, y: p.y * fy })),
-      centerX: sx * fx,
-      centerY: sy * fy,
+      centerX: centerBx * fx,
+      centerY: centerBy * fy,
       areaM2: areaM,
     });
   }

@@ -7,6 +7,32 @@ type RoomFinderRequestConfig = AxiosRequestConfig & {
   skipGlobalLoader?: boolean;
 };
 
+/** Default `pixel_to_meter` for `/analyze_rooms`; reuse for client-side area fallback. */
+export const ROOM_FINDER_DEFAULT_PIXEL_TO_METER = 0.01;
+
+/**
+ * Reads room area (m²) from an API row. Handles string JSON numbers and alternate keys.
+ */
+export function readRoomAreaM2FromRow(row: unknown): number | null {
+  if (row == null || typeof row !== "object") return null;
+  const o = row as Record<string, unknown>;
+  const keys = [
+    "area_m2",
+    "areaM2",
+    "area",
+    "Area_m2",
+    "room_area_m2",
+    "total_area_m2",
+  ];
+  for (const k of keys) {
+    const v = o[k];
+    if (v == null) continue;
+    const n = typeof v === "string" ? parseFloat(v.trim()) : Number(v);
+    if (Number.isFinite(n) && n >= 0) return n;
+  }
+  return null;
+}
+
 export type RoomFinderPolygonPoint = { x: number; y: number };
 
 export type RoomFinderRoomRow = {
