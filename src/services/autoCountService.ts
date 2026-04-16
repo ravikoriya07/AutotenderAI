@@ -66,3 +66,123 @@ export async function postAutoCount(
   );
   return data;
 }
+
+/** Body shape required by `POST /auto_count/add` (matches backend validation). */
+export type AutoCountAddItem = {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+};
+
+export type AutoCountAddRequest = {
+  job_id: string;
+  file_path: string;
+  /**
+   * Manual box in backend preview space.
+   * Pass either `{ x, y, w, h }` or ROI-style `{ x, y, width, height }` — both are accepted here.
+   */
+  item: AutoCountRoi | AutoCountAddItem;
+};
+
+function toAutoCountAddItemBody(
+  item: AutoCountRoi | AutoCountAddItem
+): AutoCountAddItem {
+  if ("w" in item && "h" in item) {
+    return {
+      x: item.x,
+      y: item.y,
+      w: item.w,
+      h: item.h,
+    };
+  }
+  const r = item as AutoCountRoi;
+  return {
+    x: r.x,
+    y: r.y,
+    w: r.width,
+    h: r.height,
+  };
+}
+
+export type AutoCountRemoveRequest = {
+  job_id: string;
+  file_path: string;
+  index: number;
+};
+
+export async function postAutoCountAdd(
+  payload: AutoCountAddRequest
+): Promise<unknown> {
+  const config: AutoCountRequestConfig = { skipGlobalLoader: true };
+  const { data } = await autoCountClient.post(
+    "/auto_count/add",
+    {
+      job_id: payload.job_id,
+      file_path: toAutoCountApiFilePath(payload.file_path),
+      item: toAutoCountAddItemBody(payload.item),
+    },
+    config
+  );
+  return data;
+}
+
+export async function postAutoCountRemove(
+  payload: AutoCountRemoveRequest
+): Promise<unknown> {
+  const config: AutoCountRequestConfig = { skipGlobalLoader: true };
+  const { data } = await autoCountClient.post(
+    "/auto_count/remove",
+    {
+      job_id: payload.job_id,
+      file_path: toAutoCountApiFilePath(payload.file_path),
+      index: payload.index,
+    },
+    config
+  );
+  return data;
+}
+
+/** Same shape as `AutoCountApiMatch` in `autoCountCoordinates` (avoid circular imports). */
+export type AutoCountMatchRow = {
+  x: number;
+  y: number;
+  w?: number;
+  h?: number;
+  width?: number;
+  height?: number;
+  score?: number;
+  confidence?: number;
+};
+
+/** Normalized rows for UI (backend preview space). */
+export type AutoCountMatchesApiResponse = {
+  matches: AutoCountMatchRow[];
+};
+
+function normalizeMatchesPayload(raw: unknown): AutoCountMatchRow[] {
+  if (raw == null) return [];
+  if (Array.isArray(raw)) return raw as AutoCountMatchRow[];
+  if (typeof raw === "object") {
+    const o = raw as Record<string, unknown>;
+    const m = o.matches ?? o.data;
+    if (Array.isArray(m)) return m as AutoCountMatchRow[];
+  }
+  return [];
+}
+
+export async function getAutoCountMatches(params: {
+  job_id: string;
+  file_path: string;
+}): Promise<AutoCountMatchesApiResponse> {
+  const config: AutoCountRequestConfig = { skipGlobalLoader: true };
+  const { data } = await autoCountClient.get<unknown>("/auto_count/matches", {
+    ...config,
+    params: {
+      job_id: params.job_id,
+      file_path: toAutoCountApiFilePath(params.file_path),
+    },
+  });
+  const matches = normalizeMatchesPayload(data);
+  return { matches };
+}

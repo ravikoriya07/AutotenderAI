@@ -45,6 +45,34 @@ import type { PDFDocumentProxy, PDFPageProxy, RenderTask } from "pdfjs-dist";
 const MAX_CANVAS_EDGE_PX = 8192;
 const MAX_BASE_FIT = 4;
 
+/** Top-right remove affordance — must match `drawMatchBoxes` autoCount branch. */
+function hitTestAutoCountRemoveCorner(
+  localX: number,
+  localY: number,
+  boxes: AutoCountMatch[]
+): number | null {
+  for (let i = boxes.length - 1; i >= 0; i--) {
+    const m = boxes[i]!;
+    const mx = m.x;
+    const my = m.y;
+    const mw = m.w;
+    const mh = m.h;
+    if (mw <= 0 || mh <= 0) continue;
+    const side = Math.max(
+      14,
+      Math.min(20, Math.min(mw, mh) * 0.35, mw * 0.45)
+    );
+    const pad = Math.min(3, mw * 0.04);
+    const cx = mx + mw - pad - side / 2;
+    const cy = my + pad + side / 2;
+    const r = side / 2 + 2;
+    const dx = localX - cx;
+    const dy = localY - cy;
+    if (dx * dx + dy * dy <= r * r) return i;
+  }
+  return null;
+}
+
 /** Backend may send page as string (persisted JSON); compare numerically. */
 function backendPageMatches(
   backendPage: number | string | undefined,
@@ -91,6 +119,10 @@ type PageAnnotationLayer = {
   floorRegions: FloorAreaCssRegion[];
   /** Stronger strokes when a saved object is selected in the metadata panel */
   emphasize?: boolean;
+  /** Draw remove affordance on auto count boxes (hit-test uses same corner). */
+  autoCountShowRemoveCorners?: boolean;
+  /** Only the first N entries in `matchesAuto` are server matches (rest may be saved snapshots). */
+  autoCountRemoveMarkerCount?: number;
 };
 
 /** One floor extraction overlay (coordinates relative to page box, CSS px). */
@@ -106,7 +138,13 @@ function drawMatchBoxes(
   sx: number,
   sy: number,
   matches: AutoCountMatch[],
-  opts: { emphasize: boolean; variant: "autoCount" | "doorFinder" }
+  opts: {
+    emphasize: boolean;
+    variant: "autoCount" | "doorFinder";
+    showRemoveCorners?: boolean;
+    /** Draw remove icon only on matchesAuto[0..count-1] when server+saved merged. */
+    removeMarkerMax?: number;
+  }
 ) {
   const emph = opts.emphasize;
   const fill =
@@ -126,7 +164,8 @@ function drawMatchBoxes(
         ? "#b45309"
         : "#6d28d9";
 
-  for (const m of matches) {
+  for (let mi = 0; mi < matches.length; mi++) {
+    const m = matches[mi]!;
     octx.setLineDash([]);
     const mx = m.x * sx;
     const my = m.y * sy;
@@ -149,6 +188,37 @@ function drawMatchBoxes(
       ? Math.max(2, 2.5 / (window.devicePixelRatio || 1))
       : Math.max(1.5, 2 / (window.devicePixelRatio || 1));
     octx.strokeRect(mx, my, mw, mh);
+
+    const allowRemove =
+      opts.variant === "autoCount" &&
+      opts.showRemoveCorners &&
+      (opts.removeMarkerMax == null || mi < opts.removeMarkerMax);
+    if (allowRemove) {
+      const dpr = window.devicePixelRatio || 1;
+      const side = Math.max(
+        14,
+        Math.min(20, Math.min(mw, mh) * 0.35, mw * 0.45)
+      );
+      const pad = Math.min(3, mw * 0.04);
+      const cx = mx + mw - pad - side / 2;
+      const cy = my + pad + side / 2;
+      octx.beginPath();
+      octx.arc(cx, cy, side / 2 + 1, 0, Math.PI * 2);
+      octx.fillStyle = "rgba(255, 255, 255, 0.92)";
+      octx.fill();
+      octx.strokeStyle = "rgba(220, 38, 38, 0.95)";
+      octx.lineWidth = Math.max(1.5, 1.8 / dpr);
+      octx.stroke();
+      const arm = side * 0.22;
+      octx.strokeStyle = "#b91c1c";
+      octx.lineWidth = Math.max(1.5, 1.75 / dpr);
+      octx.beginPath();
+      octx.moveTo(cx - arm, cy - arm);
+      octx.lineTo(cx + arm, cy + arm);
+      octx.moveTo(cx + arm, cy - arm);
+      octx.lineTo(cx - arm, cy + arm);
+      octx.stroke();
+    }
   }
 }
 
@@ -508,6 +578,8 @@ function drawPageAnnotations(
   drawMatchBoxes(octx, sx, sy, layer.matchesAuto, {
     emphasize: emph,
     variant: "autoCount",
+    showRemoveCorners: layer.autoCountShowRemoveCorners === true,
+    removeMarkerMax: layer.autoCountRemoveMarkerCount,
   });
   drawMatchBoxes(octx, sx, sy, layer.matchesDoor, {
     emphasize: emph,
@@ -765,6 +837,8 @@ export type CadPdfCanvasStackProps = {
   floorAreaSeeds?: Array<{ pageNumber: number; x: number; y: number }>;
   floorAreaRegions?: Array<FloorAreaCssRegion & { pageNumber: number }>;
   onFloorAreaClick?: (pageNumber: number, xCss: number, yCss: number) => void;
+  /** Server-side match index; only when live auto count (not saved-object snapshot). */
+  onAutoCountRemoveMatch?: (matchIndex: number) => void;
 };
 
 export type CadPdfCanvasStackHandle = {
@@ -818,6 +892,7 @@ export const CadPdfCanvasStack = forwardRef<
     floorAreaSeeds = [],
     floorAreaRegions = [],
     onFloorAreaClick,
+    onAutoCountRemoveMatch,
   },
   ref
 ) {
@@ -1032,9 +1107,54 @@ export const CadPdfCanvasStack = forwardRef<
       zc.removeEventListener("wheel", onWheel, { capture: true } as AddEventListenerOptions);
   }, []);
 
+  /** Shared hit-test for remove chips (Select/pointer has no ROI overlay — hits handled on root). */
+  const pickAutoCountRemoveIndex = useCallback(
+    (clientX: number, clientY: number): number | null => {
+      if (!onAutoCountRemoveMatch || !autoCountBackend) return null;
+      const pageIndex = findPageIndex(clientX, clientY);
+      if (pageIndex < 0) return null;
+      if (autoCountBackend.pageNumber !== pageIndex + 1) return null;
+      const metrics = pageMetricsRef.current.get(pageIndex + 1);
+      if (!metrics) return null;
+      const local = clientToPageLocal(clientX, clientY, pageIndex);
+      const boxes = backendMatchesToScreen(
+        autoCountBackend.matches,
+        metrics
+      );
+      return hitTestAutoCountRemoveCorner(local.x, local.y, boxes);
+    },
+    [autoCountBackend, onAutoCountRemoveMatch, findPageIndex, clientToPageLocal]
+  );
+
+  const onRootPointerDownForRemove = useCallback(
+    (e: ReactMouseEvent | ReactTouchEvent) => {
+      if (tool !== "pointer") return;
+      if (!onAutoCountRemoveMatch || !autoCountBackend) return;
+      const clientX =
+        "touches" in e && e.touches.length > 0
+          ? e.touches[0].clientX
+          : (e as ReactMouseEvent).clientX;
+      const clientY =
+        "touches" in e && e.touches.length > 0
+          ? e.touches[0].clientY
+          : (e as ReactMouseEvent).clientY;
+      const removeIx = pickAutoCountRemoveIndex(clientX, clientY);
+      if (removeIx == null) return;
+      e.preventDefault();
+      e.stopPropagation();
+      onAutoCountRemoveMatch(removeIx);
+    },
+    [tool, autoCountBackend, onAutoCountRemoveMatch, pickAutoCountRemoveIndex]
+  );
+
   const onMouseDown = useCallback(
     (e: ReactMouseEvent) => {
-      if (tool !== "hand" || e.button !== 0) return;
+      if (e.button !== 0) return;
+      if (tool === "pointer") {
+        onRootPointerDownForRemove(e);
+        return;
+      }
+      if (tool !== "hand") return;
       e.preventDefault();
       const prev = transformRef.current;
       panStartRef.current = {
@@ -1043,7 +1163,7 @@ export const CadPdfCanvasStack = forwardRef<
       };
       setIsDragging(true);
     },
-    [tool]
+    [tool, onRootPointerDownForRemove]
   );
 
   useEffect(() => {
@@ -1139,13 +1259,25 @@ export const CadPdfCanvasStack = forwardRef<
         tool !== "roomFinder"
       )
         return;
-      e.preventDefault();
-      e.stopPropagation();
       const clientX = "touches" in e ? e.touches[0].clientX : e.clientX;
       const clientY = "touches" in e ? e.touches[0].clientY : e.clientY;
+
+      if (tool === "autoCount") {
+        const removeIx = pickAutoCountRemoveIndex(clientX, clientY);
+        if (removeIx != null) {
+          e.preventDefault();
+          e.stopPropagation();
+          onAutoCountRemoveMatch?.(removeIx);
+          return;
+        }
+      }
+
       const pageIndex = findPageIndex(clientX, clientY);
       if (pageIndex < 0) return;
       const local = clientToPageLocal(clientX, clientY, pageIndex);
+
+      e.preventDefault();
+      e.stopPropagation();
       roiDragRef.current = {
         mode:
           tool === "doorFinder"
@@ -1174,7 +1306,13 @@ export const CadPdfCanvasStack = forwardRef<
       });
       setIsRoiDragging(true);
     },
-    [tool, findPageIndex, clientToPageLocal]
+    [
+      tool,
+      findPageIndex,
+      clientToPageLocal,
+      pickAutoCountRemoveIndex,
+      onAutoCountRemoveMatch,
+    ]
   );
 
   useEffect(() => {
@@ -1450,6 +1588,17 @@ export const CadPdfCanvasStack = forwardRef<
         .filter((r) => r.pageNumber === pageNumber)
         .map(({ pageNumber: _p, ...rest }) => rest);
 
+      let autoCountRemoveMarkerCount = 0;
+      const autoCountShowRemoveCorners = Boolean(
+        onAutoCountRemoveMatch &&
+          autoCountBackend &&
+          autoCountBackend.pageNumber === pageNumber &&
+          metrics
+      );
+      if (autoCountShowRemoveCorners && autoCountBackend) {
+        autoCountRemoveMarkerCount = autoCountBackend.matches.length;
+      }
+
       return {
         committedRoiAuto: committedAuto,
         committedRoiDoor: committedDoor,
@@ -1465,9 +1614,12 @@ export const CadPdfCanvasStack = forwardRef<
         floorSeeds,
         floorRegions,
         emphasize: emphasizeAutoCountHighlight,
+        autoCountShowRemoveCorners,
+        autoCountRemoveMarkerCount,
       };
     },
     [
+      onAutoCountRemoveMatch,
       autoCountRoi,
       doorFinderRoi,
       facadeRoi,
@@ -1504,6 +1656,9 @@ export const CadPdfCanvasStack = forwardRef<
       style={{ overscrollBehavior: "contain" }}
       title="Scroll wheel: zoom in/out. Hand tool: drag to pan."
       onMouseDown={onMouseDown}
+      onTouchStart={(e) => {
+        if (tool === "pointer") onRootPointerDownForRemove(e);
+      }}
     >
       {!pdfDoc ? (
         <div
