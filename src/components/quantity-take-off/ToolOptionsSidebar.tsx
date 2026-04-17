@@ -213,7 +213,7 @@ export function ToolOptionsSidebar({
         "absolute bottom-0 right-0 top-0 z-50 flex max-h-full min-h-0 flex-col",
         "border-l border-border/70 bg-background/95 text-foreground shadow-md backdrop-blur-md",
         "rounded-l-lg",
-        "w-full md:w-[280px] lg:w-[300px] xl:w-[320px]",
+        "w-full min-w-0 max-w-[min(100vw,320px)] md:w-[280px] lg:w-[300px]",
         "transition-transform duration-300 ease-out motion-reduce:transition-none",
         open ? "translate-x-0" : "translate-x-full",
         className

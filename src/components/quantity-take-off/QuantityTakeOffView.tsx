@@ -1364,7 +1364,7 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
             "absolute bottom-0 left-0 top-0 z-30 flex max-h-full min-h-0 flex-col",
             "border-r border-border/70 bg-background/95 text-foreground shadow-md backdrop-blur-md",
             "rounded-r-lg",
-            "w-[min(90vw,360px)] md:w-[280px] lg:w-[300px] xl:w-[320px]",
+            "w-[min(90vw,300px)] md:w-[280px] lg:w-[300px]",
             "transition-transform duration-300 ease-out motion-reduce:transition-none",
             translateOpen ? "translate-x-0" : "-translate-x-full"
           )}
