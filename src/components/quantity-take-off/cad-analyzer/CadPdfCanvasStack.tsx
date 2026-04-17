@@ -19,20 +19,27 @@ import { useCadAnalyzerTool } from "@/contexts/CadAnalyzerToolContext";
 import {
   BACKEND_PDF_VIEWPORT_SCALE,
   backendMatchesToScreen,
+  backendPointToScreenCss,
   backendRoiToScreenCss,
   facadeDimensionsToScreenBoxes,
+  floorPolygonBackendToScreenCss,
+  resolveFloorPolygonToPreviewBackend,
   roomFinderResponseToScreenPolygons,
   wallFinderResponseToScreenDrawItems,
   type AutoCountPageMetrics,
+  type QtoCommittedRoi,
   type RoomPolygonScreen,
   type WallSegmentScreen,
 } from "@/lib/autoCountCoordinates";
 import type { AutoCountBackendState } from "@/lib/qtoAutoCountStorage";
 import type { FacadeBackendState } from "@/lib/qtoFacadeStorage";
+import type { FloorExtractionPersistedV1 } from "@/lib/qtoFloorExtractorStorage";
 import {
+  isFloorCanvasSnapshot,
   isMatchCanvasSnapshot,
   isRoomCanvasSnapshot,
   isWallCanvasSnapshot,
+  type FacadeSavedSnapshotV1,
   type QtoSavedObjectEntryV1,
 } from "@/lib/qtoSavedObjectsStorage";
 import type { RoomFinderBackendState } from "@/lib/qtoRoomFinderStorage";
@@ -90,6 +97,8 @@ export type AutoCountRoiCss = {
   height: number;
 };
 
+export type { QtoCommittedRoi };
+
 type CssRect = { x: number; y: number; width: number; height: number };
 
 type PageAnnotationLayer = {
@@ -125,13 +134,60 @@ type PageAnnotationLayer = {
   autoCountRemoveMarkerCount?: number;
 };
 
-/** One floor extraction overlay (coordinates relative to page box, CSS px). */
+/** One floor extraction overlay — prefer backend fields; CSS is legacy / fallback. */
 export type FloorAreaCssRegion = {
   id: string;
   cssPoly: { x: number; y: number }[];
   areaM2: number;
   seedCss: { x: number; y: number };
+  /** Normalized API vertices before analysis/preview resolution (preferred). */
+  polygonRaw?: { x: number; y: number }[];
+  polygonPreviewBackend?: { x: number; y: number }[];
+  seedBackend?: { x: number; y: number };
 };
+
+function floorExtractionToOverlayRegion(
+  ex: FloorExtractionPersistedV1,
+  metrics: AutoCountPageMetrics | null
+): FloorAreaCssRegion {
+  const rest: FloorAreaCssRegion = {
+    id: ex.id,
+    cssPoly: ex.cssPoly,
+    areaM2: ex.areaM2,
+    seedCss: ex.seedCss,
+    polygonRaw: ex.polygonRaw,
+    polygonPreviewBackend: ex.polygonPreviewBackend,
+    seedBackend: ex.seedBackend,
+  };
+  if (!metrics || !ex.seedBackend) {
+    return rest;
+  }
+  if (ex.polygonRaw && ex.polygonRaw.length >= 3) {
+    const previewRing = resolveFloorPolygonToPreviewBackend(
+      ex.polygonRaw,
+      ex.seedBackend
+    );
+    return {
+      ...rest,
+      cssPoly: floorPolygonBackendToScreenCss(previewRing, metrics),
+      seedCss: backendPointToScreenCss(ex.seedBackend, metrics),
+    };
+  }
+  if (ex.polygonPreviewBackend && ex.polygonPreviewBackend.length >= 3) {
+    return {
+      ...rest,
+      cssPoly: floorPolygonBackendToScreenCss(
+        ex.polygonPreviewBackend,
+        metrics
+      ),
+      seedCss: backendPointToScreenCss(ex.seedBackend, metrics),
+    };
+  }
+  return {
+    ...rest,
+    seedCss: backendPointToScreenCss(ex.seedBackend, metrics),
+  };
+}
 
 function drawMatchBoxes(
   octx: CanvasRenderingContext2D,
@@ -779,7 +835,7 @@ function PdfPageRow({
       cancelled = true;
       cancelAnimationFrame(rafId);
     };
-  }, [autoCountLayer]);
+  }, [autoCountLayer, zoomScale, maxWidth]);
 
   return (
     <div
@@ -809,22 +865,21 @@ type TransformState = {
 export type CadPdfCanvasStackProps = {
   pdfBlob: Blob;
   className?: string;
-  /** Controlled ROI in CSS px relative to the page box; null = none */
-  autoCountRoi?: AutoCountRoiCss | null;
+  /** Committed ROI in backend preview space (stable under zoom/resize). Drag callbacks still emit CSS. */
+  autoCountRoi?: QtoCommittedRoi | null;
   onAutoCountRoiChange?: (roi: AutoCountRoiCss | null) => void;
-  /** Door Finder ROI (same coordinate system as Auto Count) */
-  doorFinderRoi?: AutoCountRoiCss | null;
+  doorFinderRoi?: QtoCommittedRoi | null;
   onDoorFinderRoiChange?: (roi: AutoCountRoiCss | null) => void;
   /** Last analyze in backend space; overlay reprojects to CSS when layout/zoom changes */
   autoCountBackend?: AutoCountBackendState | null;
   doorFinderBackend?: AutoCountBackendState | null;
-  facadeRoi?: AutoCountRoiCss | null;
+  facadeRoi?: QtoCommittedRoi | null;
   onFacadeRoiChange?: (roi: AutoCountRoiCss | null) => void;
   facadeBackend?: FacadeBackendState | null;
-  wallFinderRoi?: AutoCountRoiCss | null;
+  wallFinderRoi?: QtoCommittedRoi | null;
   onWallFinderRoiChange?: (roi: AutoCountRoiCss | null) => void;
   wallFinderBackend?: WallFinderBackendState | null;
-  roomFinderRoi?: AutoCountRoiCss | null;
+  roomFinderRoi?: QtoCommittedRoi | null;
   onRoomFinderRoiChange?: (roi: AutoCountRoiCss | null) => void;
   roomFinderBackend?: RoomFinderBackendState | null;
   /** Same value as `/analyze_rooms` `pixel_to_meter` (area fallback / label consistency). */
@@ -833,8 +888,11 @@ export type CadPdfCanvasStackProps = {
   emphasizeAutoCountHighlight?: boolean;
   /** Persisted saved analyses — merged into the overlay so they stay visible across tools */
   persistedSavedOverlays?: QtoSavedObjectEntryV1[];
-  /** Floor area — click seeds (CSS px) + filled regions from `/extract_floor` */
-  floorAreaSeeds?: Array<{ pageNumber: number; x: number; y: number }>;
+  /** Floor area — seed points in backend preview space (stable under zoom). */
+  floorAreaSeeds?: Array<{
+    pageNumber: number;
+    seedBackend: { x: number; y: number };
+  }>;
   floorAreaRegions?: Array<FloorAreaCssRegion & { pageNumber: number }>;
   onFloorAreaClick?: (pageNumber: number, xCss: number, yCss: number) => void;
   /** Server-side match index; only when live auto count (not saved-object snapshot). */
@@ -1390,13 +1448,11 @@ export const CadPdfCanvasStack = forwardRef<
       const metrics = pageMetricsRef.current.get(pageNumber);
 
       let committedAuto: CssRect | null = null;
-      if (autoCountRoi?.pageNumber === pageNumber) {
-        committedAuto = {
-          x: autoCountRoi.x,
-          y: autoCountRoi.y,
-          width: autoCountRoi.width,
-          height: autoCountRoi.height,
-        };
+      if (
+        autoCountRoi?.pageNumber === pageNumber &&
+        metrics
+      ) {
+        committedAuto = backendRoiToScreenCss(autoCountRoi.roi, metrics);
       } else if (
         autoCountBackend &&
         autoCountBackend.pageNumber === pageNumber &&
@@ -1408,13 +1464,8 @@ export const CadPdfCanvasStack = forwardRef<
       }
 
       let committedDoor: CssRect | null = null;
-      if (doorFinderRoi?.pageNumber === pageNumber) {
-        committedDoor = {
-          x: doorFinderRoi.x,
-          y: doorFinderRoi.y,
-          width: doorFinderRoi.width,
-          height: doorFinderRoi.height,
-        };
+      if (doorFinderRoi?.pageNumber === pageNumber && metrics) {
+        committedDoor = backendRoiToScreenCss(doorFinderRoi.roi, metrics);
       } else if (
         doorFinderBackend &&
         doorFinderBackend.pageNumber === pageNumber &&
@@ -1426,13 +1477,8 @@ export const CadPdfCanvasStack = forwardRef<
       }
 
       let committedFacade: CssRect | null = null;
-      if (facadeRoi?.pageNumber === pageNumber) {
-        committedFacade = {
-          x: facadeRoi.x,
-          y: facadeRoi.y,
-          width: facadeRoi.width,
-          height: facadeRoi.height,
-        };
+      if (facadeRoi?.pageNumber === pageNumber && metrics) {
+        committedFacade = backendRoiToScreenCss(facadeRoi.roi, metrics);
       } else if (
         facadeBackend &&
         backendPageMatches(facadeBackend.pageNumber, pageNumber) &&
@@ -1444,13 +1490,8 @@ export const CadPdfCanvasStack = forwardRef<
       }
 
       let committedWall: CssRect | null = null;
-      if (wallFinderRoi?.pageNumber === pageNumber) {
-        committedWall = {
-          x: wallFinderRoi.x,
-          y: wallFinderRoi.y,
-          width: wallFinderRoi.width,
-          height: wallFinderRoi.height,
-        };
+      if (wallFinderRoi?.pageNumber === pageNumber && metrics) {
+        committedWall = backendRoiToScreenCss(wallFinderRoi.roi, metrics);
       } else if (
         wallFinderBackend &&
         backendPageMatches(wallFinderBackend.pageNumber, pageNumber) &&
@@ -1462,13 +1503,8 @@ export const CadPdfCanvasStack = forwardRef<
       }
 
       let committedRoom: CssRect | null = null;
-      if (roomFinderRoi?.pageNumber === pageNumber) {
-        committedRoom = {
-          x: roomFinderRoi.x,
-          y: roomFinderRoi.y,
-          width: roomFinderRoi.width,
-          height: roomFinderRoi.height,
-        };
+      if (roomFinderRoi?.pageNumber === pageNumber && metrics) {
+        committedRoom = backendRoiToScreenCss(roomFinderRoi.roi, metrics);
       } else if (
         roomFinderBackend &&
         backendPageMatches(roomFinderBackend.pageNumber, pageNumber) &&
@@ -1578,15 +1614,76 @@ export const CadPdfCanvasStack = forwardRef<
               )
             );
           }
+          if (
+            entry.analysisKind === "facade" &&
+            isWallCanvasSnapshot(snap) &&
+            backendPageMatches(snap.pageNumber, pageNumber) &&
+            metrics
+          ) {
+            facadeWindows.push(
+              ...facadeDimensionsToScreenBoxes(
+                (snap as FacadeSavedSnapshotV1).response.dimensions,
+                metrics
+              )
+            );
+          }
         }
       }
 
-      const floorSeeds = floorAreaSeeds
+      let floorSeeds = floorAreaSeeds
         .filter((s) => s.pageNumber === pageNumber)
-        .map((s) => ({ x: s.x, y: s.y }));
-      const floorRegions = floorAreaRegions
+        .map((s) =>
+          metrics
+            ? backendPointToScreenCss(s.seedBackend, metrics)
+            : { x: 0, y: 0 }
+        );
+      let floorRegions = floorAreaRegions
         .filter((r) => r.pageNumber === pageNumber)
-        .map(({ pageNumber: _p, ...rest }) => rest);
+        .map(({ pageNumber: _p, ...rest }) => {
+          if (!metrics || !rest.seedBackend) {
+            return { ...rest };
+          }
+          if (rest.polygonRaw && rest.polygonRaw.length >= 3) {
+            const previewRing = resolveFloorPolygonToPreviewBackend(
+              rest.polygonRaw,
+              rest.seedBackend
+            );
+            return {
+              ...rest,
+              cssPoly: floorPolygonBackendToScreenCss(previewRing, metrics),
+              seedCss: backendPointToScreenCss(rest.seedBackend, metrics),
+            };
+          }
+          if (rest.polygonPreviewBackend && rest.polygonPreviewBackend.length >= 3) {
+            return {
+              ...rest,
+              cssPoly: floorPolygonBackendToScreenCss(
+                rest.polygonPreviewBackend,
+                metrics
+              ),
+              seedCss: backendPointToScreenCss(rest.seedBackend, metrics),
+            };
+          }
+          return { ...rest };
+        });
+
+      if (metrics && persistedSavedOverlays.length > 0) {
+        for (const entry of persistedSavedOverlays) {
+          const snap = entry.canvasSnapshot;
+          if (
+            entry.analysisKind === "floor" &&
+            isFloorCanvasSnapshot(snap)
+          ) {
+            for (const ex of snap.extractions) {
+              if (ex.pageNumber !== pageNumber) continue;
+              floorRegions.push(floorExtractionToOverlayRegion(ex, metrics));
+              floorSeeds.push(
+                backendPointToScreenCss(ex.seedBackend, metrics)
+              );
+            }
+          }
+        }
+      }
 
       let autoCountRemoveMarkerCount = 0;
       const autoCountShowRemoveCorners = Boolean(

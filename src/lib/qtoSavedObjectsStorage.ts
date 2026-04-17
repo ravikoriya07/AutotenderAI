@@ -1,4 +1,7 @@
 import type { AutoCountBackendState } from "@/lib/qtoAutoCountStorage";
+import type { FloorExtractionPersistedV1 } from "@/lib/qtoFloorExtractorStorage";
+import type { AutoCountRoi } from "@/services/autoCountService";
+import type { AnalyzeFacadeResponse } from "@/services/facadeAnalyzerService";
 import type { RoomFinderApiResponse } from "@/services/roomFinderService";
 import type { WallFinderApiResponse } from "@/services/wallFinderService";
 
@@ -16,22 +19,36 @@ export type RoomFinderSavedSnapshotV1 = {
   response: RoomFinderApiResponse;
 };
 
+/** Persisted floor extractions for canvas replay (same shape as session storage). */
+export type FloorSavedSnapshotV1 = {
+  extractions: FloorExtractionPersistedV1[];
+};
+
+/** Facade analyze result for replay (structurally same as wall snapshot). */
+export type FacadeSavedSnapshotV1 = {
+  pageNumber: number;
+  roi: AutoCountRoi;
+  response: AnalyzeFacadeResponse;
+};
+
 export type QtoSavedObjectEntryV1 = {
   v: 1;
   id: string;
   objectId: string;
   objectName: string;
-  /** Match count, total_walls, or total_rooms */
+  /** Match count, total_walls, total_rooms, windows, or floor region count */
   count: number;
   savedAt: number;
-  analysisKind?: "matches" | "walls" | "rooms";
+  analysisKind?: "matches" | "walls" | "rooms" | "floor" | "facade";
   totalWallLengthM?: number;
-  /** Room finder — combined area (m²) */
+  /** Room finder — combined area (m²); floor — sum of extracted regions (m²) */
   totalAreaM2?: number;
   canvasSnapshot:
     | AutoCountBackendState
     | WallFinderSavedSnapshotV1
-    | RoomFinderSavedSnapshotV1;
+    | RoomFinderSavedSnapshotV1
+    | FloorSavedSnapshotV1
+    | FacadeSavedSnapshotV1;
 };
 
 export type QtoSavedObjectsFileV1 = {
@@ -91,6 +108,12 @@ export function isRoomCanvasSnapshot(
   );
 }
 
+export function isFloorCanvasSnapshot(s: unknown): s is FloorSavedSnapshotV1 {
+  if (!s || typeof s !== "object") return false;
+  const o = s as Record<string, unknown>;
+  return Array.isArray(o.extractions);
+}
+
 function isValidEntry(x: unknown): x is QtoSavedObjectEntryV1 {
   if (!x || typeof x !== "object") return false;
   const o = x as Record<string, unknown>;
@@ -113,6 +136,12 @@ function isValidEntry(x: unknown): x is QtoSavedObjectEntryV1 {
     (o.analysisKind === "walls" || o.analysisKind === "rooms") &&
     isWallCanvasSnapshot(sk)
   ) {
+    return true;
+  }
+  if (o.analysisKind === "facade" && isWallCanvasSnapshot(sk)) {
+    return true;
+  }
+  if (o.analysisKind === "floor" && isFloorCanvasSnapshot(sk)) {
     return true;
   }
   return false;

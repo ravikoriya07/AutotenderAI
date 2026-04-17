@@ -70,6 +70,30 @@ export function screenPointToBackend(
   };
 }
 
+/**
+ * Backend preview point → CSS px on the page box (inverse of {@link screenPointToBackend}).
+ * Keeps overlays aligned when zoom/resize changes {@link AutoCountPageMetrics}.
+ */
+export function backendPointToScreenCss(
+  p: { x: number; y: number },
+  metrics: AutoCountPageMetrics
+): { x: number; y: number } {
+  const { fx, fy } = scaleFactorsXY(metrics);
+  return {
+    x: Number(p.x) * fx,
+    y: Number(p.y) * fy,
+  };
+}
+
+/**
+ * ROI in API preview space + page index. Persist this instead of CSS rects so overlays
+ * stay pinned when the PDF is re-rendered at a different scale.
+ */
+export type QtoCommittedRoi = {
+  pageNumber: number;
+  roi: AutoCountRoi;
+};
+
 /** Quantitites_Project uses ANALYSIS_ZOOM=4 vs PREVIEW_ZOOM=2 for floor extraction raster. */
 const FLOOR_ANALYSIS_TO_PREVIEW = 0.5;
 
@@ -83,6 +107,84 @@ export function floorPolygonAnalysisToPreviewBackend(
     x: p.x * FLOOR_ANALYSIS_TO_PREVIEW,
     y: p.y * FLOOR_ANALYSIS_TO_PREVIEW,
   }));
+}
+
+/** Ray-cast point-in-polygon (page coords, y-down). */
+function pointInPolygonBackend(
+  x: number,
+  y: number,
+  poly: ReadonlyArray<{ x: number; y: number }>
+): boolean {
+  if (poly.length < 3) return false;
+  let inside = false;
+  const n = poly.length;
+  for (let i = 0, j = n - 1; i < n; j = i++) {
+    const xi = poly[i]!.x;
+    const yi = poly[i]!.y;
+    const xj = poly[j]!.x;
+    const yj = poly[j]!.y;
+    const intersect =
+      (yi > y) !== (yj > y) &&
+      x < ((xj - xi) * (y - yi)) / (yj - yi + Number.EPSILON) + xi;
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
+
+/**
+ * `/extract_floor` may return `new_polygon` in analysis raster space or in the same
+ * preview/backend space as `seed`. The old max-X heuristic misclassified small rooms.
+ * We pick the interpretation where the seed lies inside the polygon (same space as the
+ * request seed), falling back to the candidate whose centroid is closest to the seed.
+ */
+export function resolveFloorPolygonToPreviewBackend(
+  pts: { x: number; y: number }[],
+  seedBackend: { x: number; y: number }
+): { x: number; y: number }[] {
+  if (pts.length < 3) return pts;
+  const scaled = floorPolygonAnalysisToPreviewBackend(pts);
+  const candidates: { x: number; y: number }[][] = [pts];
+  let differs = false;
+  for (let i = 0; i < pts.length; i++) {
+    if (
+      Math.abs(pts[i]!.x - scaled[i]!.x) > 1e-4 ||
+      Math.abs(pts[i]!.y - scaled[i]!.y) > 1e-4
+    ) {
+      differs = true;
+      break;
+    }
+  }
+  if (differs) {
+    candidates.push(scaled);
+  }
+
+  const sx = seedBackend.x;
+  const sy = seedBackend.y;
+
+  for (const c of candidates) {
+    if (pointInPolygonBackend(sx, sy, c)) {
+      return c;
+    }
+  }
+
+  let best = candidates[0]!;
+  let bestD = Infinity;
+  for (const c of candidates) {
+    let cx = 0;
+    let cy = 0;
+    for (const p of c) {
+      cx += p.x;
+      cy += p.y;
+    }
+    cx /= c.length;
+    cy /= c.length;
+    const d = (cx - sx) ** 2 + (cy - sy) ** 2;
+    if (d < bestD) {
+      bestD = d;
+      best = c;
+    }
+  }
+  return best;
 }
 
 /** Preview/backend points → CSS px for canvas overlay. */

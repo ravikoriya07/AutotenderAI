@@ -55,13 +55,7 @@ export function ToolOptionsControls({
 }: ToolOptionsControlsProps) {
   return (
     <>
-      {mode === "floorArea" ? (
-        <section>
-          <h3 className="text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
-            Floor area
-          </h3>
-        </section>
-      ) : mode === "autoCount" ||
+      {mode === "floorArea" ? null : mode === "autoCount" ||
         mode === "facade" ||
         mode === "doorFinder" ||
         mode === "wallFinder" ||

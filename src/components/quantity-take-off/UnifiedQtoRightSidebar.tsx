@@ -149,7 +149,12 @@ export function UnifiedQtoRightSidebar({
           <>
             <ToolOptionsControls mode={mode} {...controls} />
 
-            <div className="mt-6 flex flex-row items-stretch gap-2 border-t border-border/60 pt-6">
+            <div
+              className={cn(
+                "flex flex-row items-stretch gap-2 border-t border-border/60",
+                mode === "floorArea" ? "mt-3 pt-4" : "mt-6 pt-6"
+              )}
+            >
               <Button
                 type="button"
                 variant="default"

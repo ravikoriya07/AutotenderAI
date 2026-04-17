@@ -22,9 +22,9 @@ export type ExtractFloorRequest = {
 };
 
 /**
- * `/extract_floor` response. Backend may omit `polygon` (legacy image-only);
- * when present, vertices are in analysis raster space unless noted — use
- * {@link normalizeFloorPolygonToPreviewBackend} before CSS mapping.
+ * `/extract_floor` response. Backend may omit polygon fields (legacy image-only);
+ * when present, vertices are usually in backend preview space — use
+ * {@link floorPolygonAnalysisToPreviewBackend} only when coords look like analysis raster (see QTO handler).
  */
 export type ExtractFloorResponse = {
   success?: boolean;
@@ -35,10 +35,44 @@ export type ExtractFloorResponse = {
   new_text?: string;
   image?: string;
   pixel_to_meter?: number;
-  /** Preview-scale (×2) polygon if API provides it */
+  /** Primary field: ring in backend preview/analysis space — often `[[x,y], ...]` tuples. */
+  new_polygon?: unknown;
+  /** Legacy: `{ x, y }[]` preview-scale polygon */
   polygon?: Array<{ x: number; y: number }>;
+  /** Legacy alias (reference script `current_polygon`) */
   current_polygon?: Array<{ x: number; y: number }>;
+  all_rooms?: Array<{
+    id?: number;
+    polygon?: unknown;
+    area_m2?: number;
+    text?: string;
+  }>;
 };
+
+/**
+ * Normalizes API polygon forms to `{x,y}[]`:
+ * - `[[x,y], [x,y], ...]` (new_polygon)
+ * - `[{x,y}, ...]` (legacy)
+ */
+export function normalizeExtractFloorPolygon(
+  raw: unknown
+): { x: number; y: number }[] | null {
+  if (!Array.isArray(raw) || raw.length < 3) return null;
+  const pts: { x: number; y: number }[] = [];
+  for (const p of raw) {
+    if (Array.isArray(p) && p.length >= 2) {
+      const x = Number(p[0]);
+      const y = Number(p[1]);
+      if (Number.isFinite(x) && Number.isFinite(y)) pts.push({ x, y });
+    } else if (p && typeof p === "object" && !Array.isArray(p)) {
+      const o = p as Record<string, unknown>;
+      const x = Number(o.x);
+      const y = Number(o.y);
+      if (Number.isFinite(x) && Number.isFinite(y)) pts.push({ x, y });
+    }
+  }
+  return pts.length >= 3 ? pts : null;
+}
 
 export async function postExtractFloor(
   payload: ExtractFloorRequest

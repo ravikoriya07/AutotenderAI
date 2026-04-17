@@ -28,17 +28,19 @@ import {
 import { CadAnalyzerFloatingBridge } from "@/components/quantity-take-off/cad-analyzer/CadAnalyzerFloatingBridge";
 import {
   CadPdfCanvasStack,
-  type AutoCountRoiCss,
   type CadPdfCanvasStackHandle,
   type FloorAreaCssRegion,
 } from "@/components/quantity-take-off/cad-analyzer/CadPdfCanvasStack";
 import {
-  floorPolygonAnalysisToPreviewBackend,
+  backendPointToScreenCss,
   floorPolygonBackendToScreenCss,
+  resolveFloorPolygonToPreviewBackend,
   pickWallSegmentsFromResponse,
   screenPointToBackend,
   screenRectToBackend,
   type AutoCountApiMatch,
+  type AutoCountPageMetrics,
+  type QtoCommittedRoi,
 } from "@/lib/autoCountCoordinates";
 import {
   clearQtoAutoCount,
@@ -50,6 +52,8 @@ import {
   appendQtoSavedObject,
   clearQtoSavedObjects,
   loadQtoSavedObjects,
+  type FacadeSavedSnapshotV1,
+  type FloorSavedSnapshotV1,
   type QtoSavedObjectEntryV1,
   type QtoSavedObjectsFileV1,
   type RoomFinderSavedSnapshotV1,
@@ -98,6 +102,7 @@ import {
 } from "@/services/roomFinderService";
 import {
   FLOOR_EXTRACT_PIXEL_TO_METER,
+  normalizeExtractFloorPolygon,
   postExtractFloor,
 } from "@/services/floorExtractorService";
 import {
@@ -117,8 +122,29 @@ import {
   postAnalyzeFacade,
 } from "@/services/facadeAnalyzerService";
 import { createClientId } from "@/lib/createClientId";
+import type { AutoCountRoiCss } from "@/components/quantity-take-off/cad-analyzer/CadPdfCanvasStack";
 
 const WALL_FINDER_PIXEL_TO_M = 0.01;
+
+function committedRoiFromCanvasCss(
+  roiCss: AutoCountRoiCss,
+  getMetrics: (pageNumber: number) => AutoCountPageMetrics | null
+): QtoCommittedRoi | null {
+  const m = getMetrics(roiCss.pageNumber);
+  if (!m) return null;
+  return {
+    pageNumber: roiCss.pageNumber,
+    roi: screenRectToBackend(
+      {
+        x: roiCss.x,
+        y: roiCss.y,
+        width: roiCss.width,
+        height: roiCss.height,
+      },
+      m
+    ),
+  };
+}
 
 type LastAnalyzeKind =
   | "autoCount"
@@ -378,7 +404,7 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
     "idle"
   );
 
-  const [autoCountRoi, setAutoCountRoi] = useState<AutoCountRoiCss | null>(null);
+  const [autoCountRoi, setAutoCountRoi] = useState<QtoCommittedRoi | null>(null);
   /** Backend coordinate space; overlay reprojects on zoom/pan */
   const [autoCountBackend, setAutoCountBackend] =
     useState<AutoCountBackendState | null>(null);
@@ -396,7 +422,7 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
   const [objectDataFormVisible, setObjectDataFormVisible] = useState(false);
   const [rotationInvariant, setRotationInvariant] = useState(true);
   const [confidence, setConfidence] = useState(0.7);
-  const [doorFinderRoi, setDoorFinderRoi] = useState<AutoCountRoiCss | null>(
+  const [doorFinderRoi, setDoorFinderRoi] = useState<QtoCommittedRoi | null>(
     null
   );
   const [doorFinderBackend, setDoorFinderBackend] =
@@ -406,12 +432,12 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
     []
   );
   const [doorFinderLoading, setDoorFinderLoading] = useState(false);
-  const [facadeRoi, setFacadeRoi] = useState<AutoCountRoiCss | null>(null);
+  const [facadeRoi, setFacadeRoi] = useState<QtoCommittedRoi | null>(null);
   const [facadeBackend, setFacadeBackend] = useState<FacadeBackendState | null>(
     null
   );
   const [facadeLoading, setFacadeLoading] = useState(false);
-  const [wallFinderRoi, setWallFinderRoi] = useState<AutoCountRoiCss | null>(
+  const [wallFinderRoi, setWallFinderRoi] = useState<QtoCommittedRoi | null>(
     null
   );
   const [wallFinderBackend, setWallFinderBackend] =
@@ -420,7 +446,7 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
     WallFinderApiSegment[]
   >([]);
   const [wallFinderLoading, setWallFinderLoading] = useState(false);
-  const [roomFinderRoi, setRoomFinderRoi] = useState<AutoCountRoiCss | null>(
+  const [roomFinderRoi, setRoomFinderRoi] = useState<QtoCommittedRoi | null>(
     null
   );
   const [roomFinderBackend, setRoomFinderBackend] =
@@ -433,8 +459,7 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
   >([]);
   const [floorPendingSeed, setFloorPendingSeed] = useState<{
     pageNumber: number;
-    x: number;
-    y: number;
+    seedBackend: { x: number; y: number };
   } | null>(null);
   const [floorExtractorLoading, setFloorExtractorLoading] = useState(false);
   const [lastFloorNewAreaM2, setLastFloorNewAreaM2] = useState<number | null>(
@@ -822,6 +847,38 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
     }
   }, [autoCountSidebarMounted, clearAutoCountUnmountTimeout]);
 
+  /** Canvas emits CSS rects; store API-space ROI so overlays stay aligned on zoom/resize. */
+  const commitRoiFromDrag = useCallback(
+    (
+      roiCss: AutoCountRoiCss | null,
+      setRoi: (value: QtoCommittedRoi | null) => void,
+      panelMode: ToolSidebarMode
+    ) => {
+      if (!roiCss) {
+        setRoi(null);
+        return;
+      }
+      const getM = (p: number) =>
+        cadCanvasRef.current?.getAutoCountPageMetrics(p) ?? null;
+      let committed = committedRoiFromCanvasCss(roiCss, getM);
+      const apply = (c: QtoCommittedRoi | null) => {
+        if (c) {
+          setRoi(c);
+          openToolOptionsPanel(panelMode);
+        }
+      };
+      if (committed) {
+        apply(committed);
+        return;
+      }
+      requestAnimationFrame(() => {
+        committed = committedRoiFromCanvasCss(roiCss, getM);
+        apply(committed);
+      });
+    },
+    [openToolOptionsPanel]
+  );
+
   const handleAutoCountToolSelect = useCallback(() => {
     setLastToolAction("autoCount");
   }, []);
@@ -845,52 +902,37 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
   /** Open symbol options only after a ROI is committed (mouse/touch release), not when picking the tool. */
   const handleAutoCountRoiChange = useCallback(
     (roi: AutoCountRoiCss | null) => {
-      setAutoCountRoi(roi);
-      if (roi != null) {
-        openToolOptionsPanel("autoCount");
-      }
+      commitRoiFromDrag(roi, setAutoCountRoi, "autoCount");
     },
-    [openToolOptionsPanel]
+    [commitRoiFromDrag]
   );
 
   const handleDoorFinderRoiChange = useCallback(
     (roi: AutoCountRoiCss | null) => {
-      setDoorFinderRoi(roi);
-      if (roi != null) {
-        openToolOptionsPanel("doorFinder");
-      }
+      commitRoiFromDrag(roi, setDoorFinderRoi, "doorFinder");
     },
-    [openToolOptionsPanel]
+    [commitRoiFromDrag]
   );
 
   const handleFacadeRoiChange = useCallback(
     (roi: AutoCountRoiCss | null) => {
-      setFacadeRoi(roi);
-      if (roi != null) {
-        openToolOptionsPanel("facade");
-      }
+      commitRoiFromDrag(roi, setFacadeRoi, "facade");
     },
-    [openToolOptionsPanel]
+    [commitRoiFromDrag]
   );
 
   const handleWallFinderRoiChange = useCallback(
     (roi: AutoCountRoiCss | null) => {
-      setWallFinderRoi(roi);
-      if (roi != null) {
-        openToolOptionsPanel("wallFinder");
-      }
+      commitRoiFromDrag(roi, setWallFinderRoi, "wallFinder");
     },
-    [openToolOptionsPanel]
+    [commitRoiFromDrag]
   );
 
   const handleRoomFinderRoiChange = useCallback(
     (roi: AutoCountRoiCss | null) => {
-      setRoomFinderRoi(roi);
-      if (roi != null) {
-        openToolOptionsPanel("roomFinder");
-      }
+      commitRoiFromDrag(roi, setRoomFinderRoi, "roomFinder");
     },
-    [openToolOptionsPanel]
+    [commitRoiFromDrag]
   );
 
   const handleFloorAreaToolSelect = useCallback(() => {
@@ -899,7 +941,17 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
 
   const handleFloorAreaPlaceSeed = useCallback(
     (pageNumber: number, xCss: number, yCss: number) => {
-      setFloorPendingSeed({ pageNumber, x: xCss, y: yCss });
+      const metrics = cadCanvasRef.current?.getAutoCountPageMetrics(pageNumber);
+      if (!metrics) {
+        toast.error(
+          "Page layout not ready. Wait for the PDF to finish rendering."
+        );
+        return;
+      }
+      setFloorPendingSeed({
+        pageNumber,
+        seedBackend: screenPointToBackend(xCss, yCss, metrics),
+      });
       openToolOptionsPanel("floorArea");
     },
     [openToolOptionsPanel]
@@ -917,11 +969,7 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
       toast.error("Page layout not ready. Wait for the PDF to finish rendering.");
       return;
     }
-    const seedBackend = screenPointToBackend(
-      floorPendingSeed.x,
-      floorPendingSeed.y,
-      metrics
-    );
+    const seedBackend = floorPendingSeed.seedBackend;
     setFloorExtractorLoading(true);
     try {
       const res = await postExtractFloor({
@@ -936,26 +984,32 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
       }
       const area = res.new_area ?? 0;
       let cssPoly: { x: number; y: number }[] = [];
-      const rawPoly = res.polygon ?? res.current_polygon;
-      if (Array.isArray(rawPoly) && rawPoly.length >= 3) {
-        const pts = rawPoly.map((p) => ({
-          x: Number((p as { x?: unknown }).x),
-          y: Number((p as { y?: unknown }).y),
-        }));
-        const maxX = Math.max(...pts.map((p) => p.x));
-        const toPreview =
-          maxX > metrics.backendBaseWidth * 1.15
-            ? floorPolygonAnalysisToPreviewBackend(pts)
-            : pts;
-        cssPoly = floorPolygonBackendToScreenCss(toPreview, metrics);
+      let polygonRaw: { x: number; y: number }[] | undefined;
+      let polygonPreviewBackend: { x: number; y: number }[] | undefined;
+      const rawPoly =
+        res.new_polygon ?? res.polygon ?? res.current_polygon;
+      const pts = normalizeExtractFloorPolygon(rawPoly);
+      if (pts) {
+        polygonRaw = pts;
+        polygonPreviewBackend = resolveFloorPolygonToPreviewBackend(
+          pts,
+          seedBackend
+        );
+        cssPoly = floorPolygonBackendToScreenCss(
+          polygonPreviewBackend,
+          metrics
+        );
       }
       const id = createClientId();
+      const seedCss = backendPointToScreenCss(seedBackend, metrics);
       const extraction: FloorExtractionPersistedV1 = {
         id,
         pageNumber: pageNum,
         seedBackend,
-        seedCss: { x: floorPendingSeed.x, y: floorPendingSeed.y },
+        seedCss,
         cssPoly,
+        polygonRaw,
+        polygonPreviewBackend,
         areaM2: area,
       };
       setFloorExtractions((prev) => {
@@ -994,19 +1048,20 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
   ]);
 
   const floorAreaCanvasSeeds = useMemo(() => {
-    const list: Array<{ pageNumber: number; x: number; y: number }> = [];
+    const list: Array<{
+      pageNumber: number;
+      seedBackend: { x: number; y: number };
+    }> = [];
     for (const ex of floorExtractions) {
       list.push({
         pageNumber: ex.pageNumber,
-        x: ex.seedCss.x,
-        y: ex.seedCss.y,
+        seedBackend: ex.seedBackend,
       });
     }
     if (floorPendingSeed) {
       list.push({
         pageNumber: floorPendingSeed.pageNumber,
-        x: floorPendingSeed.x,
-        y: floorPendingSeed.y,
+        seedBackend: floorPendingSeed.seedBackend,
       });
     }
     return list;
@@ -1021,6 +1076,9 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
       cssPoly: ex.cssPoly,
       areaM2: ex.areaM2,
       seedCss: ex.seedCss,
+      polygonRaw: ex.polygonRaw,
+      polygonPreviewBackend: ex.polygonPreviewBackend,
+      seedBackend: ex.seedBackend,
     }));
   }, [floorExtractions]);
 
@@ -1533,6 +1591,79 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
       return;
     }
 
+    if (lastAnalyzeKind === "floorArea") {
+      if (floorExtractions.length === 0) {
+        toast.error("Nothing to save. Run Calculate Area first.");
+        return;
+      }
+      const snap: FloorSavedSnapshotV1 = {
+        extractions: floorExtractions.map((ex) => ({ ...ex })),
+      };
+      const totalArea = floorExtractions.reduce(
+        (acc, e) => acc + (Number.isFinite(e.areaM2) ? e.areaM2 : 0),
+        0
+      );
+      const entry: QtoSavedObjectEntryV1 = {
+        v: 1,
+        id: createClientId(),
+        objectId: idTrim,
+        objectName: nameTrim,
+        count: floorExtractions.length,
+        savedAt: Date.now(),
+        analysisKind: "floor",
+        totalAreaM2: totalArea,
+        canvasSnapshot: snap,
+      };
+      const next = appendQtoSavedObject(
+        trimmedJobId,
+        selectedPdfPath.trim(),
+        entry
+      );
+      setSavedObjects(next);
+      setMetadataObjectId("");
+      setMetadataObjectName("");
+      setMetadataErrors({});
+      toast.success("Object saved.");
+      return;
+    }
+
+    if (lastAnalyzeKind === "facade") {
+      if (!facadeBackend) {
+        toast.error("Nothing to save. Run Analyze Facade first.");
+        return;
+      }
+      const snap: FacadeSavedSnapshotV1 = {
+        pageNumber: facadeBackend.pageNumber,
+        roi: { ...facadeBackend.roi },
+        response: facadeBackend.response,
+      };
+      const nw =
+        facadeBackend.response.window_count ??
+        facadeBackend.response.dimensions?.length ??
+        0;
+      const entry: QtoSavedObjectEntryV1 = {
+        v: 1,
+        id: createClientId(),
+        objectId: idTrim,
+        objectName: nameTrim,
+        count: Number.isFinite(nw) ? nw : 0,
+        savedAt: Date.now(),
+        analysisKind: "facade",
+        canvasSnapshot: snap,
+      };
+      const next = appendQtoSavedObject(
+        trimmedJobId,
+        selectedPdfPath.trim(),
+        entry
+      );
+      setSavedObjects(next);
+      setMetadataObjectId("");
+      setMetadataObjectName("");
+      setMetadataErrors({});
+      toast.success("Object saved.");
+      return;
+    }
+
     if (!metadataBackend) {
       toast.error("Nothing to save. Run Analyze first.");
       return;
@@ -1571,6 +1702,8 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
     lastAnalyzeKind,
     wallFinderBackend,
     roomFinderBackend,
+    floorExtractions,
+    facadeBackend,
     metadataBackend,
     metadataObjectId,
     metadataObjectName,
@@ -1680,21 +1813,12 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
         toast.error("Draw on the same page as the current analysis.");
         return;
       }
-      const item = screenRectToBackend(
-        {
-          x: autoCountRoi.x,
-          y: autoCountRoi.y,
-          width: autoCountRoi.width,
-          height: autoCountRoi.height,
-        },
-        metrics
-      );
       setAutoCountLoading(true);
       try {
         await postAutoCountAdd({
           job_id: trimmedJobId,
           file_path: selectedPdfPath.trim(),
-          item,
+          item: autoCountRoi.roi,
         });
         await refreshAutoCountMatchesFromServer();
         setAutoCountRoi(null);
@@ -1712,15 +1836,7 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
     }
 
     const roiBackend = autoCountRoi
-      ? screenRectToBackend(
-          {
-            x: autoCountRoi.x,
-            y: autoCountRoi.y,
-            width: autoCountRoi.width,
-            height: autoCountRoi.height,
-          },
-          metrics
-        )
+      ? autoCountRoi.roi
       : autoCountBackend!.roi;
 
     setAutoCountLoading(true);
@@ -1788,15 +1904,7 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
       return;
     }
     const roiBackend = doorFinderRoi
-      ? screenRectToBackend(
-          {
-            x: doorFinderRoi.x,
-            y: doorFinderRoi.y,
-            width: doorFinderRoi.width,
-            height: doorFinderRoi.height,
-          },
-          metrics
-        )
+      ? doorFinderRoi.roi
       : doorFinderBackend!.roi;
 
     setDoorFinderLoading(true);
@@ -1862,17 +1970,7 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
       toast.error("Page layout not ready. Wait for the PDF to finish rendering.");
       return;
     }
-    const roiBackend = facadeRoi
-      ? screenRectToBackend(
-          {
-            x: facadeRoi.x,
-            y: facadeRoi.y,
-            width: facadeRoi.width,
-            height: facadeRoi.height,
-          },
-          metrics
-        )
-      : facadeBackend!.roi;
+    const roiBackend = facadeRoi ? facadeRoi.roi : facadeBackend!.roi;
 
     setFacadeLoading(true);
     try {
@@ -1942,15 +2040,7 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
       return;
     }
     const roiBackend = wallFinderRoi
-      ? screenRectToBackend(
-          {
-            x: wallFinderRoi.x,
-            y: wallFinderRoi.y,
-            width: wallFinderRoi.width,
-            height: wallFinderRoi.height,
-          },
-          metrics
-        )
+      ? wallFinderRoi.roi
       : wallFinderBackend!.roi;
 
     setWallFinderLoading(true);
@@ -2020,15 +2110,7 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
       return;
     }
     const roiBackend = roomFinderRoi
-      ? screenRectToBackend(
-          {
-            x: roomFinderRoi.x,
-            y: roomFinderRoi.y,
-            width: roomFinderRoi.width,
-            height: roomFinderRoi.height,
-          },
-          metrics
-        )
+      ? roomFinderRoi.roi
       : roomFinderBackend!.roi;
 
     setRoomFinderLoading(true);
@@ -2487,9 +2569,7 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
                     errors: metadataErrors,
                     onSave: handleSaveObjectMetadata,
                     saveDisabled:
-                      !hasObjectMetadataSource ||
-                      lastAnalyzeKind === "floorArea" ||
-                      lastAnalyzeKind === "facade",
+                      !hasObjectMetadataSource || analyzeBusy,
                     savedObjects,
                     selectedSavedId: selectedSavedObjectId,
                     onSelectSaved: (id) => {

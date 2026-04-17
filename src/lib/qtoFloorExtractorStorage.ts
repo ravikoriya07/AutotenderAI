@@ -1,10 +1,14 @@
-/** One extracted floor region (CSS px on page + backend seed for replay). */
+/** One extracted floor region — store backend-space geometry for stable zoom/resize. */
 export type FloorExtractionPersistedV1 = {
   id: string;
   pageNumber: number;
   seedBackend: { x: number; y: number };
   seedCss: { x: number; y: number };
   cssPoly: { x: number; y: number }[];
+  /** API `new_polygon` normalized — {@link resolveFloorPolygonToPreviewBackend} picks preview vs analysis space. */
+  polygonRaw?: { x: number; y: number }[];
+  /** Legacy: ring already in preview backend space. */
+  polygonPreviewBackend?: { x: number; y: number }[];
   areaM2: number;
 };
 
