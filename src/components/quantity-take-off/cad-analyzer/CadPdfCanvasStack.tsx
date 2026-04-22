@@ -281,7 +281,7 @@ function drawMatchBoxes(
   }
 }
 
-/** Facade `/analyze_facade` — green fills, dark green strokes, centered id labels. */
+/** Facade `/analyze_facade` — green fills, dark green strokes, id tag at top-right of each box. */
 function drawFacadeWindowBoxes(
   octx: CanvasRenderingContext2D,
   sx: number,
@@ -322,20 +322,23 @@ function drawFacadeWindowBoxes(
 
     const label = String(id);
     octx.font = `bold ${fontPx}px Arial, ui-sans-serif, sans-serif`;
-    octx.textAlign = "center";
-    octx.textBaseline = "middle";
-    const cx = mx + mw / 2;
-    const cy = my + mh / 2;
+    octx.textAlign = "right";
+    octx.textBaseline = "top";
+    const padX = 4;
+    const padY = 3;
     const tw = octx.measureText(label).width;
+    const bgH = fontPx * 1.1;
+    const tr = mx + mw - padX;
+    const ttop = my + padY;
     octx.fillStyle = "rgba(255, 255, 255, 0.92)";
     octx.fillRect(
-      cx - tw / 2 - 4 * sx,
-      cy - fontPx * 0.55,
-      tw + 8 * sx,
-      fontPx * 1.1
+      tr - tw - 2 * padX,
+      ttop,
+      tw + 2 * padX,
+      bgH
     );
     octx.fillStyle = "#14532d";
-    octx.fillText(label, cx, cy);
+    octx.fillText(label, tr - padX, ttop + fontPx * 0.1);
   }
 }
 
@@ -1553,7 +1556,14 @@ export const CadPdfCanvasStack = forwardRef<
       ) {
         facadeWindows = facadeDimensionsToScreenBoxes(
           facadeBackend.response.dimensions,
-          metrics
+          metrics,
+          {
+            roi: facadeBackend.roi,
+            annotatedImageDataUrl: facadeBackend.response.image ?? null,
+            backendPageWidth: metrics.backendBaseWidth,
+            backendPageHeight: metrics.backendBaseHeight,
+            response: facadeBackend.response,
+          }
         );
       }
 
@@ -1623,10 +1633,18 @@ export const CadPdfCanvasStack = forwardRef<
             backendPageMatches(snap.pageNumber, pageNumber) &&
             metrics
           ) {
+            const fSnap = snap as FacadeSavedSnapshotV1;
             facadeWindows.push(
               ...facadeDimensionsToScreenBoxes(
-                (snap as FacadeSavedSnapshotV1).response.dimensions,
-                metrics
+                fSnap.response.dimensions,
+                metrics,
+                {
+                  roi: fSnap.roi,
+                  annotatedImageDataUrl: fSnap.response.image ?? null,
+                  backendPageWidth: metrics.backendBaseWidth,
+                  backendPageHeight: metrics.backendBaseHeight,
+                  response: fSnap.response,
+                }
               )
             );
           }

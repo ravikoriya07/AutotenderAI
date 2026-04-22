@@ -40,6 +40,15 @@ export type AnalyzeFacadeResponse = {
   window_area?: number;
   window_count?: number;
   dimensions?: FacadeDimension[];
+  /** Annotated PNG (Quantitites `abc.html` replaces canvas with this after analyze). */
+  image?: string;
+  /**
+   * Pixel size of the same coordinate system as `dimensions` bboxes (e.g. YOLO input / letterbox).
+   * If the model runs on a resized crop, set these so the UI can map when `image` is full-page
+   * or a different resolution than the inference grid.
+   */
+  analysis_image_width?: number;
+  analysis_image_height?: number;
 };
 
 export const FACADE_PIXEL_TO_METER = 0.01;

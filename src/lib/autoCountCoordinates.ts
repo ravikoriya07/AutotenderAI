@@ -1,5 +1,6 @@
 import type { AutoCountMatch, AutoCountRoi } from "@/services/autoCountService";
-import type { FacadeDimension } from "@/services/facadeAnalyzerService";
+import type { AnalyzeFacadeResponse, FacadeDimension } from "@/services/facadeAnalyzerService";
+import { readPngDimensionsFromDataUrl } from "@/lib/pngDataUrlDimensions";
 import type { WallFinderApiResponse } from "@/services/wallFinderService";
 import type { RoomFinderApiResponse } from "@/services/roomFinderService";
 import {
@@ -249,26 +250,413 @@ export function backendMatchesToScreen(
   });
 }
 
+/** Optional mapping from facade API pixel space → backend preview ROI / page (see Quantitites `logic_analyze_facade`). */
+export type FacadeDimensionsMappingOptions = {
+  roi: AutoCountRoi | null;
+  /** `AnalyzeFacadeResponse.image` — PNG size anchors pixel→page mapping. */
+  annotatedImageDataUrl?: string | null;
+  /** Optional explicit raster size (same space as `dimensions` boxes). */
+  analysisImageWidth?: number;
+  analysisImageHeight?: number;
+  backendPageWidth: number;
+  backendPageHeight: number;
+  /** Sizing fallback when URL / width fields above are not set. */
+  response?: Pick<
+    AnalyzeFacadeResponse,
+    "image" | "analysis_image_width" | "analysis_image_height"
+  > | null;
+};
+
+/** `Quantitites_Project` `logic_analyze_facade`: YOLO boxes are in the same pixel grid as the pixmap; returned `image` is the full page raster (zoom=1) while the UI ROI uses preview=2 space — same as {@link BACKEND_PDF_VIEWPORT_SCALE}. */
+function isLikelyFullPageRaster(
+  refW: number,
+  refH: number,
+  pageW: number,
+  pageH: number
+): boolean {
+  if (refH <= 0 || refW <= 0 || pageH <= 0) return false;
+  const aPage = pageW / pageH;
+  const aPng = refW / refH;
+  /** Tolerate small DPI / rounding differences between fitz pixmap and pdf.js viewport. */
+  return Math.abs(aPng - aPage) / Math.max(1e-6, aPage) < 0.12;
+}
+
+function pointInRoiBackend(
+  cx: number,
+  cy: number,
+  roi: AutoCountRoi,
+  slack: number
+): boolean {
+  return (
+    cx >= roi.x - slack &&
+    cx <= roi.x + roi.width + slack &&
+    cy >= roi.y - slack &&
+    cy <= roi.y + roi.height + slack
+  );
+}
+
 /**
- * `/analyze_facade` `dimensions[]` → CSS boxes + numeric ids for overlay (skips rows without bbox).
+ * Same convention as `Quantitites_Project` `logic_analyze_doors`: `x,y,w,h` are already in
+ * **pdf.js / backend preview** space (global page, scale 2). No ROI or PNG transform — matches
+ * {@link backendMatchesToScreen} input for door finder.
+ */
+function facadePreviewGlobalToBackend(
+  d: FacadeDimension
+): { x: number; y: number; w: number; h: number } | null {
+  const x = Number(d.x);
+  const y = Number(d.y);
+  const w = Number(d.w ?? d.width);
+  const h = Number(d.h ?? d.height);
+  if (![x, y, w, h].every((v) => Number.isFinite(v)) || w <= 0 || h <= 0) {
+    return null;
+  }
+  return { x, y, w, h };
+}
+
+/** ROI-relative preview boxes: top-left of each window is offset from the ROI top-left in preview space. */
+function facadePreviewRoiOffsetToBackend(
+  d: FacadeDimension,
+  roi: AutoCountRoi
+): { x: number; y: number; w: number; h: number } | null {
+  const pr = facadePreviewGlobalToBackend(d);
+  if (!pr) return null;
+  return {
+    x: roi.x + pr.x,
+    y: roi.y + pr.y,
+    w: pr.w,
+    h: pr.h,
+  };
+}
+
+/** Bboxes in full-page PNG pixels: offset from crop origin, same convention as `full_img[y:y+h, x:x+w]`. */
+function facadeFullPageOffsetToBackend(
+  d: FacadeDimension,
+  roi: AutoCountRoi,
+  pngW: number,
+  pngH: number,
+  pageW: number,
+  pageH: number
+): { x: number; y: number; w: number; h: number } | null {
+  const dx = Number(d.x);
+  const dy = Number(d.y);
+  const dw = Number(d.w ?? d.width);
+  const dh = Number(d.h ?? d.height);
+  if (![dx, dy, dw, dh].every((v) => Number.isFinite(v)) || dw <= 0 || dh <= 0) {
+    return null;
+  }
+  if (pngW <= 0 || pngH <= 0) return null;
+  return {
+    x: roi.x + (dx / pngW) * pageW,
+    y: roi.y + (dy / pngH) * pageH,
+    w: (dw / pngW) * pageW,
+    h: (dh / pngH) * pageH,
+  };
+}
+
+/** Bboxes in a crop-only PNG: same as normalizing to ROI in preview space. */
+function facadeCropPngToBackend(
+  d: FacadeDimension,
+  roi: AutoCountRoi,
+  rw: number,
+  rh: number
+): { x: number; y: number; w: number; h: number } | null {
+  const dx = Number(d.x);
+  const dy = Number(d.y);
+  const dw = Number(d.w ?? d.width);
+  const dh = Number(d.h ?? d.height);
+  if (![dx, dy, dw, dh].every((v) => Number.isFinite(v)) || dw <= 0 || dh <= 0) {
+    return null;
+  }
+  if (rw <= 0 || rh <= 0) return null;
+  return {
+    x: roi.x + (dx / rw) * roi.width,
+    y: roi.y + (dy / rh) * roi.height,
+    w: (dw / rw) * roi.width,
+    h: (dh / rh) * roi.height,
+  };
+}
+
+function facadePageAbsoluteToBackend(
+  d: FacadeDimension,
+  refW: number,
+  refH: number,
+  pageW: number,
+  pageH: number
+): { x: number; y: number; w: number; h: number } | null {
+  const dx = Number(d.x);
+  const dy = Number(d.y);
+  const dw = Number(d.w ?? d.width);
+  const dh = Number(d.h ?? d.height);
+  if (![dx, dy, dw, dh].every((v) => Number.isFinite(v)) || dw <= 0 || dh <= 0) {
+    return null;
+  }
+  if (refW <= 0 || refH <= 0) return null;
+  return {
+    x: (dx / refW) * pageW,
+    y: (dy / refH) * pageH,
+    w: (dw / refW) * pageW,
+    h: (dh / refH) * pageH,
+  };
+}
+
+type FacadeSpaceStrategy =
+  | "previewGlobal"
+  | "previewRoi"
+  | "fullPageOffset"
+  | "cropPng"
+  | "pageAbsolute";
+
+/**
+ * Picks the mapping with the best on-page + in-ROI fit, same as door finder: treat `dimensions` as
+ * **preview** first; fall back to pixmap (`fullPageOffset` / `cropPng` / `pageAbsolute`) when that fits better.
+ */
+function mapScoreForFacadeStrategy(
+  dimensions: FacadeDimension[],
+  mapOne: (d: FacadeDimension) => { x: number; y: number; w: number; h: number } | null,
+  pageW: number,
+  pageH: number,
+  roi: AutoCountRoi
+): number {
+  const margin = Math.max(12, Math.max(pageW, pageH) * 0.01);
+  const slack = Math.max(8, Math.max(roi.width, roi.height) * 0.02);
+  let s = 0;
+  for (const d of dimensions) {
+    const b = mapOne(d);
+    if (!b) continue;
+    const inPage =
+      b.x >= -margin &&
+      b.y >= -margin &&
+      b.x + b.w <= pageW + margin &&
+      b.y + b.h <= pageH + margin;
+    if (!inPage) continue;
+    s += 1;
+    if (
+      pointInRoiBackend(b.x + b.w / 2, b.y + b.h / 2, roi, slack)
+    ) {
+      s += 0.25;
+    }
+  }
+  return s;
+}
+
+function pickBestFacadeSpace(
+  dimensions: FacadeDimension[],
+  roi: AutoCountRoi,
+  pageW: number,
+  pageH: number,
+  png: { w: number; h: number } | null
+): FacadeSpaceStrategy {
+  const cands: { key: FacadeSpaceStrategy; score: number }[] = [
+    {
+      key: "previewGlobal",
+      score: mapScoreForFacadeStrategy(
+        dimensions,
+        (d) => facadePreviewGlobalToBackend(d),
+        pageW,
+        pageH,
+        roi
+      ),
+    },
+    {
+      key: "previewRoi",
+      score: mapScoreForFacadeStrategy(
+        dimensions,
+        (d) => facadePreviewRoiOffsetToBackend(d, roi),
+        pageW,
+        pageH,
+        roi
+      ),
+    },
+  ];
+  if (png) {
+    cands.push(
+      {
+        key: "fullPageOffset",
+        score: mapScoreForFacadeStrategy(
+          dimensions,
+          (d) =>
+            facadeFullPageOffsetToBackend(
+              d,
+              roi,
+              png.w,
+              png.h,
+              pageW,
+              pageH
+            ),
+          pageW,
+          pageH,
+          roi
+        ),
+      },
+      {
+        key: "cropPng",
+        score: mapScoreForFacadeStrategy(
+          dimensions,
+          (d) => facadeCropPngToBackend(d, roi, png.w, png.h),
+          pageW,
+          pageH,
+          roi
+        ),
+      },
+      {
+        key: "pageAbsolute",
+        score: mapScoreForFacadeStrategy(
+          dimensions,
+          (d) => facadePageAbsoluteToBackend(d, png.w, png.h, pageW, pageH),
+          pageW,
+          pageH,
+          roi
+        ),
+      }
+    );
+  }
+  const pri: Record<FacadeSpaceStrategy, number> = {
+    previewGlobal: 5,
+    previewRoi: 4,
+    fullPageOffset: 3,
+    cropPng: 2,
+    pageAbsolute: 1,
+  };
+  cands.sort(
+    (a, b) =>
+      b.score - a.score || pri[b.key] - pri[a.key]
+  );
+  const best = cands[0]!;
+  if (best && best.score > 0) {
+    return best.key;
+  }
+  if (png && isLikelyFullPageRaster(png.w, png.h, pageW, pageH)) {
+    return "fullPageOffset";
+  }
+  if (png) {
+    return "cropPng";
+  }
+  return "previewGlobal";
+}
+
+/**
+ * `/analyze_facade` `dimensions[]` → CSS boxes + numeric ids for overlay.
+ *
+ * **Backend contract**: many services return the same **global preview** coordinates as
+ * `Quantitites_Project` `logic_analyze_doors` / `matches` (then we use {@link facadePreviewGlobalToBackend}).
+ * Legacy **raster** services return YOLO boxes in pixmap space; use `fullPageOffset` with
+ * `bx = roi.x + (dx / fullRasterW) * pageW` when the strategy picker scores that higher. Optional
+ * `analysis_image_width` / `height` when the inference grid differs from `image`.
+ *
+ * Without `mapping.roi`, `x,y,w,h` are treated as already in backend preview space (legacy).
  */
 export function facadeDimensionsToScreenBoxes(
   dimensions: FacadeDimension[] | undefined | null,
-  metrics: AutoCountPageMetrics
+  metrics: AutoCountPageMetrics,
+  mapping?: FacadeDimensionsMappingOptions | null
 ): { box: AutoCountMatch; id: number }[] {
   if (!Array.isArray(dimensions)) return [];
   const out: { box: AutoCountMatch; id: number }[] = [];
+  const roi = mapping?.roi ?? null;
+  const pageW = mapping?.backendPageWidth ?? metrics.backendBaseWidth;
+  const pageH = mapping?.backendPageHeight ?? metrics.backendBaseHeight;
+
+  const dataUrl =
+    mapping?.annotatedImageDataUrl ?? mapping?.response?.image ?? undefined;
+  const png = readPngDimensionsFromDataUrl(
+    typeof dataUrl === "string" ? dataUrl : undefined
+  );
+  const aW = mapping?.analysisImageWidth ?? mapping?.response?.analysis_image_width;
+  const aH = mapping?.analysisImageHeight ?? mapping?.response?.analysis_image_height;
+
+  type FacadeStrategy =
+    | FacadeSpaceStrategy
+    | "analysisRaster"
+    | "rawLegacy";
+  let strategy: FacadeStrategy = "rawLegacy";
+  if (roi && dimensions.length > 0) {
+    if (typeof aW === "number" && typeof aH === "number" && aW > 0 && aH > 0 && !png) {
+      strategy = "analysisRaster";
+    } else {
+      strategy = pickBestFacadeSpace(
+        dimensions,
+        roi,
+        pageW,
+        pageH,
+        png
+      ) as FacadeSpaceStrategy;
+    }
+  } else if (roi) {
+    strategy = "rawLegacy";
+  }
+
+  if (process.env.NODE_ENV === "development" && typeof console !== "undefined") {
+    console.debug("[qto:facade:map]", {
+      strategy,
+      pageW,
+      pageH,
+      pngSize: png ? { w: png.w, h: png.h } : null,
+      analysisWH:
+        typeof aW === "number" && typeof aH === "number" ? { w: aW, h: aH } : null,
+      dim0: dimensions[0]
+        ? {
+            x: dimensions[0].x,
+            y: dimensions[0].y,
+            w: dimensions[0].w,
+            h: dimensions[0].h,
+          }
+        : null,
+    });
+  }
+
   for (const d of dimensions) {
     const x = d.x;
     const y = d.y;
     const wRaw = d.w ?? d.width;
     const hRaw = d.h ?? d.height;
     if (x == null || y == null || wRaw == null || hRaw == null) continue;
+
+    let bx = Number(x);
+    let by = Number(y);
+    let bw = Number(wRaw);
+    let bh = Number(hRaw);
+
+    if (roi) {
+      let mapped: { x: number; y: number; w: number; h: number } | null = null;
+      if (
+        strategy === "analysisRaster" &&
+        typeof aW === "number" &&
+        typeof aH === "number" &&
+        aW > 0 &&
+        aH > 0
+      ) {
+        mapped = facadeCropPngToBackend(d, roi, aW, aH);
+      } else if (strategy === "previewGlobal") {
+        mapped = facadePreviewGlobalToBackend(d);
+      } else if (strategy === "previewRoi") {
+        mapped = facadePreviewRoiOffsetToBackend(d, roi);
+      } else if (strategy === "fullPageOffset" && png) {
+        mapped = facadeFullPageOffsetToBackend(
+          d,
+          roi,
+          png.w,
+          png.h,
+          pageW,
+          pageH
+        );
+      } else if (strategy === "pageAbsolute" && png) {
+        mapped = facadePageAbsoluteToBackend(d, png.w, png.h, pageW, pageH);
+      } else if (strategy === "cropPng" && png) {
+        mapped = facadeCropPngToBackend(d, roi, png.w, png.h);
+      }
+      if (mapped) {
+        bx = mapped.x;
+        by = mapped.y;
+        bw = mapped.w;
+        bh = mapped.h;
+      }
+    }
+
     const row: AutoCountApiMatch = {
-      x: Number(x),
-      y: Number(y),
-      w: Number(wRaw),
-      h: Number(hRaw),
+      x: bx,
+      y: by,
+      w: bw,
+      h: bh,
       score: 1,
     };
     const screen = backendMatchesToScreen([row], metrics)[0];
