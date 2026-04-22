@@ -35,6 +35,8 @@ export function toAutoCountApiFilePath(projectRelativePath: string): string {
 
 /** Match box in backend pdf.js space at scale 2; UI converts to CSS for overlay. */
 export type AutoCountMatch = {
+  /** Stable id from `/auto_count` / `/auto_count/matches` — required for `POST /auto_count/remove`. */
+  id?: string | number;
   x: number;
   y: number;
   w: number;
@@ -108,7 +110,7 @@ function toAutoCountAddItemBody(
 export type AutoCountRemoveRequest = {
   job_id: string;
   file_path: string;
-  index: number;
+  item_id: string;
 };
 
 export async function postAutoCountAdd(
@@ -136,7 +138,7 @@ export async function postAutoCountRemove(
     {
       job_id: payload.job_id,
       file_path: toAutoCountApiFilePath(payload.file_path),
-      index: payload.index,
+      item_id: payload.item_id,
     },
     config
   );
@@ -145,6 +147,7 @@ export async function postAutoCountRemove(
 
 /** Same shape as `AutoCountApiMatch` in `autoCountCoordinates` (avoid circular imports). */
 export type AutoCountMatchRow = {
+  id?: string | number;
   x: number;
   y: number;
   w?: number;

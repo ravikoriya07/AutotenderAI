@@ -57,9 +57,10 @@ function hitTestAutoCountRemoveCorner(
   localX: number,
   localY: number,
   boxes: AutoCountMatch[]
-): number | null {
+): string | number | null {
   for (let i = boxes.length - 1; i >= 0; i--) {
     const m = boxes[i]!;
+    if (m.id == null || (typeof m.id === "string" && m.id === "")) continue;
     const mx = m.x;
     const my = m.y;
     const mw = m.w;
@@ -75,7 +76,7 @@ function hitTestAutoCountRemoveCorner(
     const r = side / 2 + 2;
     const dx = localX - cx;
     const dy = localY - cy;
-    if (dx * dx + dy * dy <= r * r) return i;
+    if (dx * dx + dy * dy <= r * r) return m.id;
   }
   return null;
 }
@@ -248,7 +249,9 @@ function drawMatchBoxes(
     const allowRemove =
       opts.variant === "autoCount" &&
       opts.showRemoveCorners &&
-      (opts.removeMarkerMax == null || mi < opts.removeMarkerMax);
+      (opts.removeMarkerMax == null || mi < opts.removeMarkerMax) &&
+      m.id != null &&
+      !(typeof m.id === "string" && m.id === "");
     if (allowRemove) {
       const dpr = window.devicePixelRatio || 1;
       const side = Math.max(
@@ -895,8 +898,8 @@ export type CadPdfCanvasStackProps = {
   }>;
   floorAreaRegions?: Array<FloorAreaCssRegion & { pageNumber: number }>;
   onFloorAreaClick?: (pageNumber: number, xCss: number, yCss: number) => void;
-  /** Server-side match index; only when live auto count (not saved-object snapshot). */
-  onAutoCountRemoveMatch?: (matchIndex: number) => void;
+  /** Server match id from `/auto_count`; only when live auto count (not saved-object snapshot). */
+  onAutoCountRemoveMatch?: (matchId: string | number) => void;
 };
 
 export type CadPdfCanvasStackHandle = {
@@ -1166,8 +1169,8 @@ export const CadPdfCanvasStack = forwardRef<
   }, []);
 
   /** Shared hit-test for remove chips (Select/pointer has no ROI overlay — hits handled on root). */
-  const pickAutoCountRemoveIndex = useCallback(
-    (clientX: number, clientY: number): number | null => {
+  const pickAutoCountRemoveId = useCallback(
+    (clientX: number, clientY: number): string | number | null => {
       if (!onAutoCountRemoveMatch || !autoCountBackend) return null;
       const pageIndex = findPageIndex(clientX, clientY);
       if (pageIndex < 0) return null;
@@ -1196,13 +1199,13 @@ export const CadPdfCanvasStack = forwardRef<
         "touches" in e && e.touches.length > 0
           ? e.touches[0].clientY
           : (e as ReactMouseEvent).clientY;
-      const removeIx = pickAutoCountRemoveIndex(clientX, clientY);
-      if (removeIx == null) return;
+      const removeId = pickAutoCountRemoveId(clientX, clientY);
+      if (removeId == null) return;
       e.preventDefault();
       e.stopPropagation();
-      onAutoCountRemoveMatch(removeIx);
+      onAutoCountRemoveMatch(removeId);
     },
-    [tool, autoCountBackend, onAutoCountRemoveMatch, pickAutoCountRemoveIndex]
+    [tool, autoCountBackend, onAutoCountRemoveMatch, pickAutoCountRemoveId]
   );
 
   const onMouseDown = useCallback(
@@ -1321,11 +1324,11 @@ export const CadPdfCanvasStack = forwardRef<
       const clientY = "touches" in e ? e.touches[0].clientY : e.clientY;
 
       if (tool === "autoCount") {
-        const removeIx = pickAutoCountRemoveIndex(clientX, clientY);
-        if (removeIx != null) {
+        const removeId = pickAutoCountRemoveId(clientX, clientY);
+        if (removeId != null) {
           e.preventDefault();
           e.stopPropagation();
-          onAutoCountRemoveMatch?.(removeIx);
+          onAutoCountRemoveMatch?.(removeId);
           return;
         }
       }
@@ -1368,7 +1371,7 @@ export const CadPdfCanvasStack = forwardRef<
       tool,
       findPageIndex,
       clientToPageLocal,
-      pickAutoCountRemoveIndex,
+      pickAutoCountRemoveId,
       onAutoCountRemoveMatch,
     ]
   );

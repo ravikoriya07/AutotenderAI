@@ -1754,7 +1754,7 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
   }, [trimmedJobId, selectedPdfPath]);
 
   const handleAutoCountRemoveMatch = useCallback(
-    (matchIndex: number) => {
+    (matchId: string | number) => {
       if (!trimmedJobId || !selectedPdfPath?.trim() || autoCountLoading) return;
       void Swal.fire({
         title: "Remove match?",
@@ -1772,7 +1772,7 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
             await postAutoCountRemove({
               job_id: trimmedJobId,
               file_path: selectedPdfPath.trim(),
-              index: matchIndex,
+              item_id: String(matchId),
             });
             await refreshAutoCountMatchesFromServer();
             toast.success("Match removed.");

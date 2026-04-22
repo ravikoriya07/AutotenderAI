@@ -10,6 +10,7 @@ import {
 
 /** Raw `/auto_count` match row (backend may use w/h or width/height). */
 export type AutoCountApiMatch = {
+  id?: string | number;
   x: number;
   y: number;
   w?: number;
@@ -231,13 +232,20 @@ export function backendMatchesToScreen(
   return rows.map((m) => {
     const { w, h } = pickWH(m);
     const scoreRaw = m.score ?? m.confidence ?? 0;
-    return {
+    const out: AutoCountMatch = {
       x: Number(m.x) * fx,
       y: Number(m.y) * fy,
       w: w * fx,
       h: h * fy,
       score: Number(scoreRaw),
     };
+    const idRaw = m.id;
+    if (typeof idRaw === "string") {
+      if (idRaw !== "") out.id = idRaw;
+    } else if (typeof idRaw === "number" && Number.isFinite(idRaw)) {
+      out.id = idRaw;
+    }
+    return out;
   });
 }
 
