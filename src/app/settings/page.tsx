@@ -89,8 +89,8 @@ export default function SettingsPage() {
                       onCheckedChange={setShowWordCount}
                     />
                   </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm text-foreground">
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                    <span className="min-w-0 text-sm text-foreground">
                       Show word count difference for each option
                     </span>
                     <Switch

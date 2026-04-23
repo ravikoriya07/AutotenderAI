@@ -107,7 +107,7 @@ export function SingleDatePicker({
       />
       <CalendarIcon className="absolute right-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground pointer-events-none" />
       {open && (
-        <div className="absolute left-0 top-full z-50 mt-1 max-h-[min(420px,85vh)] overflow-auto rounded-lg border border-border bg-card p-3 shadow-lg">
+        <div className="absolute left-0 top-full z-50 mt-1 max-h-[min(420px,85vh)] max-w-[min(320px,calc(100vw-1.5rem))] overflow-auto rounded-lg border border-border bg-card p-3 shadow-lg">
           <div className="text-xs">
             <Calendar
               ranges={[range]}
