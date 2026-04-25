@@ -16,37 +16,33 @@ import {
 import { cn } from "@/lib/utils";
 import type { CadAnalyzerTool } from "@/contexts/CadAnalyzerToolContext";
 
-/** Select + Pan first; then detection tools (titles match product UI). */
-const TOOLS: {
-  id: CadAnalyzerTool;
-  tooltip: string;
-  icon: LucideIcon;
-}[] = [
-  { id: "pointer", tooltip: "Select", icon: MousePointer2 },
-  { id: "hand", tooltip: "Pan", icon: Hand },
-  { id: "autoCount", tooltip: "Auto Count", icon: CircleDot },
-  { id: "textSearch", tooltip: "Search Text", icon: Type },
-  { id: "floorArea", tooltip: "Floor Area", icon: LayoutGrid },
-  { id: "facade", tooltip: "Facade", icon: Building2 },
-  { id: "doorFinder", tooltip: "Door Finder", icon: DoorOpen },
-  { id: "wallFinder", tooltip: "Wall Finder", icon: PanelsTopLeft },
-  { id: "roomFinder", tooltip: "Room Finder", icon: LayoutTemplate },
+type ToolDef = { id: CadAnalyzerTool; label: string; icon: LucideIcon };
+
+/** Navigation tools — always visible, no ROI drawing. */
+const NAV_TOOLS: ToolDef[] = [
+  { id: "pointer", label: "Select", icon: MousePointer2 },
+  { id: "hand",    label: "Pan",    icon: Hand },
 ];
 
-function ToolbarTooltip({
-  label,
-  children,
-}: {
-  label: string;
-  children: ReactNode;
-}) {
+/** AI analysis tools — draw a region (or click) to trigger detection. */
+const ANALYSIS_TOOLS: ToolDef[] = [
+  { id: "autoCount",  label: "Auto Count",  icon: CircleDot },
+  { id: "textSearch", label: "Search Text", icon: Type },
+  { id: "floorArea",  label: "Floor Area",  icon: LayoutGrid },
+  { id: "facade",     label: "Facade",      icon: Building2 },
+  { id: "doorFinder", label: "Doors",       icon: DoorOpen },
+  { id: "wallFinder", label: "Walls",       icon: PanelsTopLeft },
+  { id: "roomFinder", label: "Rooms",       icon: LayoutTemplate },
+];
+
+function ToolbarTooltip({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div className="group/tooltip relative flex shrink-0">
       {children}
       <span
         role="tooltip"
         className={cn(
-          "pointer-events-none absolute bottom-[calc(100%+8px)] left-1/2 z-[200] -translate-x-1/2",
+          "pointer-events-none absolute bottom-[calc(100%+8px)] left-1/2 z-200 -translate-x-1/2",
           "whitespace-nowrap rounded-md border border-border bg-popover px-2 py-1.5 text-[11px] font-medium text-popover-foreground",
           "shadow-[0_4px_16px_rgba(15,23,42,0.14)] opacity-0 transition-opacity duration-150",
           "group-hover/tooltip:opacity-100 group-focus-within/tooltip:opacity-100"
@@ -58,20 +54,51 @@ function ToolbarTooltip({
   );
 }
 
-function ToolIcon({
-  Icon,
-  className,
-}: {
-  Icon: LucideIcon;
-  className?: string;
-}) {
+function ToolButton({
+  label,
+  icon: Icon,
+  active,
+  onClick,
+}: Omit<ToolDef, "id"> & { active: boolean; onClick: () => void }) {
   return (
-    <Icon
-      className={cn("shrink-0", className)}
-      aria-hidden
-      strokeWidth={2}
-      absoluteStrokeWidth
-    />
+    <ToolbarTooltip label={label}>
+      <button
+        type="button"
+        aria-label={label}
+        aria-pressed={active}
+        onClick={onClick}
+        className={cn(
+          "group inline-flex flex-col items-center justify-center gap-0.5 rounded-lg border px-2 py-1.5 transition-all duration-150",
+          "min-w-11 sm:min-w-13",
+          active
+            ? "border-primary/40 bg-primary/10 text-primary shadow-sm"
+            : "border-transparent text-muted-foreground hover:border-border/60 hover:bg-muted/80 hover:text-foreground"
+        )}
+      >
+        <Icon
+          className={cn(
+            "shrink-0 transition-colors duration-150",
+            "size-4",
+            active ? "text-primary" : "text-current"
+          )}
+          aria-hidden
+          strokeWidth={active ? 2.4 : 2}
+          absoluteStrokeWidth
+        />
+        <span
+          className={cn(
+            "text-[10px] font-medium leading-none tracking-tight",
+            "hidden sm:block",
+            active ? "text-primary" : "text-muted-foreground group-hover:text-foreground"
+          )}
+        >
+          {label}
+        </span>
+        {active && (
+          <span className="mt-0.5 h-0.5 w-3 rounded-full bg-primary hidden sm:block" aria-hidden />
+        )}
+      </button>
+    </ToolbarTooltip>
   );
 }
 
@@ -82,13 +109,10 @@ export type FloatingActionBarProps = {
 };
 
 /**
- * Toolbar pill — positioning is handled by `CadAnalyzerCanvas` (absolute bottom slot, z-[100]).
+ * Toolbar pill — positioning handled by `CadAnalyzerCanvas` (absolute bottom slot, z-[100]).
+ * Two groups: navigation (Select / Pan) and AI analysis tools, separated by a divider.
  */
-export function FloatingActionBar({
-  activeTool,
-  onToolChange,
-  className,
-}: FloatingActionBarProps) {
+export function FloatingActionBar({ activeTool, onToolChange, className }: FloatingActionBarProps) {
   return (
     <div
       className={cn(
@@ -100,34 +124,39 @@ export function FloatingActionBar({
     >
       <div
         className={cn(
-          "pointer-events-auto flex max-w-full flex-nowrap items-center justify-center gap-1 rounded-[16px] px-1.5 py-1.5 sm:gap-1.5 sm:px-2.5 sm:py-2",
-          "border border-border bg-card text-card-foreground",
-          "shadow-[0_10px_40px_-8px_rgba(15,23,42,0.18),0_4px_14px_rgba(15,23,42,0.1)]",
+          "pointer-events-auto flex max-w-full flex-nowrap items-center gap-0.5 rounded-2xl px-1.5 py-1.5 sm:gap-1 sm:px-2 sm:py-2",
+          "border border-border bg-card/95 text-card-foreground",
+          "shadow-[0_10px_40px_-8px_rgba(15,23,42,0.22),0_4px_14px_rgba(15,23,42,0.12)]",
           "ring-1 ring-primary/15",
           "backdrop-blur-sm"
         )}
       >
-        {TOOLS.map(({ id, tooltip, icon: Icon }) => {
-          const active = activeTool === id;
-          return (
-            <ToolbarTooltip key={id} label={tooltip}>
-              <button
-                type="button"
-                aria-label={tooltip}
-                aria-pressed={active}
-                onClick={() => onToolChange(id)}
-                className={cn(
-                  "inline-flex size-7 shrink-0 items-center justify-center rounded-lg border border-transparent text-muted-foreground transition-colors duration-150 sm:size-8 md:size-9",
-                  "hover:border-border/60 hover:bg-muted/80 hover:text-foreground",
-                  active &&
-                    "border-primary/30 bg-primary/10 text-primary shadow-sm hover:border-primary/35 hover:bg-primary/12 hover:text-primary"
-                )}
-              >
-                <ToolIcon Icon={Icon} className="size-3 sm:size-3.5 md:size-4" />
-              </button>
-            </ToolbarTooltip>
-          );
-        })}
+        {/* Navigation group */}
+        <div className="flex items-center gap-0.5 sm:gap-1" role="group" aria-label="Navigation tools">
+          {NAV_TOOLS.map((tool) => (
+            <ToolButton
+              key={tool.id}
+              {...tool}
+              active={activeTool === tool.id}
+              onClick={() => onToolChange(tool.id)}
+            />
+          ))}
+        </div>
+
+        {/* Divider */}
+        <div className="mx-1 h-7 w-px shrink-0 rounded-full bg-border/60" aria-hidden />
+
+        {/* AI analysis group */}
+        <div className="flex items-center gap-0.5 sm:gap-1" role="group" aria-label="AI analysis tools">
+          {ANALYSIS_TOOLS.map((tool) => (
+            <ToolButton
+              key={tool.id}
+              {...tool}
+              active={activeTool === tool.id}
+              onClick={() => onToolChange(tool.id)}
+            />
+          ))}
+        </div>
       </div>
     </div>
   );
