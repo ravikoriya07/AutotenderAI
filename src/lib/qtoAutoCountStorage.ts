@@ -8,7 +8,8 @@ export type AutoCountBackendState = {
   matches: AutoCountApiMatch[];
 };
 
-export type PersistedAutoCountV1 = { v: 1 } & AutoCountBackendState;
+/** `source: "searchText"` when overlays are synced via `/search_text/matches` (optional for older saves). */
+export type PersistedAutoCountV1 = { v: 1; source?: "searchText" } & AutoCountBackendState;
 
 function storageKey(jobId: string, path: string): string {
   return `qto-autocount:v1:${jobId}:${encodeURIComponent(path)}`;

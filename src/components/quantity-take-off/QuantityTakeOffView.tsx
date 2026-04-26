@@ -88,7 +88,12 @@ import {
   postAutoCountAdd,
   postAutoCountRemove,
 } from "@/services/autoCountService";
-import { postSearchText } from "@/services/searchTextService";
+import {
+  getSearchTextMatches,
+  postSearchText,
+  postSearchTextAdd,
+  postSearchTextRemove,
+} from "@/services/searchTextService";
 import { postAnalyzeDoors } from "@/services/doorFinderService";
 import {
   postAnalyzeWalls,
@@ -467,6 +472,8 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
   );
   const [lastAnalyzeKind, setLastAnalyzeKind] =
     useState<LastAnalyzeKind>("autoCount");
+  const lastAnalyzeKindRef = useRef(lastAnalyzeKind);
+  lastAnalyzeKindRef.current = lastAnalyzeKind;
   const autoCountUnmountTimeoutRef = useRef<number | null>(null);
   const isAutoCountOpenRef = useRef(isAutoCountOpen);
   isAutoCountOpenRef.current = isAutoCountOpen;
@@ -691,7 +698,32 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
     setWallFinderRoi(null);
     setRoomFinderRoi(null);
     setFloorPendingSeed(null);
-    if (storedAc) setLastAnalyzeKind("autoCount");
+    if (storedAc?.source === "searchText") {
+      setLastAnalyzeKind("searchText");
+      void getSearchTextMatches({
+        job_id: trimmedJobId,
+        file_path: path,
+      })
+        .then(({ matches }) => {
+          setAutoCountBackend((prev) => {
+            if (!prev) return prev;
+            const next: AutoCountBackendState = {
+              ...prev,
+              matches: matches as AutoCountBackendState["matches"],
+            };
+            saveQtoAutoCount(trimmedJobId, path, {
+              v: 1,
+              source: "searchText",
+              ...next,
+            });
+            return next;
+          });
+          setMetadataCount(matches.length);
+        })
+        .catch((e) => {
+          console.log("[qto] getSearchTextMatches on restore failed", e);
+        });
+    } else if (storedAc) setLastAnalyzeKind("autoCount");
     else if (storedDf) setLastAnalyzeKind("doorFinder");
     else if (storedFacade) setLastAnalyzeKind("facade");
     else if (storedWf) setLastAnalyzeKind("wallFinder");
@@ -1112,14 +1144,17 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
     setSearchTextError(null);
     setSearchTextLoading(true);
     try {
-      const res = await postSearchText({
+      await postSearchText({
         job_id: trimmedJobId,
         file_path: selectedPdfPath.trim(),
         search_term: term,
         case_sensitive: caseSensitive,
       });
-      const rawMatches = res.matches ?? [];
-      const n = res.total_found ?? rawMatches.length ?? 0;
+      const { matches: rawMatches } = await getSearchTextMatches({
+        job_id: trimmedJobId,
+        file_path: selectedPdfPath.trim(),
+      });
+      const n = rawMatches.length;
       const pageNumber = 1;
       const nextBackend: AutoCountBackendState = {
         pageNumber,
@@ -1130,6 +1165,7 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
       setLastAnalyzeKind("searchText");
       saveQtoAutoCount(trimmedJobId, selectedPdfPath.trim(), {
         v: 1,
+        source: "searchText",
         ...nextBackend,
       });
       setMetadataCount(n);
@@ -1734,9 +1770,31 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
 
   const refreshAutoCountMatchesFromServer = useCallback(async () => {
     if (!trimmedJobId || !selectedPdfPath?.trim()) return;
+    const path = selectedPdfPath.trim();
+    if (lastAnalyzeKind === "searchText") {
+      const { matches } = await getSearchTextMatches({
+        job_id: trimmedJobId,
+        file_path: path,
+      });
+      setAutoCountBackend((prev) => {
+        if (!prev) return prev;
+        const next: AutoCountBackendState = {
+          ...prev,
+          matches: matches as AutoCountBackendState["matches"],
+        };
+        saveQtoAutoCount(trimmedJobId, path, {
+          v: 1,
+          source: "searchText",
+          ...next,
+        });
+        return next;
+      });
+      setMetadataCount(matches.length);
+      return;
+    }
     const { matches } = await getAutoCountMatches({
       job_id: trimmedJobId,
-      file_path: selectedPdfPath.trim(),
+      file_path: path,
     });
     setAutoCountBackend((prev) => {
       if (!prev) return prev;
@@ -1744,14 +1802,14 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
         ...prev,
         matches: matches as AutoCountBackendState["matches"],
       };
-      saveQtoAutoCount(trimmedJobId, selectedPdfPath.trim(), {
+      saveQtoAutoCount(trimmedJobId, path, {
         v: 1,
         ...next,
       });
       return next;
     });
     setMetadataCount(matches.length);
-  }, [trimmedJobId, selectedPdfPath]);
+  }, [trimmedJobId, selectedPdfPath, lastAnalyzeKind]);
 
   const handleAutoCountRemoveMatch = useCallback(
     (matchId: string | number) => {
@@ -1769,15 +1827,24 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
         void (async () => {
           setAutoCountLoading(true);
           try {
-            await postAutoCountRemove({
-              job_id: trimmedJobId,
-              file_path: selectedPdfPath.trim(),
-              item_id: String(matchId),
-            });
+            const path = selectedPdfPath.trim();
+            if (lastAnalyzeKindRef.current === "searchText") {
+              await postSearchTextRemove({
+                job_id: trimmedJobId,
+                file_path: path,
+                item_id: String(matchId),
+              });
+            } else {
+              await postAutoCountRemove({
+                job_id: trimmedJobId,
+                file_path: path,
+                item_id: String(matchId),
+              });
+            }
             await refreshAutoCountMatchesFromServer();
             toast.success("Match removed.");
           } catch (e) {
-            console.log("[qto] postAutoCountRemove failed", e);
+            console.log("[qto] remove match failed", e);
             toast.error("Could not remove match.");
           } finally {
             setAutoCountLoading(false);
@@ -1815,19 +1882,37 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
       }
       setAutoCountLoading(true);
       try {
-        await postAutoCountAdd({
-          job_id: trimmedJobId,
-          file_path: selectedPdfPath.trim(),
-          item: autoCountRoi.roi,
-        });
+        const path = selectedPdfPath.trim();
+        if (lastAnalyzeKind === "searchText") {
+          const r = autoCountRoi.roi;
+          await postSearchTextAdd({
+            job_id: trimmedJobId,
+            file_path: path,
+            item: {
+              x: r.x,
+              y: r.y,
+              w: r.width,
+              h: r.height,
+              ...(searchTerm.trim() ? { text: searchTerm.trim() } : {}),
+            },
+          });
+        } else {
+          await postAutoCountAdd({
+            job_id: trimmedJobId,
+            file_path: path,
+            item: autoCountRoi.roi,
+          });
+        }
         await refreshAutoCountMatchesFromServer();
         setAutoCountRoi(null);
-        setLastAnalyzeKind("autoCount");
+        if (lastAnalyzeKind !== "searchText") {
+          setLastAnalyzeKind("autoCount");
+        }
         toast.success("Match added.");
         setObjectDataFormVisible(true);
         scrollToObjectDataSection();
       } catch (e) {
-        console.log("[qto] postAutoCountAdd failed", e);
+        console.log("[qto] manual add match failed", e);
         toast.error("Could not add match.");
       } finally {
         setAutoCountLoading(false);
@@ -1888,6 +1973,8 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
     confidence,
     scrollToObjectDataSection,
     refreshAutoCountMatchesFromServer,
+    lastAnalyzeKind,
+    searchTerm,
   ]);
 
   const handleDoorFinderAnalyze = useCallback(async () => {
@@ -2280,6 +2367,7 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
       case "floorArea":
         return "Calculate Area";
       case "searchText":
+        if (autoCountBackend && autoCountRoi) return "Add highlight";
         return "Search";
       default:
         return "Analyze";
@@ -2301,7 +2389,7 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
       case "floorArea":
         return floorExtractorLoading;
       case "searchText":
-        return searchTextLoading;
+        return searchTextLoading || autoCountLoading;
       default:
         return false;
     }
@@ -2332,6 +2420,7 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
       case "floorArea":
         return floorPendingSeed == null;
       case "searchText":
+        if (autoCountBackend && autoCountRoi) return false;
         return !searchTerm.trim();
       default:
         return true;
@@ -2370,6 +2459,9 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
       case "floorArea":
         return void handleFloorExtract();
       case "searchText":
+        if (autoCountBackend && autoCountRoi) {
+          return void handleAutoCountAnalyze();
+        }
         return void handleSearchTextSubmit();
       default:
         return;
@@ -2383,6 +2475,8 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
     handleRoomFinderAnalyze,
     handleFloorExtract,
     handleSearchTextSubmit,
+    autoCountBackend,
+    autoCountRoi,
   ]);
 
   return (

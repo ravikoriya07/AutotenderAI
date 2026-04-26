@@ -848,6 +848,13 @@ function PdfPageRow({
       ref={pageWrapperRef}
       data-pdf-page={pageNumber}
       className="relative mx-auto block w-max max-w-full"
+      style={
+        {
+          contentVisibility: "auto",
+          contain: "layout paint size",
+          containIntrinsicSize: "1400px 900px",
+        } as CSSProperties
+      }
     >
       <canvas
         ref={pdfRef}

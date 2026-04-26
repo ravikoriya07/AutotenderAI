@@ -534,6 +534,50 @@ function pickBestFacadeSpace(
   return "previewGlobal";
 }
 
+function facadeDimensionsExtent(
+  dimensions: FacadeDimension[]
+): { maxR: number; maxB: number } | null {
+  let maxR = 0;
+  let maxB = 0;
+  for (const d of dimensions) {
+    const x = Number(d.x);
+    const y = Number(d.y);
+    const w = Number(d.w ?? d.width);
+    const h = Number(d.h ?? d.height);
+    if (![x, y, w, h].every((v) => Number.isFinite(v))) continue;
+    maxR = Math.max(maxR, x + w);
+    maxB = Math.max(maxB, y + h);
+  }
+  if (maxR <= 0 || maxB <= 0) return null;
+  return { maxR, maxB };
+}
+
+/**
+ * Full-page ROI edge case:
+ * - If API already sends preview/global coordinates, ROI-based scoring can overfit and pick
+ *   an unnecessary transform.
+ * - Compare extents against page-space vs raster-space and lock a stable mode.
+ */
+function pickFacadeSpaceForFullPageRoi(
+  dimensions: FacadeDimension[],
+  pageW: number,
+  pageH: number,
+  png: { w: number; h: number } | null
+): FacadeSpaceStrategy | null {
+  const ex = facadeDimensionsExtent(dimensions);
+  if (!ex) return null;
+  const ePrev =
+    Math.abs(ex.maxR - pageW) / Math.max(1, pageW) +
+    Math.abs(ex.maxB - pageH) / Math.max(1, pageH);
+  if (!png) return "previewGlobal";
+  const ePng =
+    Math.abs(ex.maxR - png.w) / Math.max(1, png.w) +
+    Math.abs(ex.maxB - png.h) / Math.max(1, png.h);
+  if (ePrev <= ePng) return "previewGlobal";
+  // For full-page ROI, this is equivalent to "fullPageOffset" and avoids ROI-origin dependence.
+  return "pageAbsolute";
+}
+
 /**
  * `/analyze_facade` `dimensions[]` → CSS boxes + numeric ids for overlay.
  *
@@ -573,13 +617,16 @@ export function facadeDimensionsToScreenBoxes(
     if (typeof aW === "number" && typeof aH === "number" && aW > 0 && aH > 0 && !png) {
       strategy = "analysisRaster";
     } else {
-      strategy = pickBestFacadeSpace(
-        dimensions,
-        roi,
-        pageW,
-        pageH,
-        png
-      ) as FacadeSpaceStrategy;
+      const roiCoverageW = roi.width / Math.max(1, pageW);
+      const roiCoverageH = roi.height / Math.max(1, pageH);
+      const isFullPageRoi = roiCoverageW >= 0.92 && roiCoverageH >= 0.92;
+      if (isFullPageRoi) {
+        strategy =
+          pickFacadeSpaceForFullPageRoi(dimensions, pageW, pageH, png) ??
+          pickBestFacadeSpace(dimensions, roi, pageW, pageH, png);
+      } else {
+        strategy = pickBestFacadeSpace(dimensions, roi, pageW, pageH, png);
+      }
     }
   } else if (roi) {
     strategy = "rawLegacy";
