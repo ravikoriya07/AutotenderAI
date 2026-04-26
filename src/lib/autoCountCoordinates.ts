@@ -706,6 +706,13 @@ export function facadeDimensionsToScreenBoxes(
       h: bh,
       score: 1,
     };
+    if (typeof d.item_id === "string" && d.item_id.trim() !== "") {
+      (row as { id?: string | number }).id = d.item_id.trim();
+    } else if (typeof d.id === "string" && d.id.trim() !== "") {
+      (row as { id?: string | number }).id = d.id.trim();
+    } else if (typeof d.id === "number" && Number.isFinite(d.id)) {
+      (row as { id?: string | number }).id = d.id;
+    }
     const screen = backendMatchesToScreen([row], metrics)[0];
     if (
       !screen ||
@@ -716,9 +723,13 @@ export function facadeDimensionsToScreenBoxes(
     ) {
       continue;
     }
+    const displayId =
+      typeof d.id === "number" && Number.isFinite(d.id)
+        ? d.id
+        : out.length + 1;
     out.push({
       box: screen,
-      id: Number.isFinite(d.id) ? d.id : out.length + 1,
+      id: displayId,
     });
   }
   return out;
@@ -732,6 +743,8 @@ export type WallSegmentScreen = {
   y2: number;
   lengthM: number;
   angleDeg: number;
+  /** For `POST /analyze_walls/remove` (when the API provides ids). */
+  segmentId?: string | number;
 };
 
 type WallSegApi = {
@@ -739,6 +752,7 @@ type WallSegApi = {
   end: [number, number];
   length_m?: number;
   angle?: number;
+  segmentId?: string | number;
 };
 
 function normalizeWallPoint(p: unknown): [number, number] | null {
@@ -773,11 +787,19 @@ function normalizeWallSegmentItem(raw: unknown): WallSegApi | null {
   const lenRaw = o.length_m ?? o.lengthM ?? o.length;
   const len = Number(lenRaw);
   const angleRaw = o.angle ?? o.Angle;
+  const idRaw = o.id ?? o.item_id ?? o.ItemId ?? o._id;
+  const segmentId =
+    idRaw != null && String(idRaw).trim() !== ""
+      ? (typeof idRaw === "string" || typeof idRaw === "number"
+          ? idRaw
+          : String(idRaw))
+      : undefined;
   return {
     start,
     end,
     length_m: Number.isFinite(len) ? len : undefined,
     angle: angleRaw !== undefined ? Number(angleRaw) : undefined,
+    segmentId,
   };
 }
 
@@ -873,6 +895,7 @@ export function wallApiSegmentsToScreenDrawItems(
       y2: seg.end[1] * fy,
       lengthM: len,
       angleDeg: Number(seg.angle ?? 0),
+      segmentId: seg.segmentId,
     };
   });
 }
@@ -895,6 +918,8 @@ export type RoomPolygonScreen = {
   centerX: number;
   centerY: number;
   areaM2: number;
+  /** For `POST /analyze_rooms/remove` when the API provides ids. */
+  roomId?: string | number;
 };
 
 function normalizeRoomPoint(p: unknown): { x: number; y: number } | null {
@@ -944,6 +969,14 @@ export function roomFinderResponseToScreenPolygons(
   for (const row of rows) {
     const polyRaw = row.polygon;
     if (!Array.isArray(polyRaw) || polyRaw.length < 3) continue;
+    const rowRec = row as unknown as Record<string, unknown>;
+    const idRaw = rowRec.id ?? rowRec.item_id ?? rowRec.ItemId ?? rowRec._id;
+    const roomId =
+      idRaw != null && String(idRaw).trim() !== ""
+        ? typeof idRaw === "string" || typeof idRaw === "number"
+          ? idRaw
+          : String(idRaw)
+        : undefined;
     const pts: { x: number; y: number }[] = [];
     for (const pt of polyRaw) {
       const p = normalizeRoomPoint(pt);
@@ -978,6 +1011,7 @@ export function roomFinderResponseToScreenPolygons(
       centerX: centerBx * fx,
       centerY: centerBy * fy,
       areaM2: areaM,
+      roomId,
     });
   }
   return out;

@@ -19,6 +19,9 @@ export type CadAnalyzerFloatingBridgeProps = {
   onFloorAreaToolSelect?: () => void;
   /** User selected Facade from the bar. */
   onFacadeToolSelect?: () => void;
+  searchTextAreaSelectionActive?: boolean;
+  searchTextAreaSelectionDisabled?: boolean;
+  onSearchTextAreaSelectionToggle?: () => void;
 };
 
 /** Renders the bottom bar using tool context (must be inside `CadAnalyzerToolProvider`). */
@@ -30,6 +33,9 @@ export function CadAnalyzerFloatingBridge({
   onRoomFinderToolSelect,
   onFloorAreaToolSelect,
   onFacadeToolSelect,
+  searchTextAreaSelectionActive,
+  searchTextAreaSelectionDisabled,
+  onSearchTextAreaSelectionToggle,
 }: CadAnalyzerFloatingBridgeProps) {
   const { tool, setTool } = useCadAnalyzerTool();
 
@@ -83,5 +89,13 @@ export function CadAnalyzerFloatingBridge({
     ]
   );
 
-  return <FloatingActionBar activeTool={tool} onToolChange={handleToolChange} />;
+  return (
+    <FloatingActionBar
+      activeTool={tool}
+      onToolChange={handleToolChange}
+      searchTextAreaSelectionActive={searchTextAreaSelectionActive}
+      searchTextAreaSelectionDisabled={searchTextAreaSelectionDisabled}
+      onSearchTextAreaSelectionToggle={onSearchTextAreaSelectionToggle}
+    />
+  );
 }

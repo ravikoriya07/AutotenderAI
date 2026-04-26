@@ -8,6 +8,9 @@ type WallFinderRequestConfig = AxiosRequestConfig & {
 };
 
 export type WallFinderApiSegment = {
+  /** For `POST /analyze_walls/remove`. */
+  id?: string | number;
+  item_id?: string;
   angle?: number;
   start: [number, number];
   end: [number, number];
@@ -36,6 +39,90 @@ export type AnalyzeWallsRequest = {
   pixel_to_meter: number;
   confidence: number;
 };
+
+export type AnalyzeWallsAddItem = {
+  start: { x: number; y: number };
+  end: { x: number; y: number };
+  length_m: number;
+};
+
+export type AnalyzeWallsAddRequest = {
+  job_id: string;
+  file_path: string;
+  item: AnalyzeWallsAddItem;
+};
+
+export type AnalyzeWallsRemoveRequest = {
+  job_id: string;
+  file_path: string;
+  item_id: string;
+};
+
+function normalizeWallsResponsePayload(
+  data: unknown
+): WallFinderApiResponse & { segments?: WallFinderApiSegment[] } {
+  if (data == null) return { segments: [] };
+  if (Array.isArray(data)) {
+    return { segments: data as WallFinderApiSegment[] } as WallFinderApiResponse;
+  }
+  if (typeof data === "object") {
+    return data as WallFinderApiResponse & { segments?: WallFinderApiSegment[] };
+  }
+  return { segments: [] };
+}
+
+/**
+ * `GET /analyze_walls/segments` — source of truth after add/remove.
+ */
+export async function getAnalyzeWallsSegments(params: {
+  job_id: string;
+  file_path: string;
+}): Promise<WallFinderApiResponse> {
+  const config: WallFinderRequestConfig = { skipGlobalLoader: true };
+  const { data } = await autoCountClient.get<unknown>(
+    "/analyze_walls/segments",
+    {
+      ...config,
+      params: {
+        job_id: params.job_id,
+        file_path: toAutoCountApiFilePath(params.file_path),
+      },
+    }
+  );
+  return normalizeWallsResponsePayload(data);
+}
+
+export async function postAnalyzeWallsAdd(
+  payload: AnalyzeWallsAddRequest
+): Promise<unknown> {
+  const config: WallFinderRequestConfig = { skipGlobalLoader: true };
+  const { data } = await autoCountClient.post(
+    "/analyze_walls/add",
+    {
+      job_id: payload.job_id,
+      file_path: toAutoCountApiFilePath(payload.file_path),
+      item: payload.item,
+    },
+    config
+  );
+  return data;
+}
+
+export async function postAnalyzeWallsRemove(
+  payload: AnalyzeWallsRemoveRequest
+): Promise<unknown> {
+  const config: WallFinderRequestConfig = { skipGlobalLoader: true };
+  const { data } = await autoCountClient.post(
+    "/analyze_walls/remove",
+    {
+      job_id: payload.job_id,
+      file_path: toAutoCountApiFilePath(payload.file_path),
+      item_id: payload.item_id,
+    },
+    config
+  );
+  return data;
+}
 
 export async function postAnalyzeWalls(
   payload: AnalyzeWallsRequest

@@ -36,6 +36,9 @@ export function readRoomAreaM2FromRow(row: unknown): number | null {
 export type RoomFinderPolygonPoint = { x: number; y: number };
 
 export type RoomFinderRoomRow = {
+  /** For `POST /analyze_rooms/remove`. */
+  id?: string | number;
+  item_id?: string;
   area_m2: number;
   center: RoomFinderPolygonPoint;
   confidence?: number;
@@ -75,6 +78,90 @@ export function pickRoomRowsFromResponse(
     if (Array.isArray(c) && c.length > 0) return c as RoomFinderRoomRow[];
   }
   return [];
+}
+
+export type AnalyzeRoomsAddItem = {
+  polygon: RoomFinderPolygonPoint[];
+  center: RoomFinderPolygonPoint;
+  area_m2: number;
+};
+
+export type AnalyzeRoomsAddRequest = {
+  job_id: string;
+  file_path: string;
+  item: AnalyzeRoomsAddItem;
+};
+
+export type AnalyzeRoomsRemoveRequest = {
+  job_id: string;
+  file_path: string;
+  item_id: string;
+};
+
+function normalizeRoomsResponsePayload(
+  data: unknown
+): RoomFinderApiResponse {
+  if (data == null) return { rooms: [] };
+  if (Array.isArray(data)) {
+    return { rooms: data as RoomFinderRoomRow[] };
+  }
+  if (typeof data === "object") {
+    return data as RoomFinderApiResponse;
+  }
+  return { rooms: [] };
+}
+
+/**
+ * `GET /analyze_rooms/rooms` — source of truth after add/remove.
+ */
+export async function getAnalyzeRoomsRooms(params: {
+  job_id: string;
+  file_path: string;
+}): Promise<RoomFinderApiResponse> {
+  const config: RoomFinderRequestConfig = { skipGlobalLoader: true };
+  const { data } = await autoCountClient.get<unknown>(
+    "/analyze_rooms/rooms",
+    {
+      ...config,
+      params: {
+        job_id: params.job_id,
+        file_path: toAutoCountApiFilePath(params.file_path),
+      },
+    }
+  );
+  return normalizeRoomsResponsePayload(data);
+}
+
+export async function postAnalyzeRoomsAdd(
+  payload: AnalyzeRoomsAddRequest
+): Promise<unknown> {
+  const config: RoomFinderRequestConfig = { skipGlobalLoader: true };
+  const { data } = await autoCountClient.post(
+    "/analyze_rooms/add",
+    {
+      job_id: payload.job_id,
+      file_path: toAutoCountApiFilePath(payload.file_path),
+      item: payload.item,
+    },
+    config
+  );
+  return data;
+}
+
+export async function postAnalyzeRoomsRemove(
+  payload: AnalyzeRoomsRemoveRequest
+): Promise<unknown> {
+  const config: RoomFinderRequestConfig = { skipGlobalLoader: true };
+  const { data } = await autoCountClient.post(
+    "/analyze_rooms/remove",
+    {
+      job_id: payload.job_id,
+      file_path: toAutoCountApiFilePath(payload.file_path),
+      item_id: payload.item_id,
+    },
+    config
+  );
+  return data;
 }
 
 export async function postAnalyzeRooms(

@@ -94,14 +94,25 @@ import {
   postSearchTextAdd,
   postSearchTextRemove,
 } from "@/services/searchTextService";
-import { postAnalyzeDoors } from "@/services/doorFinderService";
 import {
+  getAnalyzeDoorsMatches,
+  postAnalyzeDoors,
+  postAnalyzeDoorsAdd,
+  postAnalyzeDoorsRemove,
+} from "@/services/doorFinderService";
+import {
+  getAnalyzeWallsSegments,
   postAnalyzeWalls,
+  postAnalyzeWallsAdd,
+  postAnalyzeWallsRemove,
   type WallFinderApiSegment,
 } from "@/services/wallFinderService";
 import {
+  getAnalyzeRoomsRooms,
   pickRoomRowsFromResponse,
   postAnalyzeRooms,
+  postAnalyzeRoomsAdd,
+  postAnalyzeRoomsRemove,
   ROOM_FINDER_DEFAULT_PIXEL_TO_METER,
   type RoomFinderRoomRow,
 } from "@/services/roomFinderService";
@@ -124,7 +135,11 @@ import {
 } from "@/lib/qtoFacadeStorage";
 import {
   FACADE_PIXEL_TO_METER,
+  getAnalyzeFacadeDimensions,
   postAnalyzeFacade,
+  postAnalyzeFacadeAdd,
+  postAnalyzeFacadeRemove,
+  type AnalyzeFacadeResponse,
 } from "@/services/facadeAnalyzerService";
 import { createClientId } from "@/lib/createClientId";
 import type { AutoCountRoiCss } from "@/components/quantity-take-off/cad-analyzer/CadPdfCanvasStack";
@@ -293,15 +308,6 @@ function QtoRightSidebarReopenChip({
   );
 }
 
-/** When tick increments (e.g. right options panel closed), select Pan so the user can move/zoom without ROI capture. */
-function CadToolPanOnTick({ tick }: { tick: number }) {
-  const { setTool } = useCadAnalyzerTool();
-  useEffect(() => {
-    if (tick > 0) setTool("hand");
-  }, [tick, setTool]);
-  return null;
-}
-
 /** Full-viewport blocking overlay for Auto Count analyze or Search Text (portal to `document.body`). */
 function BlockingStatusOverlay({
   open,
@@ -423,6 +429,8 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
   const [caseSensitive, setCaseSensitive] = useState(false);
   const [searchTextLoading, setSearchTextLoading] = useState(false);
   const [searchTextError, setSearchTextError] = useState<string | null>(null);
+  const [searchTextManualSelectActive, setSearchTextManualSelectActive] =
+    useState(false);
   /** Object ID/name form — shown only after a successful analyze/search, or when session storage restores results. Hidden when switching tools until the next success. */
   const [objectDataFormVisible, setObjectDataFormVisible] = useState(false);
   const [rotationInvariant, setRotationInvariant] = useState(true);
@@ -491,8 +499,6 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
     string | null
   >(null);
   const [expandedSavedId, setExpandedSavedId] = useState<string | null>(null);
-  const [panToolAfterSidebarCloseTick, setPanToolAfterSidebarCloseTick] =
-    useState(0);
 
   const prevJobIdForTreeRef = useRef<string | null>(null);
   const prevQtoToolRef = useRef<ToolSidebarMode | null>(null);
@@ -724,10 +730,74 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
           console.log("[qto] getSearchTextMatches on restore failed", e);
         });
     } else if (storedAc) setLastAnalyzeKind("autoCount");
-    else if (storedDf) setLastAnalyzeKind("doorFinder");
-    else if (storedFacade) setLastAnalyzeKind("facade");
-    else if (storedWf) setLastAnalyzeKind("wallFinder");
-    else if (storedRf) setLastAnalyzeKind("roomFinder");
+    else if (storedDf) {
+      setLastAnalyzeKind("doorFinder");
+      void getAnalyzeDoorsMatches({
+        job_id: trimmedJobId,
+        file_path: path,
+      })
+        .then(({ matches }) => {
+          setDoorFinderBackend((prev) => {
+            if (!prev) return prev;
+            const next: AutoCountBackendState = {
+              ...prev,
+              matches: matches as AutoCountBackendState["matches"],
+            };
+            saveQtoDoorFinder(trimmedJobId, path, { v: 1, ...next });
+            return next;
+          });
+          setDoorFinderResults(matches);
+          setMetadataCount(matches.length);
+        })
+        .catch((e) => {
+          console.log("[qto] getAnalyzeDoorsMatches on restore failed", e);
+        });
+    } else if (storedFacade) setLastAnalyzeKind("facade");
+    else if (storedWf) {
+      setLastAnalyzeKind("wallFinder");
+      void getAnalyzeWallsSegments({
+        job_id: trimmedJobId,
+        file_path: path,
+      })
+        .then((res) => {
+          setWallFinderBackend((prev) => {
+            if (!prev) return prev;
+            const next: WallFinderBackendState = {
+              ...prev,
+              response: res,
+            };
+            saveQtoWallFinder(trimmedJobId, path, { v: 1, ...next });
+            return next;
+          });
+          setWallFinderResults(
+            pickWallSegmentsFromResponse(res) as WallFinderApiSegment[]
+          );
+        })
+        .catch((e) => {
+          console.log("[qto] getAnalyzeWallsSegments on restore failed", e);
+        });
+    } else if (storedRf) {
+      setLastAnalyzeKind("roomFinder");
+      void getAnalyzeRoomsRooms({
+        job_id: trimmedJobId,
+        file_path: path,
+      })
+        .then((res) => {
+          setRoomFinderBackend((prev) => {
+            if (!prev) return prev;
+            const next: RoomFinderBackendState = {
+              ...prev,
+              response: res,
+            };
+            saveQtoRoomFinder(trimmedJobId, path, { v: 1, ...next });
+            return next;
+          });
+          setRoomResults(pickRoomRowsFromResponse(res));
+        })
+        .catch((e) => {
+          console.log("[qto] getAnalyzeRoomsRooms on restore failed", e);
+        });
+    }
     else if (storedFloor?.extractions?.length) setLastAnalyzeKind("floorArea");
     else setLastAnalyzeKind("autoCount");
 
@@ -850,9 +920,6 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
   );
 
   const closeAutoCountPanel = useCallback(() => {
-    if (isAutoCountOpenRef.current) {
-      setPanToolAfterSidebarCloseTick((t) => t + 1);
-    }
     setIsAutoCountOpen(false);
     clearAutoCountUnmountTimeout();
     if (typeof window === "undefined") return;
@@ -934,9 +1001,14 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
   /** Open symbol options only after a ROI is committed (mouse/touch release), not when picking the tool. */
   const handleAutoCountRoiChange = useCallback(
     (roi: AutoCountRoiCss | null) => {
-      commitRoiFromDrag(roi, setAutoCountRoi, "autoCount");
+      const panelMode: ToolSidebarMode =
+        lastToolAction === "searchText" ? "searchText" : "autoCount";
+      if (panelMode === "searchText" && roi) {
+        setSearchTextManualSelectActive(false);
+      }
+      commitRoiFromDrag(roi, setAutoCountRoi, panelMode);
     },
-    [commitRoiFromDrag]
+    [commitRoiFromDrag, lastToolAction]
   );
 
   const handleDoorFinderRoiChange = useCallback(
@@ -1142,6 +1214,7 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
     }
     if (!trimmedJobId || !selectedPdfPath?.trim()) return;
     setSearchTextError(null);
+    setSearchTextManualSelectActive(false);
     setSearchTextLoading(true);
     try {
       await postSearchText({
@@ -1208,6 +1281,26 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
     autoCountSidebarMounted,
     clearAutoCountUnmountTimeout,
     scrollToObjectDataSection,
+  ]);
+
+  const handleSearchTextManualSelectToggle = useCallback(() => {
+    if (searchTextManualSelectActive) {
+      setSearchTextManualSelectActive(false);
+      setAutoCountRoi(null);
+      return;
+    }
+    if (lastAnalyzeKind !== "searchText" || !autoCountBackend) {
+      toast.error("Run Search first to enable manual add.");
+      return;
+    }
+    setLastToolAction("searchText");
+    setSearchTextManualSelectActive(true);
+    setAutoCountRoi(null);
+    setSearchTextError(null);
+  }, [
+    searchTextManualSelectActive,
+    lastAnalyzeKind,
+    autoCountBackend,
   ]);
 
   const handleAutoCountAsideTransitionEnd = useCallback(
@@ -1461,6 +1554,7 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
     setCaseSensitive(false);
     setSearchTextError(null);
     setSearchTextLoading(false);
+    setSearchTextManualSelectActive(false);
     setLastToolAction("autoCount");
     setSelectedSavedObjectId(null);
     setExpandedSavedId(null);
@@ -1476,6 +1570,12 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
     selectedPdfPath,
     closeAutoCountPanel,
   ]);
+
+  useEffect(() => {
+    if (lastToolAction !== "searchText" && searchTextManualSelectActive) {
+      setSearchTextManualSelectActive(false);
+    }
+  }, [lastToolAction, searchTextManualSelectActive]);
 
   const selectedSavedEntry = useMemo(() => {
     if (!selectedSavedObjectId) return undefined;
@@ -1977,6 +2077,180 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
     searchTerm,
   ]);
 
+  const refreshDoorMatchesFromServer = useCallback(async () => {
+    if (!trimmedJobId || !selectedPdfPath?.trim()) return;
+    const path = selectedPdfPath.trim();
+    const { matches } = await getAnalyzeDoorsMatches({
+      job_id: trimmedJobId,
+      file_path: path,
+    });
+    setDoorFinderBackend((prev) => {
+      if (!prev) return prev;
+      const next: AutoCountBackendState = {
+        ...prev,
+        matches: matches as AutoCountBackendState["matches"],
+      };
+      saveQtoDoorFinder(trimmedJobId, path, { v: 1, ...next });
+      return next;
+    });
+    setDoorFinderResults(matches);
+    setMetadataCount(matches.length);
+  }, [trimmedJobId, selectedPdfPath]);
+
+  const handleDoorRemoveMatch = useCallback(
+    (matchId: string | number) => {
+      if (!trimmedJobId || !selectedPdfPath?.trim() || doorFinderLoading) return;
+      void Swal.fire({
+        title: "Remove door?",
+        text: "Are you sure you want to remove this door highlight?",
+        icon: "warning",
+        showCancelButton: true,
+        confirmButtonText: "Remove",
+        cancelButtonText: "Cancel",
+        confirmButtonColor: "hsl(var(--destructive))",
+      }).then((result) => {
+        if (!result.isConfirmed) return;
+        void (async () => {
+          setDoorFinderLoading(true);
+          try {
+            await postAnalyzeDoorsRemove({
+              job_id: trimmedJobId,
+              file_path: selectedPdfPath.trim(),
+              item_id: String(matchId),
+            });
+            await refreshDoorMatchesFromServer();
+            toast.success("Door removed.");
+          } catch (e) {
+            console.log("[qto] postAnalyzeDoorsRemove failed", e);
+            toast.error("Could not remove door.");
+          } finally {
+            setDoorFinderLoading(false);
+          }
+        })();
+      });
+    },
+    [
+      trimmedJobId,
+      selectedPdfPath,
+      doorFinderLoading,
+      refreshDoorMatchesFromServer,
+    ]
+  );
+
+  const refreshWallSegmentsFromServer = useCallback(async () => {
+    if (!trimmedJobId || !selectedPdfPath?.trim()) return;
+    const path = selectedPdfPath.trim();
+    const res = await getAnalyzeWallsSegments({
+      job_id: trimmedJobId,
+      file_path: path,
+    });
+    const segs = pickWallSegmentsFromResponse(res) as WallFinderApiSegment[];
+    setWallFinderBackend((prev) => {
+      if (!prev) return prev;
+      const next: WallFinderBackendState = {
+        ...prev,
+        response: res,
+      };
+      saveQtoWallFinder(trimmedJobId, path, { v: 1, ...next });
+      return next;
+    });
+    setWallFinderResults(segs);
+  }, [trimmedJobId, selectedPdfPath]);
+
+  const handleWallRemoveSegment = useCallback(
+    (itemId: string) => {
+      if (!trimmedJobId || !selectedPdfPath?.trim() || wallFinderLoading) return;
+      void Swal.fire({
+        title: "Remove wall segment?",
+        text: "This line will be removed from the wall list.",
+        icon: "warning",
+        showCancelButton: true,
+        confirmButtonText: "Remove",
+        cancelButtonText: "Cancel",
+        confirmButtonColor: "hsl(var(--destructive))",
+      }).then((result) => {
+        if (!result.isConfirmed) return;
+        void (async () => {
+          setWallFinderLoading(true);
+          try {
+            await postAnalyzeWallsRemove({
+              job_id: trimmedJobId,
+              file_path: selectedPdfPath.trim(),
+              item_id: itemId,
+            });
+            await refreshWallSegmentsFromServer();
+            toast.success("Wall segment removed.");
+          } catch (e) {
+            console.log("[qto] postAnalyzeWallsRemove failed", e);
+            toast.error("Could not remove wall segment.");
+          } finally {
+            setWallFinderLoading(false);
+          }
+        })();
+      });
+    },
+    [
+      trimmedJobId,
+      selectedPdfPath,
+      wallFinderLoading,
+      refreshWallSegmentsFromServer,
+    ]
+  );
+
+  const handleWallSegmentLineCommit = useCallback(
+    (
+      pageNumber: number,
+      startCss: { x: number; y: number },
+      endCss: { x: number; y: number }
+    ) => {
+      if (!trimmedJobId || !selectedPdfPath?.trim() || !wallFinderBackend) return;
+      if (wallFinderBackend.pageNumber !== pageNumber) {
+        toast.error("Draw on the same page as the wall analysis.");
+        return;
+      }
+      const metrics = cadCanvasRef.current?.getAutoCountPageMetrics(pageNumber);
+      if (!metrics) {
+        toast.error("Page layout not ready. Wait for the PDF to finish rendering.");
+        return;
+      }
+      const a = screenPointToBackend(startCss.x, startCss.y, metrics);
+      const b = screenPointToBackend(endCss.x, endCss.y, metrics);
+      const lenPx = Math.hypot(b.x - a.x, b.y - a.y);
+      const length_m = lenPx * WALL_FINDER_PIXEL_TO_M;
+      if (!Number.isFinite(length_m) || length_m < 0.0001) {
+        toast.error("Line is too short.");
+        return;
+      }
+      void (async () => {
+        setWallFinderLoading(true);
+        try {
+          await postAnalyzeWallsAdd({
+            job_id: trimmedJobId,
+            file_path: selectedPdfPath.trim(),
+            item: {
+              start: { x: a.x, y: a.y },
+              end: { x: b.x, y: b.y },
+              length_m,
+            },
+          });
+          await refreshWallSegmentsFromServer();
+          toast.success("Wall segment added.");
+        } catch (e) {
+          console.log("[qto] postAnalyzeWallsAdd failed", e);
+          toast.error("Could not add wall segment.");
+        } finally {
+          setWallFinderLoading(false);
+        }
+      })();
+    },
+    [
+      trimmedJobId,
+      selectedPdfPath,
+      wallFinderBackend,
+      refreshWallSegmentsFromServer,
+    ]
+  );
+
   const handleDoorFinderAnalyze = useCallback(async () => {
     if (!trimmedJobId || !selectedPdfPath?.trim()) return;
     if (!doorFinderRoi && !doorFinderBackend) return;
@@ -1993,6 +2267,41 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
     const roiBackend = doorFinderRoi
       ? doorFinderRoi.roi
       : doorFinderBackend!.roi;
+
+    if (doorFinderBackend && doorFinderRoi) {
+      if (doorFinderBackend.pageNumber !== doorFinderRoi.pageNumber) {
+        toast.error("Draw on the same page as the current analysis.");
+        return;
+      }
+      setDoorFinderLoading(true);
+      try {
+        const path = selectedPdfPath.trim();
+        const r = doorFinderRoi.roi;
+        await postAnalyzeDoorsAdd({
+          job_id: trimmedJobId,
+          file_path: path,
+          item: {
+            x: r.x,
+            y: r.y,
+            w: r.width,
+            h: r.height,
+            label: "door",
+          },
+        });
+        await refreshDoorMatchesFromServer();
+        setDoorFinderRoi(null);
+        setLastAnalyzeKind("doorFinder");
+        toast.success("Door added.");
+        setObjectDataFormVisible(true);
+        scrollToObjectDataSection();
+      } catch (e) {
+        console.log("[qto] postAnalyzeDoorsAdd failed", e);
+        toast.error("Could not add door.");
+      } finally {
+        setDoorFinderLoading(false);
+      }
+      return;
+    }
 
     setDoorFinderLoading(true);
     try {
@@ -2042,7 +2351,80 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
     doorFinderBackend,
     confidence,
     scrollToObjectDataSection,
+    refreshDoorMatchesFromServer,
   ]);
+
+  const refreshFacadeDimensionsFromServer = useCallback(async () => {
+    if (!trimmedJobId || !selectedPdfPath?.trim()) return;
+    const path = selectedPdfPath.trim();
+    const { dimensions } = await getAnalyzeFacadeDimensions({
+      job_id: trimmedJobId,
+      file_path: path,
+    });
+    const dim = dimensions ?? [];
+    setFacadeBackend((prev) => {
+      if (!prev) return prev;
+      const sum = dim.reduce((acc, d) => {
+        const a = Number(d.area_m2);
+        return acc + (Number.isFinite(a) && a > 0 ? a : 0);
+      }, 0);
+      const nextResponse: AnalyzeFacadeResponse = {
+        ...prev.response,
+        dimensions: dim,
+        window_count: dim.length,
+      };
+      if (sum > 0) {
+        nextResponse.window_area = sum;
+      }
+      const next: FacadeBackendState = {
+        ...prev,
+        response: nextResponse,
+      };
+      saveQtoFacade(trimmedJobId, path, { v: 1, ...next });
+      return next;
+    });
+    setMetadataCount(dim.length);
+  }, [trimmedJobId, selectedPdfPath]);
+
+  const handleFacadeRemoveWindow = useCallback(
+    (itemId: string) => {
+      if (!trimmedJobId || !selectedPdfPath?.trim() || facadeLoading) return;
+      void Swal.fire({
+        title: "Remove window?",
+        text: "Remove this window from the facade results?",
+        icon: "warning",
+        showCancelButton: true,
+        confirmButtonText: "Remove",
+        cancelButtonText: "Cancel",
+        confirmButtonColor: "hsl(var(--destructive))",
+      }).then((result) => {
+        if (!result.isConfirmed) return;
+        void (async () => {
+          setFacadeLoading(true);
+          try {
+            await postAnalyzeFacadeRemove({
+              job_id: trimmedJobId,
+              file_path: selectedPdfPath.trim(),
+              item_id: itemId,
+            });
+            await refreshFacadeDimensionsFromServer();
+            toast.success("Window removed.");
+          } catch (e) {
+            console.log("[qto] postAnalyzeFacadeRemove failed", e);
+            toast.error("Could not remove window.");
+          } finally {
+            setFacadeLoading(false);
+          }
+        })();
+      });
+    },
+    [
+      trimmedJobId,
+      selectedPdfPath,
+      facadeLoading,
+      refreshFacadeDimensionsFromServer,
+    ]
+  );
 
   const handleFacadeAnalyze = useCallback(async () => {
     if (!trimmedJobId || !selectedPdfPath?.trim()) return;
@@ -2058,6 +2440,45 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
       return;
     }
     const roiBackend = facadeRoi ? facadeRoi.roi : facadeBackend!.roi;
+
+    if (facadeBackend && facadeRoi) {
+      if (facadeBackend.pageNumber !== facadeRoi.pageNumber) {
+        toast.error("Draw on the same page as the current analysis.");
+        return;
+      }
+      setFacadeLoading(true);
+      try {
+        const path = selectedPdfPath.trim();
+        const r = facadeRoi.roi;
+        const areaM2 =
+          r.width *
+          r.height *
+          FACADE_PIXEL_TO_METER *
+          FACADE_PIXEL_TO_METER;
+        await postAnalyzeFacadeAdd({
+          job_id: trimmedJobId,
+          file_path: path,
+          item: {
+            x: r.x,
+            y: r.y,
+            w: r.width,
+            h: r.height,
+            area_m2: areaM2,
+          },
+        });
+        await refreshFacadeDimensionsFromServer();
+        setFacadeRoi(null);
+        toast.success("Window added.");
+        setObjectDataFormVisible(true);
+        scrollToObjectDataSection();
+      } catch (e) {
+        console.log("[qto] postAnalyzeFacadeAdd failed", e);
+        toast.error("Could not add window.");
+      } finally {
+        setFacadeLoading(false);
+      }
+      return;
+    }
 
     setFacadeLoading(true);
     try {
@@ -2111,6 +2532,7 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
     facadeBackend,
     confidence,
     scrollToObjectDataSection,
+    refreshFacadeDimensionsFromServer,
   ]);
 
   const handleWallFinderAnalyze = useCallback(async () => {
@@ -2126,6 +2548,54 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
       toast.error("Page layout not ready. Wait for the PDF to finish rendering.");
       return;
     }
+
+    if (wallFinderBackend && wallFinderRoi) {
+      if (wallFinderBackend.pageNumber !== wallFinderRoi.pageNumber) {
+        toast.error("Draw on the same page as the current analysis.");
+        return;
+      }
+      const r = wallFinderRoi.roi;
+      if (r.width <= 0 || r.height <= 0) {
+        toast.error("Selection is too small.");
+        return;
+      }
+      const midY = r.y + r.height / 2;
+      const midX = r.x + r.width / 2;
+      const { start, end } =
+        r.width >= r.height
+          ? {
+              start: { x: r.x, y: midY },
+              end: { x: r.x + r.width, y: midY },
+            }
+          : {
+              start: { x: midX, y: r.y },
+              end: { x: midX, y: r.y + r.height },
+            };
+      const lenPx = Math.hypot(end.x - start.x, end.y - start.y);
+      const length_m = lenPx * WALL_FINDER_PIXEL_TO_M;
+
+      setWallFinderLoading(true);
+      try {
+        await postAnalyzeWallsAdd({
+          job_id: trimmedJobId,
+          file_path: selectedPdfPath.trim(),
+          item: { start, end, length_m },
+        });
+        await refreshWallSegmentsFromServer();
+        setWallFinderRoi(null);
+        setLastAnalyzeKind("wallFinder");
+        toast.success("Wall segment added.");
+        setObjectDataFormVisible(true);
+        scrollToObjectDataSection();
+      } catch (e) {
+        console.log("[qto] postAnalyzeWallsAdd (from ROI) failed", e);
+        toast.error("Could not add wall segment.");
+      } finally {
+        setWallFinderLoading(false);
+      }
+      return;
+    }
+
     const roiBackend = wallFinderRoi
       ? wallFinderRoi.roi
       : wallFinderBackend!.roi;
@@ -2181,7 +2651,68 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
     wallFinderBackend,
     confidence,
     scrollToObjectDataSection,
+    refreshWallSegmentsFromServer,
   ]);
+
+  const refreshRoomRowsFromServer = useCallback(async () => {
+    if (!trimmedJobId || !selectedPdfPath?.trim()) return;
+    const path = selectedPdfPath.trim();
+    const res = await getAnalyzeRoomsRooms({
+      job_id: trimmedJobId,
+      file_path: path,
+    });
+    const rows = pickRoomRowsFromResponse(res);
+    setRoomFinderBackend((prev) => {
+      if (!prev) return prev;
+      const next: RoomFinderBackendState = {
+        ...prev,
+        response: res,
+      };
+      saveQtoRoomFinder(trimmedJobId, path, { v: 1, ...next });
+      return next;
+    });
+    setRoomResults(rows);
+  }, [trimmedJobId, selectedPdfPath]);
+
+  const handleRoomRemove = useCallback(
+    (itemId: string) => {
+      if (!trimmedJobId || !selectedPdfPath?.trim() || roomFinderLoading) return;
+      void Swal.fire({
+        title: "Remove room?",
+        text: "This room polygon will be removed from the list.",
+        icon: "warning",
+        showCancelButton: true,
+        confirmButtonText: "Remove",
+        cancelButtonText: "Cancel",
+        confirmButtonColor: "hsl(var(--destructive))",
+      }).then((result) => {
+        if (!result.isConfirmed) return;
+        void (async () => {
+          setRoomFinderLoading(true);
+          try {
+            await postAnalyzeRoomsRemove({
+              job_id: trimmedJobId,
+              file_path: selectedPdfPath.trim(),
+              item_id: itemId,
+            });
+            await refreshRoomRowsFromServer();
+            toast.success("Room removed.");
+          } catch (e) {
+            console.log("[qto] postAnalyzeRoomsRemove failed", e);
+            toast.error("Could not remove room.");
+          } finally {
+            setRoomFinderLoading(false);
+          }
+        })();
+      });
+    },
+    [
+      trimmedJobId,
+      selectedPdfPath,
+      roomFinderLoading,
+      refreshRoomRowsFromServer,
+    ]
+  );
 
   const handleRoomFinderAnalyze = useCallback(async () => {
     if (!trimmedJobId || !selectedPdfPath?.trim()) return;
@@ -2196,6 +2727,55 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
       toast.error("Page layout not ready. Wait for the PDF to finish rendering.");
       return;
     }
+
+    if (roomFinderBackend && roomFinderRoi) {
+      if (roomFinderBackend.pageNumber !== roomFinderRoi.pageNumber) {
+        toast.error("Draw on the same page as the current analysis.");
+        return;
+      }
+      const r = roomFinderRoi.roi;
+      if (r.width <= 0 || r.height <= 0) {
+        toast.error("Selection is too small.");
+        return;
+      }
+      const m = ROOM_FINDER_DEFAULT_PIXEL_TO_METER;
+      const item = {
+        polygon: [
+          { x: r.x, y: r.y },
+          { x: r.x + r.width, y: r.y },
+          { x: r.x + r.width, y: r.y + r.height },
+          { x: r.x, y: r.y + r.height },
+        ] as const,
+        center: { x: r.x + r.width / 2, y: r.y + r.height / 2 },
+        area_m2: r.width * r.height * m * m,
+      };
+
+      setRoomFinderLoading(true);
+      try {
+        await postAnalyzeRoomsAdd({
+          job_id: trimmedJobId,
+          file_path: selectedPdfPath.trim(),
+          item: {
+            polygon: [...item.polygon],
+            center: item.center,
+            area_m2: item.area_m2,
+          },
+        });
+        await refreshRoomRowsFromServer();
+        setRoomFinderRoi(null);
+        setLastAnalyzeKind("roomFinder");
+        toast.success("Room added.");
+        setObjectDataFormVisible(true);
+        scrollToObjectDataSection();
+      } catch (e) {
+        console.log("[qto] postAnalyzeRoomsAdd failed", e);
+        toast.error("Could not add room.");
+      } finally {
+        setRoomFinderLoading(false);
+      }
+      return;
+    }
+
     const roiBackend = roomFinderRoi
       ? roomFinderRoi.roi
       : roomFinderBackend!.roi;
@@ -2251,6 +2831,7 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
     roomFinderBackend,
     confidence,
     scrollToObjectDataSection,
+    refreshRoomRowsFromServer,
   ]);
 
   const objectMetadataStatsMode: ObjectMetadataStatsMode =
@@ -2268,13 +2849,19 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
     if (m == null || !Number.isFinite(m)) return "—";
     return `${m.toFixed(2)} m`;
   }, [wallFinderBackend]);
-  const totalWallsDisplay = wallFinderBackend?.response?.total_walls ?? 0;
+  const totalWallsDisplay = useMemo(() => {
+    if (!wallFinderBackend) return 0;
+    const t = wallFinderBackend.response?.total_walls;
+    if (t != null && Number.isFinite(t)) return t;
+    return pickWallSegmentsFromResponse(wallFinderBackend.response).length;
+  }, [wallFinderBackend]);
   const roomsFoundDisplay = useMemo(() => {
     if (lastAnalyzeKind !== "roomFinder") return 0;
-    return (
-      roomFinderBackend?.response?.total_rooms ?? roomResults.length ?? 0
-    );
-  }, [lastAnalyzeKind, roomFinderBackend, roomResults.length]);
+    if (!roomFinderBackend) return 0;
+    const t = roomFinderBackend.response?.total_rooms;
+    if (t != null && Number.isFinite(t)) return t;
+    return pickRoomRowsFromResponse(roomFinderBackend.response).length;
+  }, [lastAnalyzeKind, roomFinderBackend]);
   const totalAreaM2Display = useMemo(() => {
     const m = roomFinderBackend?.response?.total_area_m2;
     if (m == null || !Number.isFinite(m)) return "—";
@@ -2357,12 +2944,16 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
         if (autoCountRoi && autoCountBackend) return "Add match";
         return "Analyze";
       case "doorFinder":
+        if (doorFinderBackend && doorFinderRoi) return "Add door";
         return "Find Doors";
       case "facade":
+        if (facadeBackend && facadeRoi) return "Add window";
         return "Analyze Facade";
       case "wallFinder":
+        if (wallFinderBackend && wallFinderRoi) return "Add wall";
         return "Find Walls";
       case "roomFinder":
+        if (roomFinderBackend && roomFinderRoi) return "Add room";
         return "Find Rooms";
       case "floorArea":
         return "Calculate Area";
@@ -2372,7 +2963,19 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
       default:
         return "Analyze";
     }
-  }, [lastToolAction, autoCountRoi, autoCountBackend]);
+  }, [
+    lastToolAction,
+    autoCountRoi,
+    autoCountBackend,
+    facadeBackend,
+    facadeRoi,
+    doorFinderBackend,
+    doorFinderRoi,
+    wallFinderBackend,
+    wallFinderRoi,
+    roomFinderBackend,
+    roomFinderRoi,
+  ]);
 
   const primaryAnalyzeLoading = useMemo(() => {
     switch (lastToolAction) {
@@ -2481,7 +3084,6 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
 
   return (
     <CadAnalyzerToolProvider>
-      <CadToolPanOnTick tick={panToolAfterSidebarCloseTick} />
       <BlockingStatusOverlay
         open={
           autoCountLoading ||
@@ -2540,6 +3142,7 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
                     className="min-h-0 flex-1"
                     autoCountRoi={autoCountRoi}
                     onAutoCountRoiChange={handleAutoCountRoiChange}
+                    enableTextSearchAreaSelect={searchTextManualSelectActive}
                     doorFinderRoi={doorFinderRoi}
                     onDoorFinderRoiChange={handleDoorFinderRoiChange}
                     autoCountBackend={canvasAutoCountBackend}
@@ -2564,6 +3167,34 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
                         ? undefined
                         : handleAutoCountRemoveMatch
                     }
+                    onFacadeRemoveWindow={
+                      emphasizeSavedHighlight
+                        ? undefined
+                        : handleFacadeRemoveWindow
+                    }
+                    onDoorRemoveMatch={
+                      emphasizeSavedHighlight
+                        ? undefined
+                        : handleDoorRemoveMatch
+                    }
+                    onWallRemoveSegment={
+                      emphasizeSavedHighlight
+                        ? undefined
+                        : handleWallRemoveSegment
+                    }
+                    wallLineAddEnabled={
+                      !emphasizeSavedHighlight && Boolean(wallFinderBackend)
+                    }
+                    onWallSegmentLineCommit={
+                      emphasizeSavedHighlight
+                        ? undefined
+                        : handleWallSegmentLineCommit
+                    }
+                    onRoomRemove={
+                      emphasizeSavedHighlight
+                        ? undefined
+                        : handleRoomRemove
+                    }
                   />
                 ) : (
                   <div className="flex w-full min-w-0 flex-1 flex-col items-center justify-center px-3 py-6 sm:px-4 sm:py-8">
@@ -2580,6 +3211,11 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
               <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 flex justify-center px-3 pb-5 sm:px-4 sm:pb-6">
                 <CadAnalyzerFloatingBridge
                   onSearchTextSelect={() => openToolOptionsPanel("searchText")}
+                  searchTextAreaSelectionActive={searchTextManualSelectActive}
+                  searchTextAreaSelectionDisabled={
+                    lastAnalyzeKind !== "searchText" || !autoCountBackend
+                  }
+                  onSearchTextAreaSelectionToggle={handleSearchTextManualSelectToggle}
                   onAutoCountToolSelect={handleAutoCountToolSelect}
                   onDoorFinderToolSelect={handleDoorFinderToolSelect}
                   onWallFinderToolSelect={handleWallFinderToolSelect}

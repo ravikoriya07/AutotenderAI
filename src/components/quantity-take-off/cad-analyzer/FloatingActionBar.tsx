@@ -106,13 +106,23 @@ export type FloatingActionBarProps = {
   activeTool: CadAnalyzerTool;
   onToolChange: (tool: CadAnalyzerTool) => void;
   className?: string;
+  searchTextAreaSelectionActive?: boolean;
+  searchTextAreaSelectionDisabled?: boolean;
+  onSearchTextAreaSelectionToggle?: () => void;
 };
 
 /**
  * Toolbar pill — positioning handled by `CadAnalyzerCanvas` (absolute bottom slot, z-[100]).
  * Two groups: navigation (Select / Pan) and AI analysis tools, separated by a divider.
  */
-export function FloatingActionBar({ activeTool, onToolChange, className }: FloatingActionBarProps) {
+export function FloatingActionBar({
+  activeTool,
+  onToolChange,
+  className,
+  searchTextAreaSelectionActive = false,
+  searchTextAreaSelectionDisabled = false,
+  onSearchTextAreaSelectionToggle,
+}: FloatingActionBarProps) {
   return (
     <div
       className={cn(
@@ -157,6 +167,41 @@ export function FloatingActionBar({ activeTool, onToolChange, className }: Float
             />
           ))}
         </div>
+
+        {activeTool === "textSearch" ? (
+          <>
+            <div className="mx-1 h-7 w-px shrink-0 rounded-full bg-border/60" aria-hidden />
+            <div className="flex items-center gap-1" role="group" aria-label="Search text area selection">
+              <ToolbarTooltip
+                label={
+                  searchTextAreaSelectionActive
+                    ? "Cancel manual highlight selection."
+                    : "Draw a box on the PDF to add a missing text highlight."
+                }
+              >
+                <button
+                  type="button"
+                  aria-label={
+                    searchTextAreaSelectionActive
+                      ? "Cancel manual highlight selection"
+                      : "Add missing highlight manually"
+                  }
+                  disabled={searchTextAreaSelectionDisabled}
+                  onClick={onSearchTextAreaSelectionToggle}
+                  className={cn(
+                    "inline-flex min-h-9 items-center justify-center rounded-lg border px-2.5 py-1.5 text-xs font-medium transition-all duration-150",
+                    searchTextAreaSelectionActive
+                      ? "border-primary/40 bg-primary/10 text-primary shadow-sm"
+                      : "border-border/70 bg-card/70 text-foreground hover:bg-muted/80",
+                    "disabled:cursor-not-allowed disabled:opacity-50"
+                  )}
+                >
+                  {searchTextAreaSelectionActive ? "Cancel" : "Add Missing Highlight"}
+                </button>
+              </ToolbarTooltip>
+            </div>
+          </>
+        ) : null}
       </div>
     </div>
   );

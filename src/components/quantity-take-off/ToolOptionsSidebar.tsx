@@ -136,6 +136,7 @@ export function ToolOptionsControls({
               Case sensitive
             </span>
           </label>
+
         </section>
       ) : (
         <section className="space-y-4">

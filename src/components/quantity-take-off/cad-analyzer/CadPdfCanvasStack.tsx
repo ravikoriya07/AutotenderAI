@@ -133,6 +133,16 @@ type PageAnnotationLayer = {
   autoCountShowRemoveCorners?: boolean;
   /** Only the first N entries in `matchesAuto` are server matches (rest may be saved snapshots). */
   autoCountRemoveMarkerCount?: number;
+  /** Draw remove on facade window boxes (bottom-left; label stays top-right). */
+  facadeShowRemoveCorners?: boolean;
+  /** Draw remove on door finder boxes (top-right; same hit-test as auto count). */
+  doorShowRemoveCorners?: boolean;
+  /** Only the first N door entries are server matches (if merged with saved). */
+  doorRemoveMarkerCount?: number;
+  /** Remove chip on wall segments (offset from midpoint; `GET /analyze_walls/segments` ids). */
+  wallShowRemoveCorners?: boolean;
+  /** Remove chip near room label (`GET /analyze_rooms/rooms` ids). */
+  roomShowRemoveNearRooms?: boolean;
 };
 
 /** One floor extraction overlay — prefer backend fields; CSS is legacy / fallback. */
@@ -247,7 +257,7 @@ function drawMatchBoxes(
     octx.strokeRect(mx, my, mw, mh);
 
     const allowRemove =
-      opts.variant === "autoCount" &&
+      (opts.variant === "autoCount" || opts.variant === "doorFinder") &&
       opts.showRemoveCorners &&
       (opts.removeMarkerMax == null || mi < opts.removeMarkerMax) &&
       m.id != null &&
@@ -287,7 +297,8 @@ function drawFacadeWindowBoxes(
   sx: number,
   sy: number,
   items: { box: AutoCountMatch; id: number }[],
-  emphasize: boolean
+  emphasize: boolean,
+  showRemoveCorners?: boolean
 ) {
   const dpr = window.devicePixelRatio || 1;
   const fill = emphasize
@@ -339,7 +350,96 @@ function drawFacadeWindowBoxes(
     );
     octx.fillStyle = "#14532d";
     octx.fillText(label, tr - padX, ttop + fontPx * 0.1);
+
+    const allowRemove =
+      showRemoveCorners === true &&
+      m.id != null &&
+      !(typeof m.id === "string" && m.id === "");
+    if (allowRemove) {
+      const side = Math.max(
+        14,
+        Math.min(20, Math.min(mw, mh) * 0.35, mw * 0.45)
+      );
+      const pad = Math.min(3, mw * 0.04);
+      const cx = mx + pad + side / 2;
+      const cy = my + mh - pad - side / 2;
+      octx.beginPath();
+      octx.arc(cx, cy, side / 2 + 1, 0, Math.PI * 2);
+      octx.fillStyle = "rgba(255, 255, 255, 0.92)";
+      octx.fill();
+      octx.strokeStyle = "rgba(220, 38, 38, 0.95)";
+      octx.lineWidth = Math.max(1.5, 1.8 / dpr);
+      octx.stroke();
+      const arm = side * 0.22;
+      octx.strokeStyle = "#b91c1c";
+      octx.lineWidth = Math.max(1.5, 1.75 / dpr);
+      octx.beginPath();
+      octx.moveTo(cx - arm, cy - arm);
+      octx.lineTo(cx + arm, cy + arm);
+      octx.moveTo(cx + arm, cy - arm);
+      octx.lineTo(cx - arm, cy + arm);
+      octx.stroke();
+    }
   }
+}
+
+/** Bottom-left remove affordance — must match `drawFacadeWindowBoxes` facade branch. */
+function hitTestFacadeRemoveCorner(
+  localX: number,
+  localY: number,
+  items: { box: AutoCountMatch; id: number }[]
+): string | number | null {
+  for (let i = items.length - 1; i >= 0; i--) {
+    const m = items[i]!.box;
+    if (m.id == null || (typeof m.id === "string" && m.id === "")) continue;
+    const mx = m.x;
+    const my = m.y;
+    const mw = m.w;
+    const mh = m.h;
+    if (mw <= 0 || mh <= 0) continue;
+    const side = Math.max(
+      14,
+      Math.min(20, Math.min(mw, mh) * 0.35, mw * 0.45)
+    );
+    const pad = Math.min(3, mw * 0.04);
+    const cx = mx + pad + side / 2;
+    const cy = my + mh - pad - side / 2;
+    const r = side / 2 + 2;
+    const dx = localX - cx;
+    const dy = localY - cy;
+    if (dx * dx + dy * dy <= r * r) return m.id;
+  }
+  return null;
+}
+
+/**
+ * Perpendicular remove chip — must match `drawWallFinderSegments` (CSS page px for hit, buffer px in draw).
+ */
+function hitTestWallRemoveNearSegment(
+  localX: number,
+  localY: number,
+  segments: WallSegmentScreen[]
+): string | null {
+  const rHit = 12;
+  const off = 16;
+  for (let i = segments.length - 1; i >= 0; i--) {
+    const seg = segments[i]!;
+    if (seg.segmentId == null) continue;
+    if (typeof seg.segmentId === "string" && seg.segmentId === "") continue;
+    const mx = (seg.x1 + seg.x2) / 2;
+    const my = (seg.y1 + seg.y2) / 2;
+    const cdx = seg.x2 - seg.x1;
+    const cdy = seg.y2 - seg.y1;
+    const clen = Math.hypot(cdx, cdy) || 1;
+    const cx = mx + (-cdy / clen) * off;
+    const cy = my + (cdx / clen) * off;
+    const dx = localX - cx;
+    const dy = localY - cy;
+    if (dx * dx + dy * dy <= rHit * rHit) {
+      return String(seg.segmentId);
+    }
+  }
+  return null;
 }
 
 /** Wall Finder visualization (aligned with `Quantitites_Project/static/script.js` `drawOverlay` wall branch). */
@@ -348,7 +448,8 @@ function drawWallFinderSegments(
   sx: number,
   sy: number,
   segments: WallSegmentScreen[],
-  emphasize: boolean
+  emphasize: boolean,
+  showRemoveNearSegments: boolean
 ) {
   if (segments.length === 0) return;
 
@@ -422,6 +523,38 @@ function drawWallFinderSegments(
     octx.fillStyle = "#ef4444";
     octx.fillText(text, 0, 0);
     octx.restore();
+
+    if (
+      showRemoveNearSegments &&
+      seg.segmentId != null &&
+      (typeof seg.segmentId !== "string" || seg.segmentId !== "")
+    ) {
+      const wmx = (seg.x1 + seg.x2) / 2;
+      const wmy = (seg.y1 + seg.y2) / 2;
+      const cdx = seg.x2 - seg.x1;
+      const cdy = seg.y2 - seg.y1;
+      const clen = Math.hypot(cdx, cdy) || 1;
+      const off = 16;
+      const rcx = (wmx + (-cdy / clen) * off) * sx;
+      const rcy = (wmy + (cdx / clen) * off) * sy;
+      const side = Math.max(12, Math.min(18, 14 * Math.min(sx, sy)));
+      octx.beginPath();
+      octx.arc(rcx, rcy, side / 2 + 1, 0, Math.PI * 2);
+      octx.fillStyle = "rgba(255, 255, 255, 0.92)";
+      octx.fill();
+      octx.strokeStyle = "rgba(220, 38, 38, 0.95)";
+      octx.lineWidth = Math.max(1.5, 1.8 / dpr);
+      octx.stroke();
+      const arm = side * 0.22;
+      octx.strokeStyle = "#b91c1c";
+      octx.lineWidth = Math.max(1.5, 1.75 / dpr);
+      octx.beginPath();
+      octx.moveTo(rcx - arm, rcy - arm);
+      octx.lineTo(rcx + arm, rcy + arm);
+      octx.moveTo(rcx + arm, rcy - arm);
+      octx.lineTo(rcx - arm, rcy + arm);
+      octx.stroke();
+    }
   }
 }
 
@@ -429,6 +562,28 @@ function drawWallFinderSegments(
  * One distinct color per room list index. The reference script uses `idx % 5`, which makes
  * rooms 0 and 5 (and 1 and 6, …) share the same blue — we spread hue by the golden angle instead.
  */
+/** Must match `drawRoomFinderPolygons` remove chip position (CSS page px). */
+function hitTestRoomRemoveNearChip(
+  localX: number,
+  localY: number,
+  polys: RoomPolygonScreen[]
+): string | null {
+  const rHit = 12;
+  for (let i = polys.length - 1; i >= 0; i--) {
+    const p = polys[i]!;
+    if (p.roomId == null) continue;
+    if (typeof p.roomId === "string" && p.roomId === "") continue;
+    const cx = p.centerX + 22;
+    const cy = p.centerY - 20;
+    const dx = localX - cx;
+    const dy = localY - cy;
+    if (dx * dx + dy * dy <= rHit * rHit) {
+      return String(p.roomId);
+    }
+  }
+  return null;
+}
+
 function roomFinderColorForIndex(idx: number): {
   fill: string;
   stroke: string;
@@ -448,10 +603,12 @@ function drawRoomFinderPolygons(
   sx: number,
   sy: number,
   polys: RoomPolygonScreen[],
-  emphasize: boolean
+  emphasize: boolean,
+  showRemoveChips: boolean
 ) {
   if (polys.length === 0) return;
   const s = Math.min(sx, sy);
+  const dpr = window.devicePixelRatio || 1;
   const lineWRef = 2 * s;
   const lineW = emphasize ? Math.max(lineWRef, 2.5 * s) : lineWRef;
   const fontPx = Math.max(11, Math.min(20, Math.round(13 * s)));
@@ -488,6 +645,32 @@ function drawRoomFinderPolygons(
     octx.fillRect(lx - tw / 2 - 4 * s, ly - 12 * s, tw + 8 * s, 16 * s);
     octx.fillStyle = clr.text;
     octx.fillText(text, lx, ly);
+
+    if (
+      showRemoveChips &&
+      poly.roomId != null &&
+      (typeof poly.roomId !== "string" || poly.roomId !== "")
+    ) {
+      const rcx = (poly.centerX + 22) * sx;
+      const rcy = (poly.centerY - 20) * sy;
+      const side = Math.max(12, Math.min(18, 14 * s));
+      octx.beginPath();
+      octx.arc(rcx, rcy, side / 2 + 1, 0, Math.PI * 2);
+      octx.fillStyle = "rgba(255, 255, 255, 0.92)";
+      octx.fill();
+      octx.strokeStyle = "rgba(220, 38, 38, 0.95)";
+      octx.lineWidth = Math.max(1.5, 1.8 / dpr);
+      octx.stroke();
+      const arm = side * 0.22;
+      octx.strokeStyle = "#b91c1c";
+      octx.lineWidth = Math.max(1.5, 1.75 / dpr);
+      octx.beginPath();
+      octx.moveTo(rcx - arm, rcy - arm);
+      octx.lineTo(rcx + arm, rcy + arm);
+      octx.moveTo(rcx + arm, rcy - arm);
+      octx.lineTo(rcx - arm, rcy + arm);
+      octx.stroke();
+    }
   }
 }
 
@@ -646,9 +829,25 @@ function drawPageAnnotations(
   drawMatchBoxes(octx, sx, sy, layer.matchesDoor, {
     emphasize: emph,
     variant: "doorFinder",
+    showRemoveCorners: layer.doorShowRemoveCorners === true,
+    removeMarkerMax: layer.doorRemoveMarkerCount,
   });
-  drawFacadeWindowBoxes(octx, sx, sy, layer.facadeWindows, emph);
-  drawWallFinderSegments(octx, sx, sy, layer.wallSegments, emph);
+  drawFacadeWindowBoxes(
+    octx,
+    sx,
+    sy,
+    layer.facadeWindows,
+    emph,
+    layer.facadeShowRemoveCorners === true
+  );
+  drawWallFinderSegments(
+    octx,
+    sx,
+    sy,
+    layer.wallSegments,
+    emph,
+    layer.wallShowRemoveCorners === true
+  );
   drawFloorAreaOverlay(
     octx,
     sx,
@@ -657,7 +856,14 @@ function drawPageAnnotations(
     layer.floorRegions,
     emph
   );
-  drawRoomFinderPolygons(octx, sx, sy, layer.roomPolygons, emph);
+  drawRoomFinderPolygons(
+    octx,
+    sx,
+    sy,
+    layer.roomPolygons,
+    emph,
+    layer.roomShowRemoveNearRooms === true
+  );
 }
 
 type PdfPageRowProps = {
@@ -910,6 +1116,26 @@ export type CadPdfCanvasStackProps = {
   onFloorAreaClick?: (pageNumber: number, xCss: number, yCss: number) => void;
   /** Server match id from `/auto_count`; only when live auto count (not saved-object snapshot). */
   onAutoCountRemoveMatch?: (matchId: string | number) => void;
+  /** `item_id` from `/analyze_facade/dimensions` (stable remove target). */
+  onFacadeRemoveWindow?: (itemId: string) => void;
+  /** Server match id from `/analyze_doors/matches`. */
+  onDoorRemoveMatch?: (matchId: string | number) => void;
+  /** `item_id` for `POST /analyze_walls/remove`. */
+  onWallRemoveSegment?: (itemId: string) => void;
+  /**
+   * After a wall analysis exists, thin drags commit as a segment line; boxy drags still commit an ROI
+   * for re-run. See `endRoiDrag` heuristic.
+   */
+  wallLineAddEnabled?: boolean;
+  onWallSegmentLineCommit?: (
+    pageNumber: number,
+    startCss: { x: number; y: number },
+    endCss: { x: number; y: number }
+  ) => void;
+  /** `item_id` for `POST /analyze_rooms/remove`. */
+  onRoomRemove?: (itemId: string) => void;
+  /** Enables ROI drag while Search Text tool is active (manual add flow). */
+  enableTextSearchAreaSelect?: boolean;
 };
 
 export type CadPdfCanvasStackHandle = {
@@ -964,6 +1190,13 @@ export const CadPdfCanvasStack = forwardRef<
     floorAreaRegions = [],
     onFloorAreaClick,
     onAutoCountRemoveMatch,
+    onFacadeRemoveWindow,
+    onDoorRemoveMatch,
+    onWallRemoveSegment,
+    wallLineAddEnabled = false,
+    onWallSegmentLineCommit,
+    onRoomRemove,
+    enableTextSearchAreaSelect = false,
   },
   ref
 ) {
@@ -1197,10 +1430,90 @@ export const CadPdfCanvasStack = forwardRef<
     [autoCountBackend, onAutoCountRemoveMatch, findPageIndex, clientToPageLocal]
   );
 
+  const pickFacadeRemoveId = useCallback(
+    (clientX: number, clientY: number): string | number | null => {
+      if (!onFacadeRemoveWindow || !facadeBackend) return null;
+      const pageIndex = findPageIndex(clientX, clientY);
+      if (pageIndex < 0) return null;
+      if (facadeBackend.pageNumber !== pageIndex + 1) return null;
+      const metrics = pageMetricsRef.current.get(pageIndex + 1);
+      if (!metrics) return null;
+      const local = clientToPageLocal(clientX, clientY, pageIndex);
+      const items = facadeDimensionsToScreenBoxes(
+        facadeBackend.response.dimensions,
+        metrics,
+        {
+          roi: facadeBackend.roi,
+          annotatedImageDataUrl: facadeBackend.response.image ?? null,
+          backendPageWidth: metrics.backendBaseWidth,
+          backendPageHeight: metrics.backendBaseHeight,
+          response: facadeBackend.response,
+        }
+      );
+      return hitTestFacadeRemoveCorner(local.x, local.y, items);
+    },
+    [onFacadeRemoveWindow, facadeBackend, findPageIndex, clientToPageLocal]
+  );
+
+  const pickDoorRemoveId = useCallback(
+    (clientX: number, clientY: number): string | number | null => {
+      if (!onDoorRemoveMatch || !doorFinderBackend) return null;
+      const pageIndex = findPageIndex(clientX, clientY);
+      if (pageIndex < 0) return null;
+      if (doorFinderBackend.pageNumber !== pageIndex + 1) return null;
+      const metrics = pageMetricsRef.current.get(pageIndex + 1);
+      if (!metrics) return null;
+      const local = clientToPageLocal(clientX, clientY, pageIndex);
+      const boxes = backendMatchesToScreen(
+        doorFinderBackend.matches,
+        metrics
+      );
+      return hitTestAutoCountRemoveCorner(local.x, local.y, boxes);
+    },
+    [onDoorRemoveMatch, doorFinderBackend, findPageIndex, clientToPageLocal]
+  );
+
+  const pickWallRemoveId = useCallback(
+    (clientX: number, clientY: number): string | null => {
+      if (!onWallRemoveSegment || !wallFinderBackend) return null;
+      const pageIndex = findPageIndex(clientX, clientY);
+      if (pageIndex < 0) return null;
+      if (wallFinderBackend.pageNumber !== pageIndex + 1) return null;
+      const metrics = pageMetricsRef.current.get(pageIndex + 1);
+      if (!metrics) return null;
+      const local = clientToPageLocal(clientX, clientY, pageIndex);
+      const segs = wallFinderResponseToScreenDrawItems(
+        wallFinderBackend.response,
+        metrics,
+        wallFinderBackend.roi
+      );
+      return hitTestWallRemoveNearSegment(local.x, local.y, segs);
+    },
+    [onWallRemoveSegment, wallFinderBackend, findPageIndex, clientToPageLocal]
+  );
+
+  const pickRoomRemoveId = useCallback(
+    (clientX: number, clientY: number): string | null => {
+      if (!onRoomRemove || !roomFinderBackend) return null;
+      const pageIndex = findPageIndex(clientX, clientY);
+      if (pageIndex < 0) return null;
+      if (roomFinderBackend.pageNumber !== pageIndex + 1) return null;
+      const metrics = pageMetricsRef.current.get(pageIndex + 1);
+      if (!metrics) return null;
+      const local = clientToPageLocal(clientX, clientY, pageIndex);
+      const polys = roomFinderResponseToScreenPolygons(
+        roomFinderBackend.response,
+        metrics,
+        roomFinderPixelToMeter
+      );
+      return hitTestRoomRemoveNearChip(local.x, local.y, polys);
+    },
+    [onRoomRemove, roomFinderBackend, roomFinderPixelToMeter, findPageIndex, clientToPageLocal]
+  );
+
   const onRootPointerDownForRemove = useCallback(
     (e: ReactMouseEvent | ReactTouchEvent) => {
       if (tool !== "pointer") return;
-      if (!onAutoCountRemoveMatch || !autoCountBackend) return;
       const clientX =
         "touches" in e && e.touches.length > 0
           ? e.touches[0].clientX
@@ -1209,13 +1522,67 @@ export const CadPdfCanvasStack = forwardRef<
         "touches" in e && e.touches.length > 0
           ? e.touches[0].clientY
           : (e as ReactMouseEvent).clientY;
+      if (onFacadeRemoveWindow && facadeBackend) {
+        const fid = pickFacadeRemoveId(clientX, clientY);
+        if (fid != null) {
+          e.preventDefault();
+          e.stopPropagation();
+          onFacadeRemoveWindow(String(fid));
+          return;
+        }
+      }
+      if (onDoorRemoveMatch && doorFinderBackend) {
+        const did = pickDoorRemoveId(clientX, clientY);
+        if (did != null) {
+          e.preventDefault();
+          e.stopPropagation();
+          onDoorRemoveMatch(did);
+          return;
+        }
+      }
+      if (onWallRemoveSegment && wallFinderBackend) {
+        const wid = pickWallRemoveId(clientX, clientY);
+        if (wid != null) {
+          e.preventDefault();
+          e.stopPropagation();
+          onWallRemoveSegment(wid);
+          return;
+        }
+      }
+      if (onRoomRemove && roomFinderBackend) {
+        const rid = pickRoomRemoveId(clientX, clientY);
+        if (rid != null) {
+          e.preventDefault();
+          e.stopPropagation();
+          onRoomRemove(rid);
+          return;
+        }
+      }
+      if (!onAutoCountRemoveMatch || !autoCountBackend) return;
       const removeId = pickAutoCountRemoveId(clientX, clientY);
       if (removeId == null) return;
       e.preventDefault();
       e.stopPropagation();
       onAutoCountRemoveMatch(removeId);
     },
-    [tool, autoCountBackend, onAutoCountRemoveMatch, pickAutoCountRemoveId]
+    [
+      tool,
+      onFacadeRemoveWindow,
+      facadeBackend,
+      pickFacadeRemoveId,
+      onDoorRemoveMatch,
+      doorFinderBackend,
+      pickDoorRemoveId,
+      onWallRemoveSegment,
+      wallFinderBackend,
+      pickWallRemoveId,
+      onRoomRemove,
+      roomFinderBackend,
+      pickRoomRemoveId,
+      onAutoCountRemoveMatch,
+      autoCountBackend,
+      pickAutoCountRemoveId,
+    ]
   );
 
   const onMouseDown = useCallback(
@@ -1265,6 +1632,24 @@ export const CadPdfCanvasStack = forwardRef<
     setDraftRoi(null);
     setIsRoiDragging(false);
     if (!d) return;
+    const w = Math.abs(d.curLocalX - d.startLocalX);
+    const h = Math.abs(d.curLocalY - d.startLocalY);
+    if (
+      d.mode === "wallFinder" &&
+      wallLineAddEnabled &&
+      onWallSegmentLineCommit &&
+      onWallFinderRoiChange
+    ) {
+      const isLineLike = Math.min(w, h) < 10 && Math.max(w, h) >= 12;
+      if (isLineLike) {
+        onWallSegmentLineCommit(
+          d.pageIndex + 1,
+          { x: d.startLocalX, y: d.startLocalY },
+          { x: d.curLocalX, y: d.curLocalY }
+        );
+        return;
+      }
+    }
     const onCommit =
       d.mode === "doorFinder"
         ? onDoorFinderRoiChange
@@ -1276,8 +1661,6 @@ export const CadPdfCanvasStack = forwardRef<
               ? onRoomFinderRoiChange
               : onAutoCountRoiChange;
     if (!onCommit) return;
-    const w = Math.abs(d.curLocalX - d.startLocalX);
-    const h = Math.abs(d.curLocalY - d.startLocalY);
     if (w < 4 || h < 4) {
       return;
     }
@@ -1300,6 +1683,8 @@ export const CadPdfCanvasStack = forwardRef<
     onFacadeRoiChange,
     onWallFinderRoiChange,
     onRoomFinderRoiChange,
+    wallLineAddEnabled,
+    onWallSegmentLineCommit,
   ]);
 
   const updateRoiDrag = useCallback(
@@ -1324,6 +1709,7 @@ export const CadPdfCanvasStack = forwardRef<
     (e: ReactMouseEvent | ReactTouchEvent) => {
       if (
         tool !== "autoCount" &&
+        !(tool === "textSearch" && enableTextSearchAreaSelect) &&
         tool !== "doorFinder" &&
         tool !== "facade" &&
         tool !== "wallFinder" &&
@@ -1339,6 +1725,46 @@ export const CadPdfCanvasStack = forwardRef<
           e.preventDefault();
           e.stopPropagation();
           onAutoCountRemoveMatch?.(removeId);
+          return;
+        }
+      }
+
+      if (tool === "facade" && onFacadeRemoveWindow) {
+        const removeFacadeId = pickFacadeRemoveId(clientX, clientY);
+        if (removeFacadeId != null) {
+          e.preventDefault();
+          e.stopPropagation();
+          onFacadeRemoveWindow(String(removeFacadeId));
+          return;
+        }
+      }
+
+      if (tool === "doorFinder" && onDoorRemoveMatch) {
+        const removeDoorId = pickDoorRemoveId(clientX, clientY);
+        if (removeDoorId != null) {
+          e.preventDefault();
+          e.stopPropagation();
+          onDoorRemoveMatch(removeDoorId);
+          return;
+        }
+      }
+
+      if (tool === "wallFinder" && onWallRemoveSegment) {
+        const removeWallId = pickWallRemoveId(clientX, clientY);
+        if (removeWallId != null) {
+          e.preventDefault();
+          e.stopPropagation();
+          onWallRemoveSegment(removeWallId);
+          return;
+        }
+      }
+
+      if (tool === "roomFinder" && onRoomRemove) {
+        const removeRoomId = pickRoomRemoveId(clientX, clientY);
+        if (removeRoomId != null) {
+          e.preventDefault();
+          e.stopPropagation();
+          onRoomRemove(removeRoomId);
           return;
         }
       }
@@ -1379,10 +1805,19 @@ export const CadPdfCanvasStack = forwardRef<
     },
     [
       tool,
+      enableTextSearchAreaSelect,
       findPageIndex,
       clientToPageLocal,
       pickAutoCountRemoveId,
       onAutoCountRemoveMatch,
+      pickFacadeRemoveId,
+      onFacadeRemoveWindow,
+      onDoorRemoveMatch,
+      pickDoorRemoveId,
+      onWallRemoveSegment,
+      pickWallRemoveId,
+      onRoomRemove,
+      pickRoomRemoveId,
     ]
   );
 
@@ -1445,6 +1880,7 @@ export const CadPdfCanvasStack = forwardRef<
         ? "cursor-grabbing"
         : "cursor-grab"
       : tool === "autoCount" ||
+          (tool === "textSearch" && enableTextSearchAreaSelect) ||
           tool === "doorFinder" ||
           tool === "facade" ||
           tool === "wallFinder" ||
@@ -1724,6 +2160,38 @@ export const CadPdfCanvasStack = forwardRef<
         autoCountRemoveMarkerCount = autoCountBackend.matches.length;
       }
 
+      const facadeShowRemoveCorners = Boolean(
+        onFacadeRemoveWindow &&
+          facadeBackend &&
+          backendPageMatches(facadeBackend.pageNumber, pageNumber) &&
+          metrics
+      );
+
+      let doorRemoveMarkerCount = 0;
+      const doorShowRemoveCorners = Boolean(
+        onDoorRemoveMatch &&
+          doorFinderBackend &&
+          doorFinderBackend.pageNumber === pageNumber &&
+          metrics
+      );
+      if (doorShowRemoveCorners && doorFinderBackend) {
+        doorRemoveMarkerCount = doorFinderBackend.matches.length;
+      }
+
+      const wallShowRemoveCorners = Boolean(
+        onWallRemoveSegment &&
+          wallFinderBackend &&
+          backendPageMatches(wallFinderBackend.pageNumber, pageNumber) &&
+          metrics
+      );
+
+      const roomShowRemoveNearRooms = Boolean(
+        onRoomRemove &&
+          roomFinderBackend &&
+          backendPageMatches(roomFinderBackend.pageNumber, pageNumber) &&
+          metrics
+      );
+
       return {
         committedRoiAuto: committedAuto,
         committedRoiDoor: committedDoor,
@@ -1741,10 +2209,19 @@ export const CadPdfCanvasStack = forwardRef<
         emphasize: emphasizeAutoCountHighlight,
         autoCountShowRemoveCorners,
         autoCountRemoveMarkerCount,
+        facadeShowRemoveCorners,
+        doorShowRemoveCorners,
+        doorRemoveMarkerCount,
+        wallShowRemoveCorners,
+        roomShowRemoveNearRooms,
       };
     },
     [
       onAutoCountRemoveMatch,
+      onFacadeRemoveWindow,
+      onDoorRemoveMatch,
+      onWallRemoveSegment,
+      onRoomRemove,
       autoCountRoi,
       doorFinderRoi,
       facadeRoi,
@@ -1820,6 +2297,7 @@ export const CadPdfCanvasStack = forwardRef<
               ))}
             </div>
             {tool === "autoCount" ||
+            (tool === "textSearch" && enableTextSearchAreaSelect) ||
             tool === "doorFinder" ||
             tool === "facade" ||
             tool === "wallFinder" ||
