@@ -383,19 +383,23 @@ function drawFacadeWindowBoxes(
   }
 }
 
-/** Bottom-left remove affordance — must match `drawFacadeWindowBoxes` facade branch. */
+/** Bottom-left remove affordance — must match `drawFacadeWindowBoxes` (buffer px + sx/sy). */
 function hitTestFacadeRemoveCorner(
   localX: number,
   localY: number,
-  items: { box: AutoCountMatch; id: number }[]
+  items: { box: AutoCountMatch; id: number }[],
+  sx: number,
+  sy: number
 ): string | number | null {
+  const lx = localX * sx;
+  const ly = localY * sy;
   for (let i = items.length - 1; i >= 0; i--) {
     const m = items[i]!.box;
     if (m.id == null || (typeof m.id === "string" && m.id === "")) continue;
-    const mx = m.x;
-    const my = m.y;
-    const mw = m.w;
-    const mh = m.h;
+    const mx = m.x * sx;
+    const my = m.y * sy;
+    const mw = m.w * sx;
+    const mh = m.h * sy;
     if (mw <= 0 || mh <= 0) continue;
     const side = Math.max(
       14,
@@ -405,8 +409,8 @@ function hitTestFacadeRemoveCorner(
     const cx = mx + pad + side / 2;
     const cy = my + mh - pad - side / 2;
     const r = side / 2 + 2;
-    const dx = localX - cx;
-    const dy = localY - cy;
+    const dx = lx - cx;
+    const dy = ly - cy;
     if (dx * dx + dy * dy <= r * r) return m.id;
   }
   return null;
@@ -973,6 +977,8 @@ function PdfPageRow({
           backendBaseHeight: backendVp.height,
           cssWidth: cssW,
           cssHeight: cssH,
+          overlayScaleX: w / Math.max(viewport.width, 1),
+          overlayScaleY: h / Math.max(viewport.height, 1),
         });
 
         const octx = overlay.getContext("2d");
@@ -1053,14 +1059,7 @@ function PdfPageRow({
     <div
       ref={pageWrapperRef}
       data-pdf-page={pageNumber}
-      className="relative mx-auto block w-max max-w-full"
-      style={
-        {
-          contentVisibility: "auto",
-          contain: "layout paint size",
-          containIntrinsicSize: "1400px 900px",
-        } as CSSProperties
-      }
+      className="relative mx-auto block w-max shrink-0"
     >
       <canvas
         ref={pdfRef}
@@ -1444,13 +1443,16 @@ export const CadPdfCanvasStack = forwardRef<
         metrics,
         {
           roi: facadeBackend.roi,
+          forceStrategy: "previewGlobal",
           annotatedImageDataUrl: facadeBackend.response.image ?? null,
           backendPageWidth: metrics.backendBaseWidth,
           backendPageHeight: metrics.backendBaseHeight,
           response: facadeBackend.response,
         }
       );
-      return hitTestFacadeRemoveCorner(local.x, local.y, items);
+      const sx = metrics.overlayScaleX ?? window.devicePixelRatio ?? 1;
+      const sy = metrics.overlayScaleY ?? sx;
+      return hitTestFacadeRemoveCorner(local.x, local.y, items, sx, sy);
     },
     [onFacadeRemoveWindow, facadeBackend, findPageIndex, clientToPageLocal]
   );
@@ -2002,6 +2004,7 @@ export const CadPdfCanvasStack = forwardRef<
           metrics,
           {
             roi: facadeBackend.roi,
+            forceStrategy: "previewGlobal",
             annotatedImageDataUrl: facadeBackend.response.image ?? null,
             backendPageWidth: metrics.backendBaseWidth,
             backendPageHeight: metrics.backendBaseHeight,
@@ -2083,6 +2086,7 @@ export const CadPdfCanvasStack = forwardRef<
                 metrics,
                 {
                   roi: fSnap.roi,
+                  forceStrategy: "previewGlobal",
                   annotatedImageDataUrl: fSnap.response.image ?? null,
                   backendPageWidth: metrics.backendBaseWidth,
                   backendPageHeight: metrics.backendBaseHeight,

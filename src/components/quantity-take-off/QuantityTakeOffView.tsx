@@ -431,6 +431,9 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
   const [searchTextError, setSearchTextError] = useState<string | null>(null);
   const [searchTextManualSelectActive, setSearchTextManualSelectActive] =
     useState(false);
+  /** Toolbar “Add Missing Count” — arms ROI for POST /auto_count/add only (not full detection). */
+  const [autoCountManualAddActive, setAutoCountManualAddActive] =
+    useState(false);
   /** Object ID/name form — shown only after a successful analyze/search, or when session storage restores results. Hidden when switching tools until the next success. */
   const [objectDataFormVisible, setObjectDataFormVisible] = useState(false);
   const [rotationInvariant, setRotationInvariant] = useState(true);
@@ -1555,6 +1558,7 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
     setSearchTextError(null);
     setSearchTextLoading(false);
     setSearchTextManualSelectActive(false);
+    setAutoCountManualAddActive(false);
     setLastToolAction("autoCount");
     setSelectedSavedObjectId(null);
     setExpandedSavedId(null);
@@ -1576,6 +1580,32 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
       setSearchTextManualSelectActive(false);
     }
   }, [lastToolAction, searchTextManualSelectActive]);
+
+  useEffect(() => {
+    if (lastToolAction !== "autoCount" && autoCountManualAddActive) {
+      setAutoCountManualAddActive(false);
+      setAutoCountRoi(null);
+    }
+  }, [lastToolAction, autoCountManualAddActive]);
+
+  const handleAutoCountManualAddToggle = useCallback(() => {
+    if (autoCountManualAddActive) {
+      setAutoCountManualAddActive(false);
+      setAutoCountRoi(null);
+      return;
+    }
+    if (lastAnalyzeKind !== "autoCount" || !autoCountBackend) {
+      toast.error("Run Auto Count first to add missing symbols.");
+      return;
+    }
+    setLastToolAction("autoCount");
+    setAutoCountManualAddActive(true);
+    setAutoCountRoi(null);
+  }, [
+    autoCountManualAddActive,
+    lastAnalyzeKind,
+    autoCountBackend,
+  ]);
 
   const selectedSavedEntry = useMemo(() => {
     if (!selectedSavedObjectId) return undefined;
@@ -1974,16 +2004,17 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
       return;
     }
 
-    /** Manual add: new box while results already exist — POST add then GET matches. */
+    /** Backend + ROI: Search Text manual highlight, Auto Count manual add, or Auto Count re-detect. */
     if (autoCountBackend && autoCountRoi) {
       if (autoCountBackend.pageNumber !== autoCountRoi.pageNumber) {
         toast.error("Draw on the same page as the current analysis.");
         return;
       }
-      setAutoCountLoading(true);
-      try {
-        const path = selectedPdfPath.trim();
-        if (lastAnalyzeKind === "searchText") {
+
+      if (lastAnalyzeKind === "searchText") {
+        setAutoCountLoading(true);
+        try {
+          const path = selectedPdfPath.trim();
           const r = autoCountRoi.roi;
           await postSearchTextAdd({
             job_id: trimmedJobId,
@@ -1996,24 +2027,83 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
               ...(searchTerm.trim() ? { text: searchTerm.trim() } : {}),
             },
           });
-        } else {
+          await refreshAutoCountMatchesFromServer();
+          setAutoCountRoi(null);
+          toast.success("Match added.");
+          setObjectDataFormVisible(true);
+          scrollToObjectDataSection();
+        } catch (e) {
+          console.log("[qto] manual add match failed", e);
+          toast.error("Could not add match.");
+        } finally {
+          setAutoCountLoading(false);
+        }
+        return;
+      }
+
+      if (autoCountManualAddActive) {
+        setAutoCountLoading(true);
+        try {
+          const path = selectedPdfPath.trim();
           await postAutoCountAdd({
             job_id: trimmedJobId,
             file_path: path,
             item: autoCountRoi.roi,
           });
-        }
-        await refreshAutoCountMatchesFromServer();
-        setAutoCountRoi(null);
-        if (lastAnalyzeKind !== "searchText") {
+          await refreshAutoCountMatchesFromServer();
+          setAutoCountRoi(null);
+          setAutoCountManualAddActive(false);
           setLastAnalyzeKind("autoCount");
+          toast.success("Match added.");
+          setObjectDataFormVisible(true);
+          scrollToObjectDataSection();
+        } catch (e) {
+          console.log("[qto] manual add match failed", e);
+          toast.error("Could not add match.");
+        } finally {
+          setAutoCountLoading(false);
         }
-        toast.success("Match added.");
+        return;
+      }
+
+      setAutoCountLoading(true);
+      try {
+        const path = selectedPdfPath.trim();
+        const res = await postAutoCount({
+          job_id: trimmedJobId,
+          file_path: path,
+          roi: autoCountRoi.roi,
+          rotation_invariant: rotationInvariant,
+          confidence,
+        });
+        const rawMatches = res.matches ?? [];
+        const next: AutoCountBackendState = {
+          pageNumber: analyzedPage,
+          roi: autoCountRoi.roi,
+          matches: rawMatches,
+        };
+        setAutoCountBackend(next);
+        setAutoCountRoi(null);
+        setLastAnalyzeKind("autoCount");
+        saveQtoAutoCount(trimmedJobId, path, {
+          v: 1,
+          ...next,
+        });
+        const n = res.total_found ?? res.matches?.length ?? 0;
+        toast.success(
+          n > 0 ? `Found ${n} match${n === 1 ? "" : "es"}` : "No matches"
+        );
+        setMetadataCount(n);
+        setMetadataObjectId("");
+        setMetadataObjectName("");
+        setMetadataErrors({});
+        setSelectedSavedObjectId(null);
+        setExpandedSavedId(null);
         setObjectDataFormVisible(true);
         scrollToObjectDataSection();
       } catch (e) {
-        console.log("[qto] manual add match failed", e);
-        toast.error("Could not add match.");
+        console.log("[qto] postAutoCount failed", e);
+        toast.error("Auto count failed.");
       } finally {
         setAutoCountLoading(false);
       }
@@ -2075,6 +2165,7 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
     refreshAutoCountMatchesFromServer,
     lastAnalyzeKind,
     searchTerm,
+    autoCountManualAddActive,
   ]);
 
   const refreshDoorMatchesFromServer = useCallback(async () => {
@@ -2941,7 +3032,13 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
   const primaryAnalyzeLabel = useMemo(() => {
     switch (lastToolAction) {
       case "autoCount":
-        if (autoCountRoi && autoCountBackend) return "Add match";
+        if (
+          autoCountRoi &&
+          autoCountBackend &&
+          autoCountManualAddActive
+        ) {
+          return "Add match";
+        }
         return "Analyze";
       case "doorFinder":
         if (doorFinderBackend && doorFinderRoi) return "Add door";
@@ -2967,6 +3064,7 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
     lastToolAction,
     autoCountRoi,
     autoCountBackend,
+    autoCountManualAddActive,
     facadeBackend,
     facadeRoi,
     doorFinderBackend,
@@ -3011,6 +3109,9 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
     if (!trimmedJobId || !selectedPdfPath?.trim() || analyzeBusy) return true;
     switch (lastToolAction) {
       case "autoCount":
+        if (autoCountManualAddActive && autoCountBackend) {
+          return !autoCountRoi;
+        }
         return !autoCountRoi && !autoCountBackend;
       case "doorFinder":
         return !doorFinderRoi && !doorFinderBackend;
@@ -3035,6 +3136,7 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
     lastToolAction,
     autoCountRoi,
     autoCountBackend,
+    autoCountManualAddActive,
     doorFinderRoi,
     doorFinderBackend,
     facadeRoi,
@@ -3216,6 +3318,11 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
                     lastAnalyzeKind !== "searchText" || !autoCountBackend
                   }
                   onSearchTextAreaSelectionToggle={handleSearchTextManualSelectToggle}
+                  autoCountManualAddActive={autoCountManualAddActive}
+                  autoCountManualAddDisabled={
+                    lastAnalyzeKind !== "autoCount" || !autoCountBackend
+                  }
+                  onAutoCountManualAddToggle={handleAutoCountManualAddToggle}
                   onAutoCountToolSelect={handleAutoCountToolSelect}
                   onDoorFinderToolSelect={handleDoorFinderToolSelect}
                   onWallFinderToolSelect={handleWallFinderToolSelect}

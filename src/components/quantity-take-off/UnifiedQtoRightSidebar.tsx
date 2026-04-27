@@ -56,7 +56,7 @@ export type UnifiedQtoRightSidebarProps = ToolOptionsControlsProps & {
 type ModeMeta = { title: string; icon: LucideIcon; step: string };
 
 const MODE_META: Record<ToolSidebarMode, ModeMeta> = {
-  autoCount:  { title: "Auto Count",  icon: CircleDot,     step: "Configure options then click Analyze." },
+  autoCount:  { title: "Auto Count",  icon: CircleDot,     step: "Draw a region and Analyze. Use Add Missing Count on the canvas toolbar to box symbols the detector missed." },
   facade:     { title: "Facade",      icon: Building2,     step: "Set confidence, then click Analyze Facade." },
   doorFinder: { title: "Door Finder", icon: DoorOpen,      step: "Configure options, then click Find Doors." },
   wallFinder: { title: "Wall Finder", icon: PanelsTopLeft, step: "Configure options, then click Find Walls." },

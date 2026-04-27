@@ -22,6 +22,9 @@ export type CadAnalyzerFloatingBridgeProps = {
   searchTextAreaSelectionActive?: boolean;
   searchTextAreaSelectionDisabled?: boolean;
   onSearchTextAreaSelectionToggle?: () => void;
+  autoCountManualAddActive?: boolean;
+  autoCountManualAddDisabled?: boolean;
+  onAutoCountManualAddToggle?: () => void;
 };
 
 /** Renders the bottom bar using tool context (must be inside `CadAnalyzerToolProvider`). */
@@ -36,6 +39,9 @@ export function CadAnalyzerFloatingBridge({
   searchTextAreaSelectionActive,
   searchTextAreaSelectionDisabled,
   onSearchTextAreaSelectionToggle,
+  autoCountManualAddActive,
+  autoCountManualAddDisabled,
+  onAutoCountManualAddToggle,
 }: CadAnalyzerFloatingBridgeProps) {
   const { tool, setTool } = useCadAnalyzerTool();
 
@@ -96,6 +102,9 @@ export function CadAnalyzerFloatingBridge({
       searchTextAreaSelectionActive={searchTextAreaSelectionActive}
       searchTextAreaSelectionDisabled={searchTextAreaSelectionDisabled}
       onSearchTextAreaSelectionToggle={onSearchTextAreaSelectionToggle}
+      autoCountManualAddActive={autoCountManualAddActive}
+      autoCountManualAddDisabled={autoCountManualAddDisabled}
+      onAutoCountManualAddToggle={onAutoCountManualAddToggle}
     />
   );
 }

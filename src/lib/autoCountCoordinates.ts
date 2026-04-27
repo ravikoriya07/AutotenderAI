@@ -30,6 +30,9 @@ export type AutoCountPageMetrics = {
   backendBaseHeight: number;
   cssWidth: number;
   cssHeight: number;
+  /** Overlay canvas buffer px per CSS px — same sx/sy as facade/match overlay draw + hit-tests. */
+  overlayScaleX?: number;
+  overlayScaleY?: number;
 };
 
 type CssRect = { x: number; y: number; width: number; height: number };
@@ -253,6 +256,11 @@ export function backendMatchesToScreen(
 /** Optional mapping from facade API pixel space → backend preview ROI / page (see Quantitites `logic_analyze_facade`). */
 export type FacadeDimensionsMappingOptions = {
   roi: AutoCountRoi | null;
+  /**
+   * Skip {@link pickBestFacadeSpace} / raster heuristics — backend contract is known
+   * (e.g. full-page PREVIEW_ZOOM=2 coords → always {@link facadePreviewGlobalToBackend}).
+   */
+  forceStrategy?: FacadeSpaceStrategy;
   /** `AnalyzeFacadeResponse.image` — PNG size anchors pixel→page mapping. */
   annotatedImageDataUrl?: string | null;
   /** Optional explicit raster size (same space as `dimensions` boxes). */
@@ -399,7 +407,7 @@ function facadePageAbsoluteToBackend(
   };
 }
 
-type FacadeSpaceStrategy =
+export type FacadeSpaceStrategy =
   | "previewGlobal"
   | "previewRoi"
   | "fullPageOffset"
@@ -613,7 +621,10 @@ export function facadeDimensionsToScreenBoxes(
     | "analysisRaster"
     | "rawLegacy";
   let strategy: FacadeStrategy = "rawLegacy";
-  if (roi && dimensions.length > 0) {
+  const forced = mapping?.forceStrategy;
+  if (typeof forced === "string" && dimensions.length > 0) {
+    strategy = forced;
+  } else if (roi && dimensions.length > 0) {
     if (typeof aW === "number" && typeof aH === "number" && aW > 0 && aH > 0 && !png) {
       strategy = "analysisRaster";
     } else {

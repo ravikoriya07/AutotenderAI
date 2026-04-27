@@ -109,6 +109,10 @@ export type FloatingActionBarProps = {
   searchTextAreaSelectionActive?: boolean;
   searchTextAreaSelectionDisabled?: boolean;
   onSearchTextAreaSelectionToggle?: () => void;
+  /** Auto Count — arm manual “missing symbol” box (POST /auto_count/add). */
+  autoCountManualAddActive?: boolean;
+  autoCountManualAddDisabled?: boolean;
+  onAutoCountManualAddToggle?: () => void;
 };
 
 /**
@@ -122,6 +126,9 @@ export function FloatingActionBar({
   searchTextAreaSelectionActive = false,
   searchTextAreaSelectionDisabled = false,
   onSearchTextAreaSelectionToggle,
+  autoCountManualAddActive = false,
+  autoCountManualAddDisabled = false,
+  onAutoCountManualAddToggle,
 }: FloatingActionBarProps) {
   return (
     <div
@@ -197,6 +204,45 @@ export function FloatingActionBar({
                   )}
                 >
                   {searchTextAreaSelectionActive ? "Cancel" : "Add Missing Highlight"}
+                </button>
+              </ToolbarTooltip>
+            </div>
+          </>
+        ) : null}
+
+        {activeTool === "autoCount" ? (
+          <>
+            <div className="mx-1 h-7 w-px shrink-0 rounded-full bg-border/60" aria-hidden />
+            <div
+              className="flex items-center gap-1"
+              role="group"
+              aria-label="Auto count manual add selection"
+            >
+              <ToolbarTooltip
+                label={
+                  autoCountManualAddActive
+                    ? "Cancel and stop drawing a box for a missing count."
+                    : "Draw a box around a symbol the detector missed, then use Add match in the panel."
+                }
+              >
+                <button
+                  type="button"
+                  aria-label={
+                    autoCountManualAddActive
+                      ? "Cancel add missing count selection"
+                      : "Add missing count manually"
+                  }
+                  disabled={autoCountManualAddDisabled}
+                  onClick={onAutoCountManualAddToggle}
+                  className={cn(
+                    "inline-flex min-h-9 items-center justify-center rounded-lg border px-2.5 py-1.5 text-xs font-medium transition-all duration-150",
+                    autoCountManualAddActive
+                      ? "border-primary/40 bg-primary/10 text-primary shadow-sm"
+                      : "border-border/70 bg-card/70 text-foreground hover:bg-muted/80",
+                    "disabled:cursor-not-allowed disabled:opacity-50"
+                  )}
+                >
+                  {autoCountManualAddActive ? "Cancel" : "Add Missing Count"}
                 </button>
               </ToolbarTooltip>
             </div>
