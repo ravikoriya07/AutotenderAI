@@ -141,11 +141,12 @@ export function FloatingActionBar({
     >
       <div
         className={cn(
-          "pointer-events-auto flex max-w-full flex-nowrap items-center gap-0.5 rounded-2xl px-1.5 py-1.5 sm:gap-1 sm:px-2 sm:py-2",
+          "pointer-events-auto flex max-w-full flex-nowrap items-center gap-0.5 overflow-x-auto rounded-2xl px-1.5 py-1.5 sm:gap-1 sm:px-2 sm:py-2",
           "border border-border bg-card/95 text-card-foreground",
           "shadow-[0_10px_40px_-8px_rgba(15,23,42,0.22),0_4px_14px_rgba(15,23,42,0.12)]",
           "ring-1 ring-primary/15",
-          "backdrop-blur-sm"
+          "backdrop-blur-sm",
+          "[scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
         )}
       >
         {/* Navigation group */}
