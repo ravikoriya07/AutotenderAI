@@ -1,20 +1,35 @@
 /**
- * API stubs for bid-writing flows — replace implementations when backend routes exist.
+ * API layer for bid-writing flows.
  *
- * Expected Flask parity (reference `bid_writing/app.py`):
- * - POST `/chat` — SSE tokens + sources
- * - GET `/api/library_metadata` — Past Bid Library rows
- * - GET `/api/folders` — Qdrant folder counts for filters
- * - GET `/api/client_projects` — Client doc ingestion projects
+ * Flask endpoints:
+ * - GET  /bid/library/metadata      — Past Bid Library rows
+ * - POST /bid/framework/{seq}       — Toggle framework status for a bid
+ * - GET  /api/folders               — Qdrant folder counts for filters
+ * - GET  /api/client_projects       — Client doc ingestion projects
  */
 
+import { apiClient } from "@/lib/apiClient";
 import type { ClientProjectOption, LibraryFolderOption, PastBid } from "./types";
 import { MOCK_CLIENT_PROJECTS } from "./mockClientProjects";
 import { MOCK_LIBRARY_FOLDERS } from "./mockBidFolders";
-import { MOCK_PAST_BIDS } from "./mockPastBids";
 
 export async function fetchPastBids(): Promise<PastBid[]> {
-  return MOCK_PAST_BIDS;
+  const response = await apiClient.get<PastBid[]>("/bid/library/metadata", {
+    skipGlobalLoader: true,
+  } as object);
+  return Array.isArray(response.data) ? response.data : [];
+}
+
+export async function updateFrameworkStatus(
+  seq: number,
+  isFramework: boolean
+): Promise<{ seq: number; is_framework: boolean }> {
+  const response = await apiClient.post<{ seq: number; is_framework: boolean }>(
+    `/bid/framework/${seq}`,
+    { is_framework: isFramework },
+    { skipGlobalLoader: true } as object
+  );
+  return response.data;
 }
 
 export async function fetchLibraryFolders(): Promise<LibraryFolderOption[]> {

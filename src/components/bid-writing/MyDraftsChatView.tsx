@@ -760,7 +760,7 @@ export function MyDraftsChatView({
 
       <div
         className={cn(
-          "fixed bottom-24 left-1/2 z-50 flex -translate-x-1/2 items-center gap-2 rounded-full border border-border bg-card px-4 py-2 text-sm shadow-lg transition-all duration-300 lg:bottom-20",
+          "fixed bottom-24 left-1/2 z-50 flex max-w-[calc(100vw-2rem)] -translate-x-1/2 items-center gap-2 rounded-full border border-border bg-card px-4 py-2 text-sm shadow-lg transition-all duration-300 lg:bottom-20",
           draftToast ? "translate-y-0 opacity-100" : "pointer-events-none translate-y-2 opacity-0"
         )}
         role="status"

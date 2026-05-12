@@ -1,18 +1,19 @@
-/** Aligns with Flask `/api/library_metadata` entries (subset used in UI). */
+/** Aligns with Flask `GET /bid/library/metadata` entries. */
 export type PastBid = {
   seq: number;
   project: string;
-  outcome: string;
-  bid_type: string;
-  submitted: string;
-  quality_score_pct: number | null;
-  quality_tier: "high_quality" | "medium_quality" | "other" | string;
+  qdrant_project_name: string;
   group: "won" | "lost" | "other";
-  outcome_notes?: string;
-  questions?: string[];
+  quality_tier: "high_quality" | "medium_quality" | "other" | string;
+  quality_score_pct: number | null;
+  outcome: string;
+  submitted: string;
+  bid_type: string;
   price_quality_split?: string;
   value_gbp?: number;
-  qdrant_project_name: string;
+  is_framework?: boolean;
+  questions?: string[];
+  outcome_notes?: string;
 };
 
 export type LibraryFolderOption = {

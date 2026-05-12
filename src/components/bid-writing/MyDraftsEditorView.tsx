@@ -9,7 +9,6 @@ import {
   Redo2,
   Save,
   Download,
-  HelpCircle,
   Copy,
   PenLine,
   Maximize2,
@@ -22,6 +21,7 @@ import {
   FolderArchive,
   Check,
   ArrowDownToLine,
+  HelpCircle,
 } from "lucide-react";
 import { toast } from "react-toastify";
 import { cn } from "@/lib/utils";
@@ -442,124 +442,266 @@ export function MyDraftsEditorView({
 
         <div className="flex min-h-0 flex-1 items-stretch overflow-hidden">
           <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden border-r border-border">
-            <div className="shrink-0 border-b border-border bg-card/50 px-3 py-2">
-              <div className="flex flex-wrap items-center gap-x-2 gap-y-2 sm:gap-x-3">
-                <span className="shrink-0 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
-                  Draft Document
-                </span>
-                {activeDraft && (
-                  <>
-                    <span
-                      className="hidden h-5 w-px shrink-0 bg-border sm:block"
-                      aria-hidden
-                    />
-                    <div className="flex shrink-0 items-center gap-0.5">
-                      <button
-                        type="button"
-                        className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                        aria-label="Undo"
-                      >
-                        <Undo2 className="h-4 w-4" aria-hidden />
-                      </button>
-                      <button
-                        type="button"
-                        className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                        aria-label="Redo"
-                      >
-                        <Redo2 className="h-4 w-4" aria-hidden />
-                      </button>
-                    </div>
-                    <button
-                      type="button"
-                      className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-border bg-background px-2.5 text-xs font-medium text-foreground transition-colors hover:bg-muted"
-                      onClick={() => toast.success("Saved (mock)")}
-                    >
-                      <Save className="h-3.5 w-3.5 shrink-0" aria-hidden />
-                      Save
-                    </button>
-                    <div className="relative shrink-0" ref={downloadRef}>
-                      <button
-                        type="button"
-                        onClick={() => setDownloadOpen((o) => !o)}
-                        className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                        aria-label="Download"
-                        aria-expanded={downloadOpen}
-                      >
-                        <Download className="h-4 w-4" aria-hidden />
-                      </button>
-                      {downloadOpen && (
-                        <div className="absolute left-0 top-full z-50 mt-1 min-w-[180px] rounded-md border bg-popover py-1 shadow-md">
+            <div className="shrink-0 border-b border-border bg-background">
+              <div className="min-w-0 px-4 py-3 sm:px-6">
+                <div className="flex flex-col gap-2.5">
+                  {/* Row 1: label left, utilities right (reference) */}
+                  <div className="flex min-w-0 items-center gap-2 sm:gap-3">
+                    <span className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
+                      Draft Document
+                    </span>
+                    {activeDraft && (
+                      <div className="flex min-w-0 flex-1 justify-end">
+                        <div className="inline-flex max-w-full items-center gap-0.5 overflow-x-clip rounded-xl border border-border/60 bg-muted/60 p-1 [-ms-overflow-style:none] [scrollbar-width:none] dark:bg-muted/40 [&::-webkit-scrollbar]:hidden">
+                        <button
+                          type="button"
+                          className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-background hover:text-foreground"
+                          aria-label="Undo"
+                        >
+                          <Undo2 className="h-4 w-4" aria-hidden />
+                        </button>
+                        <button
+                          type="button"
+                          className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-background hover:text-foreground"
+                          aria-label="Redo"
+                        >
+                          <Redo2 className="h-4 w-4" aria-hidden />
+                        </button>
+                        <button
+                          type="button"
+                          className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-border/50 bg-background px-2.5 text-xs font-medium text-foreground shadow-sm transition-colors hover:bg-muted"
+                          onClick={() => toast.success("Saved (mock)")}
+                        >
+                          <Save className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                          Save
+                        </button>
+                        <div className="relative shrink-0" ref={downloadRef}>
                           <button
                             type="button"
-                            className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-muted"
-                            onClick={() => downloadAs("pdf")}
+                            onClick={() => setDownloadOpen((o) => !o)}
+                            className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-background hover:text-foreground"
+                            aria-label="Download"
+                            aria-expanded={downloadOpen}
                           >
-                            <ArrowDownToLine className="h-4 w-4" aria-hidden />
-                            PDF
+                            <Download className="h-4 w-4" aria-hidden />
                           </button>
+                          {downloadOpen && (
+                            <div className="absolute right-0 top-full z-50 mt-1 min-w-[180px] rounded-md border bg-popover py-1 shadow-md">
+                              <button
+                                type="button"
+                                className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-muted"
+                                onClick={() => downloadAs("pdf")}
+                              >
+                                <ArrowDownToLine className="h-4 w-4" aria-hidden />
+                                PDF
+                              </button>
+                              <button
+                                type="button"
+                                className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-muted"
+                                onClick={() => downloadAs("docx")}
+                              >
+                                <ArrowDownToLine className="h-4 w-4" aria-hidden />
+                                Word (.docx)
+                              </button>
+                              <button
+                                type="button"
+                                className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-muted"
+                                onClick={() => downloadAs("txt")}
+                              >
+                                <ArrowDownToLine className="h-4 w-4" aria-hidden />
+                                Plain Text (.txt)
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Row 2: compact tray — Ask AI + tools (wrap inside panel; no overflow clip) */}
+                  {activeDraft && (
+                    <div className="min-w-0 rounded-2xl border border-border/50 bg-muted/50 p-2 shadow-sm dark:bg-muted/30">
+                      <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-center sm:gap-0">
+                        <div className="flex shrink-0 items-center sm:pr-3">
                           <button
                             type="button"
-                            className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-muted"
-                            onClick={() => downloadAs("docx")}
+                            onClick={() => setAskAiOpen((v) => !v)}
+                            className="inline-flex h-9 shrink-0 items-center gap-2 rounded-lg bg-primary px-4 text-xs font-semibold text-primary-foreground shadow-sm transition-colors hover:bg-primary/90"
+                            aria-expanded={askAiOpen}
                           >
-                            <ArrowDownToLine className="h-4 w-4" aria-hidden />
-                            Word (.docx)
-                          </button>
-                          <button
-                            type="button"
-                            className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-muted"
-                            onClick={() => downloadAs("txt")}
-                          >
-                            <ArrowDownToLine className="h-4 w-4" aria-hidden />
-                            Plain Text (.txt)
+                            <HelpCircle className="h-4 w-4 shrink-0" aria-hidden />
+                            Ask AI
+                            <ChevronDown
+                              className={cn(
+                                "h-4 w-4 shrink-0 opacity-90 transition-transform",
+                                askAiOpen && "rotate-180"
+                              )}
+                            />
                           </button>
                         </div>
-                      )}
+                        <div
+                          className="hidden h-8 w-px shrink-0 bg-border/70 sm:block"
+                          aria-hidden
+                        />
+                        <div className="min-w-0 flex-1 sm:border-l sm:border-border/40 sm:pl-3">
+                          <div className="flex min-w-0 flex-wrap content-start items-center gap-x-1.5 gap-y-1.5">
+                            {TOOLS.map((tool) => (
+                              <div key={tool.id} className="relative shrink-0">
+                                <button
+                                  type="button"
+                                  onClick={() => handleToolClick(tool.id)}
+                                  className={cn(
+                                    "inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg px-2.5 text-xs font-medium transition-colors",
+                                    "text-muted-foreground hover:bg-background/90 hover:text-foreground",
+                                    activeTool === tool.id &&
+                                      "bg-background font-semibold text-primary shadow-sm ring-1 ring-border/60 dark:bg-background/80"
+                                  )}
+                                >
+                                  <tool.icon
+                                    className={cn(
+                                      "h-3.5 w-3.5 shrink-0",
+                                      activeTool === tool.id ? "text-primary" : "text-muted-foreground"
+                                    )}
+                                    aria-hidden
+                                  />
+                                  <span className="whitespace-nowrap">{tool.label}</span>
+                                </button>
+
+                                {tool.id === "expand" && wcExpandOpen && (
+                                  <div className="absolute left-0 top-full z-40 mt-1 w-52 rounded-lg border border-border bg-popover p-2 shadow-md">
+                                <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                                  Target word count
+                                </p>
+                                <div className="mt-2 flex flex-wrap gap-1">
+                                  {EXPAND_PRESETS.map((n) => (
+                                    <button
+                                      key={n}
+                                      type="button"
+                                      onClick={() => {
+                                        setWcExpandPreset(n);
+                                        setWcExpandCustom("");
+                                      }}
+                                      className={cn(
+                                        "rounded px-2 py-0.5 text-xs",
+                                        wcExpandPreset === n && wcExpandCustom === ""
+                                          ? "bg-primary text-primary-foreground"
+                                          : "bg-background text-muted-foreground hover:bg-muted"
+                                      )}
+                                    >
+                                      {n}
+                                    </button>
+                                  ))}
+                                </div>
+                                <div className="mt-2 flex gap-1">
+                                  <input
+                                    type="number"
+                                    min={50}
+                                    max={2000}
+                                    placeholder="Custom…"
+                                    value={wcExpandCustom}
+                                    onChange={(e) => {
+                                      setWcExpandCustom(e.target.value);
+                                      setWcExpandPreset(null);
+                                    }}
+                                    className="min-w-0 flex-1 rounded border border-border bg-background px-2 py-1 text-xs"
+                                  />
+                                  <button
+                                    type="button"
+                                    onClick={runExpandWithWc}
+                                    className="rounded bg-primary px-2 py-1 text-xs font-medium text-primary-foreground"
+                                  >
+                                    Run
+                                  </button>
+                                  </div>
+                                  </div>
+                                )}
+
+                                {tool.id === "shorten" && wcShortenOpen && (
+                                  <div className="absolute left-0 top-full z-40 mt-1 w-52 rounded-lg border border-border bg-popover p-2 shadow-md">
+                                <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                                  Target word count
+                                </p>
+                                <div className="mt-2 flex flex-wrap gap-1">
+                                  {SHORTEN_PRESETS.map((n) => (
+                                    <button
+                                      key={n}
+                                      type="button"
+                                      onClick={() => {
+                                        setWcShortenPreset(n);
+                                        setWcShortenCustom("");
+                                      }}
+                                      className={cn(
+                                        "rounded px-2 py-0.5 text-xs",
+                                        wcShortenPreset === n && wcShortenCustom === ""
+                                          ? "bg-primary text-primary-foreground"
+                                          : "bg-background text-muted-foreground hover:bg-muted"
+                                      )}
+                                    >
+                                      {n}
+                                    </button>
+                                  ))}
+                                </div>
+                                <div className="mt-2 flex gap-1">
+                                  <input
+                                    type="number"
+                                    min={20}
+                                    max={2000}
+                                    placeholder="Custom…"
+                                    value={wcShortenCustom}
+                                    onChange={(e) => {
+                                      setWcShortenCustom(e.target.value);
+                                      setWcShortenPreset(null);
+                                    }}
+                                    className="min-w-0 flex-1 rounded border border-border bg-background px-2 py-1 text-xs"
+                                  />
+                                  <button
+                                    type="button"
+                                    onClick={runShortenWithWc}
+                                    className="rounded bg-primary px-2 py-1 text-xs font-medium text-primary-foreground"
+                                  >
+                                    Run
+                                  </button>
+                                  </div>
+                                  </div>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => setAskAiOpen((v) => !v)}
-                      className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full bg-primary px-3 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 sm:ml-auto"
-                      aria-expanded={askAiOpen}
-                    >
-                      <HelpCircle className="h-3.5 w-3.5 shrink-0" aria-hidden />
-                      Ask AI
-                      <ChevronDown
-                        className={cn(
-                          "h-3.5 w-3.5 shrink-0 transition-transform",
-                          askAiOpen && "rotate-180"
-                        )}
-                      />
-                    </button>
-                  </>
+                  )}
+                </div>
+
+                {activeDraft && (
+                  <p className="mt-2 text-[10px] font-semibold uppercase leading-snug tracking-[0.15em] text-muted-foreground">
+                    Select text to view more tools or pick a global tool
+                  </p>
+                )}
+
+                {activeDraft && askAiOpen && (
+                  <div className="mt-2 w-full max-w-full rounded-lg border border-border bg-background p-3">
+                    <textarea
+                      value={askAiInput}
+                      onChange={(e) => setAskAiInput(e.target.value)}
+                      placeholder="Ask a question or get suggestions…"
+                      rows={3}
+                      className="w-full resize-none rounded-md border border-border bg-card px-3 py-2 text-sm outline-none ring-offset-background focus-visible:ring-2 focus-visible:ring-primary/30"
+                    />
+                    <div className="mt-2 flex justify-end">
+                      <button
+                        type="button"
+                        onClick={sendAskAi}
+                        className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90"
+                      >
+                        Ask
+                      </button>
+                    </div>
+                  </div>
                 )}
               </div>
-              <p className="mt-1.5 text-[10px] font-semibold uppercase leading-snug tracking-wide text-muted-foreground sm:mt-1">
-                Select text then pick a tool · Click to edit
-              </p>
-
-              {activeDraft && askAiOpen && (
-                <div className="mt-2 rounded-lg border border-border bg-background p-3">
-                  <textarea
-                    value={askAiInput}
-                    onChange={(e) => setAskAiInput(e.target.value)}
-                    placeholder="Ask a question or get suggestions…"
-                    rows={3}
-                    className="w-full resize-none rounded-md border border-border bg-card px-3 py-2 text-sm outline-none ring-offset-background focus-visible:ring-2 focus-visible:ring-primary/30"
-                  />
-                  <div className="mt-2 flex justify-end">
-                    <button
-                      type="button"
-                      onClick={sendAskAi}
-                      className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90"
-                    >
-                      Ask
-                    </button>
-                  </div>
-                </div>
-              )}
             </div>
-
             <div className="min-h-0 flex-1 overflow-y-auto bg-background">
               {activeDraft ? (
                 <textarea
@@ -567,7 +709,7 @@ export function MyDraftsEditorView({
                   value={activeDraft.content}
                   onChange={(e) => handleDraftContentChange(e.target.value)}
                   placeholder="Start typing your draft here..."
-                  className="h-full min-h-full w-full resize-none bg-transparent px-6 py-6 text-sm leading-relaxed text-foreground placeholder:text-muted-foreground focus:outline-none"
+                  className="h-full min-h-full w-full resize-none bg-transparent px-4 py-4 text-sm leading-relaxed text-foreground placeholder:text-muted-foreground focus:outline-none sm:px-6 sm:py-6"
                   aria-label="Draft content"
                 />
               ) : (
@@ -583,143 +725,6 @@ export function MyDraftsEditorView({
                   </div>
                 </div>
               )}
-            </div>
-          </div>
-
-          <div className="hidden min-h-0 shrink-0 flex-col overflow-hidden border-r border-border sm:flex sm:w-44 md:w-48 lg:w-52">
-            <div className="shrink-0 border-b border-border bg-card/50 px-3 py-2">
-              <span className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
-                Tools
-              </span>
-            </div>
-            <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto p-3">
-              {TOOLS.map((tool) => (
-                <div key={tool.id}>
-                  <button
-                    type="button"
-                    onClick={() => handleToolClick(tool.id)}
-                    className={cn(
-                      "flex w-full items-center gap-3 rounded-lg border border-border bg-card px-3 py-2.5 text-left text-sm transition-colors",
-                      "hover:border-primary/40 hover:bg-muted",
-                      activeTool === tool.id
-                        ? "border-primary/60 bg-primary/10 text-primary"
-                        : "text-foreground"
-                    )}
-                  >
-                    <tool.icon
-                      className={cn(
-                        "h-4 w-4 shrink-0",
-                        activeTool === tool.id ? "text-primary" : "text-muted-foreground"
-                      )}
-                      aria-hidden
-                    />
-                    {tool.label}
-                  </button>
-
-                  {tool.id === "expand" && wcExpandOpen && (
-                    <div className="mt-2 rounded-lg border border-border bg-muted/30 p-2">
-                      <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                        Target word count
-                      </p>
-                      <div className="mt-2 flex flex-wrap gap-1">
-                        {EXPAND_PRESETS.map((n) => (
-                          <button
-                            key={n}
-                            type="button"
-                            onClick={() => {
-                              setWcExpandPreset(n);
-                              setWcExpandCustom("");
-                            }}
-                            className={cn(
-                              "rounded px-2 py-0.5 text-xs",
-                              wcExpandPreset === n && wcExpandCustom === ""
-                                ? "bg-primary text-primary-foreground"
-                                : "bg-background text-muted-foreground hover:bg-muted"
-                            )}
-                          >
-                            {n}
-                          </button>
-                        ))}
-                      </div>
-                      <div className="mt-2 flex gap-1">
-                        <input
-                          type="number"
-                          min={50}
-                          max={2000}
-                          placeholder="Custom…"
-                          value={wcExpandCustom}
-                          onChange={(e) => {
-                            setWcExpandCustom(e.target.value);
-                            setWcExpandPreset(null);
-                          }}
-                          className="min-w-0 flex-1 rounded border border-border bg-background px-2 py-1 text-xs"
-                        />
-                        <button
-                          type="button"
-                          onClick={runExpandWithWc}
-                          className="rounded bg-primary px-2 py-1 text-xs font-medium text-primary-foreground"
-                        >
-                          Run
-                        </button>
-                      </div>
-                    </div>
-                  )}
-
-                  {tool.id === "shorten" && wcShortenOpen && (
-                    <div className="mt-2 rounded-lg border border-border bg-muted/30 p-2">
-                      <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                        Target word count
-                      </p>
-                      <div className="mt-2 flex flex-wrap gap-1">
-                        {SHORTEN_PRESETS.map((n) => (
-                          <button
-                            key={n}
-                            type="button"
-                            onClick={() => {
-                              setWcShortenPreset(n);
-                              setWcShortenCustom("");
-                            }}
-                            className={cn(
-                              "rounded px-2 py-0.5 text-xs",
-                              wcShortenPreset === n && wcShortenCustom === ""
-                                ? "bg-primary text-primary-foreground"
-                                : "bg-background text-muted-foreground hover:bg-muted"
-                            )}
-                          >
-                            {n}
-                          </button>
-                        ))}
-                      </div>
-                      <div className="mt-2 flex gap-1">
-                        <input
-                          type="number"
-                          min={20}
-                          max={2000}
-                          placeholder="Custom…"
-                          value={wcShortenCustom}
-                          onChange={(e) => {
-                            setWcShortenCustom(e.target.value);
-                            setWcShortenPreset(null);
-                          }}
-                          className="min-w-0 flex-1 rounded border border-border bg-background px-2 py-1 text-xs"
-                        />
-                        <button
-                          type="button"
-                          onClick={runShortenWithWc}
-                          className="rounded bg-primary px-2 py-1 text-xs font-medium text-primary-foreground"
-                        >
-                          Run
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-            <div className="shrink-0 border-t border-border px-3 py-3">
-              <p className="text-[11px] leading-relaxed text-muted-foreground">
-                Select text in the document, then click a tool. Or click a tool to process the whole draft.
-              </p>
             </div>
           </div>
 
@@ -782,6 +787,51 @@ export function MyDraftsEditorView({
             )}
           </div>
         </div>
+        {toolOutput && (
+          <div className="flex max-h-[40vh] shrink-0 flex-col overflow-hidden border-t border-border lg:hidden">
+            <div className="flex shrink-0 items-center justify-between border-b border-border bg-card/50 px-3 py-2">
+              <span className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+                Tool Output
+              </span>
+              {activeTool && (
+                <span className="ml-2 truncate text-[10px] text-muted-foreground">
+                  ({activeTool})
+                </span>
+              )}
+            </div>
+            <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto bg-background px-4 py-4">
+              <MarkdownRenderer content={toolOutput} />
+            </div>
+            <div className="shrink-0 border-t border-border bg-card/50 px-3 py-2.5">
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={applyOutput}
+                  className="inline-flex items-center gap-1.5 rounded-full bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground shadow-sm transition-colors hover:bg-primary/90"
+                >
+                  <Check className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                  Apply
+                </button>
+                <button
+                  type="button"
+                  onClick={appendOutput}
+                  className="inline-flex items-center gap-1.5 rounded-full border border-border bg-transparent px-3 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                >
+                  <ArrowDownToLine className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                  Append
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void copyOutput()}
+                  className="inline-flex items-center gap-1.5 rounded-full border border-border bg-transparent px-3 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                >
+                  <Copy className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                  Copy
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
