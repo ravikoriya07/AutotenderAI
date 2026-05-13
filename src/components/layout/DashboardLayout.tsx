@@ -12,6 +12,12 @@ interface DashboardLayoutProps {
   title?: string;
   subtitle?: string;
   searchPlaceholder?: string;
+  /**
+   * When true the layout is clamped to the dynamic viewport height so that
+   * internal flex children (e.g. a chat view) can own their own scroll
+   * region. The global AppFooter is suppressed in this mode.
+   */
+  fullHeight?: boolean;
 }
 
 export function DashboardLayout({
@@ -20,10 +26,18 @@ export function DashboardLayout({
   title,
   subtitle,
   searchPlaceholder,
+  fullHeight = false,
 }: DashboardLayoutProps) {
   const { collapsed } = useSidebar();
   return (
-    <div className="flex min-h-screen min-w-0 overflow-x-hidden">
+    <div
+      className={cn(
+        "flex min-w-0",
+        fullHeight
+          ? "h-dvh overflow-hidden"
+          : "min-h-screen overflow-x-hidden"
+      )}
+    >
       <Sidebar />
       <div
         className={cn(
@@ -38,8 +52,10 @@ export function DashboardLayout({
           subtitle={subtitle}
           searchPlaceholder={searchPlaceholder}
         />
-        <div className="flex min-h-0 flex-1 flex-col">{children}</div>
-        <AppFooter />
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+          {children}
+        </div>
+        {!fullHeight && <AppFooter />}
       </div>
     </div>
   );

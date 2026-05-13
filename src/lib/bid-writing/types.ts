@@ -21,9 +21,12 @@ export type LibraryFolderOption = {
   count: number;
 };
 
+/** Entry from `GET /bid/client/projects` (`projects[]`). */
 export type ClientProjectOption = {
+  id: string | null;
   name: string;
   chunks: number;
+  uploaded_at: string | null;
 };
 
 export type ChatTurn = {
@@ -39,6 +42,32 @@ export type ChatSession = {
   updatedAt: string;
 };
 
+/** Entry from `GET /bid/sessions` (`sessions[]`). */
+export type BidSessionSummary = {
+  session_id: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
+  message_count: number;
+};
+
+/** Message from `GET /bid/sessions/{session_id}` (`messages[]`). */
+export type BidSessionApiMessage = {
+  role: string;
+  content: string;
+  ts?: string;
+};
+
+/** Response from `GET /bid/sessions/{session_id}`. */
+export type BidSessionDetail = {
+  job_id?: string;
+  session_id: string;
+  created_at?: string;
+  updated_at?: string;
+  title?: string;
+  messages: BidSessionApiMessage[];
+};
+
 export type DraftRecord = {
   id: string;
   title: string;
@@ -46,4 +75,4 @@ export type DraftRecord = {
   createdAt: string;
 };
 
-export type FilterPresetId = "high" | "full" | "custom";
+export type FilterPresetId = "high" | "full" | "framework" | "custom";

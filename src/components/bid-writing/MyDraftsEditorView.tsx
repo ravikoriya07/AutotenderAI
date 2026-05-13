@@ -18,7 +18,6 @@ import {
   Feather,
   Menu,
   Upload,
-  FolderArchive,
   Check,
   ArrowDownToLine,
   HelpCircle,
@@ -71,11 +70,7 @@ export function MyDraftsEditorView({
   const [wcExpandPreset, setWcExpandPreset] = useState<number | null>(300);
   const [wcShortenPreset, setWcShortenPreset] = useState<number | null>(120);
 
-  const [clientZipBusy, setClientZipBusy] = useState(false);
-  const [clientZipPct, setClientZipPct] = useState(0);
-
   const uploadDraftRef = useRef<HTMLInputElement>(null);
-  const clientZipRef = useRef<HTMLInputElement>(null);
   const activeDraft = drafts.find((d) => d.id === activeDraftId) ?? null;
 
   useEffect(() => {
@@ -207,23 +202,6 @@ export function MyDraftsEditorView({
     toast.info(`Extracted “${file.name}” (mock) — connect upload API to ingest text.`);
   }
 
-  function mockClientZip(file: File | null) {
-    if (!file) return;
-    setClientZipBusy(true);
-    setClientZipPct(0);
-    const steps = [15, 40, 72, 100];
-    let i = 0;
-    const id = window.setInterval(() => {
-      setClientZipPct(steps[i] ?? 100);
-      i += 1;
-      if (i >= steps.length) {
-        window.clearInterval(id);
-        setClientZipBusy(false);
-        toast.success(`Ingested ${file.name} (mock)`);
-      }
-    }, 400);
-  }
-
   function sendAskAi() {
     if (!askAiInput.trim()) return;
     setToolOutput(
@@ -303,39 +281,6 @@ export function MyDraftsEditorView({
             Upload Existing Draft
           </button>
 
-          <input
-            ref={clientZipRef}
-            type="file"
-            accept=".zip"
-            className="hidden"
-            onChange={(e) => {
-              mockClientZip(e.target.files?.[0] ?? null);
-              e.target.value = "";
-            }}
-          />
-          <button
-            type="button"
-            onClick={() => clientZipRef.current?.click()}
-            className="mt-2 flex w-full items-center gap-2 rounded-lg border border-border bg-background px-3 py-2.5 text-left text-xs font-medium text-foreground transition-colors hover:bg-muted"
-          >
-            <FolderArchive className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
-            Client Documents (ZIP)
-          </button>
-
-          {clientZipBusy && (
-            <div className="mt-3 rounded-lg border border-border bg-muted/30 p-2">
-              <div className="mb-1 flex justify-between text-[11px] text-muted-foreground">
-                <span>Ingesting…</span>
-                <span>{clientZipPct}%</span>
-              </div>
-              <div className="h-1.5 overflow-hidden rounded-full bg-muted">
-                <div
-                  className="h-full rounded-full bg-primary transition-[width] duration-300"
-                  style={{ width: `${clientZipPct}%` }}
-                />
-              </div>
-            </div>
-          )}
         </div>
 
         <div className="flex flex-1 flex-col overflow-y-auto">

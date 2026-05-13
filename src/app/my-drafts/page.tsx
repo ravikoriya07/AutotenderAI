@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { Suspense, useState } from "react";
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
 import { MyDraftsChatView } from "@/components/bid-writing/MyDraftsChatView";
 import { MyDraftsEditorView } from "@/components/bid-writing/MyDraftsEditorView";
@@ -48,22 +48,25 @@ export default function MyDraftsPage() {
   }
 
   return (
-    <DashboardLayout title="My Drafts">
-      {view === "chat" ? (
-        <MyDraftsChatView
-          drafts={drafts}
-          onOpenEditor={(id) => openEditor(id)}
-          onSaveDraftFromAssistant={handleSaveDraftFromAssistant}
-        />
-      ) : (
-        <MyDraftsEditorView
-          drafts={drafts}
-          setDrafts={setDrafts}
-          activeDraftId={activeDraftId}
-          setActiveDraftId={setActiveDraftId}
-          onBackToChat={() => setView("chat")}
-        />
-      )}
+    <DashboardLayout title="My Drafts" fullHeight>
+      {/* Suspense is required by Next.js App Router for useSearchParams() */}
+      <Suspense fallback={null}>
+        {view === "chat" ? (
+          <MyDraftsChatView
+            drafts={drafts}
+            onOpenEditor={(id) => openEditor(id)}
+            onSaveDraftFromAssistant={handleSaveDraftFromAssistant}
+          />
+        ) : (
+          <MyDraftsEditorView
+            drafts={drafts}
+            setDrafts={setDrafts}
+            activeDraftId={activeDraftId}
+            setActiveDraftId={setActiveDraftId}
+            onBackToChat={() => setView("chat")}
+          />
+        )}
+      </Suspense>
     </DashboardLayout>
   );
 }
