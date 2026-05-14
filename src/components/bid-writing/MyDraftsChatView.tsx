@@ -771,7 +771,7 @@ export function MyDraftsChatView({
   }
 
   function handleChatKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
-    if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+    if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       void sendMessage();
     }
@@ -1392,7 +1392,7 @@ export function MyDraftsChatView({
         </aside>
 
         <div className="flex min-w-0 flex-1 flex-col bg-background">
-          <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border bg-card px-4 py-3">
+          <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border bg-card px-3 py-2.5 sm:px-4 sm:py-3">
             <button
               type="button"
               onClick={() => setChatSidebarOpen((v) => !v)}
@@ -1449,7 +1449,7 @@ export function MyDraftsChatView({
 
           <div
             ref={scrollRef}
-            className="min-h-0 flex-1 overflow-y-auto scroll-smooth px-4 py-6"
+            className="min-h-0 flex-1 overflow-y-auto scroll-smooth px-3 py-5 sm:px-6 sm:py-6"
             aria-busy={apiSessionLoading}
           >
             {apiSessionLoading && messages.length === 0 ? (
@@ -1473,7 +1473,7 @@ export function MyDraftsChatView({
                 <p className="text-xs text-muted-foreground">Send a question below to continue this chat.</p>
               </div>
             ) : messages.length === 0 ? (
-              <div className="mx-auto flex max-w-2xl flex-col items-center gap-8 py-8">
+              <div className="mx-auto flex max-w-2xl flex-col items-center gap-6 py-6 sm:gap-8 sm:py-8">
                 <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/15">
                   <FileText className="h-7 w-7 text-primary" aria-hidden />
                 </div>
@@ -1502,7 +1502,7 @@ export function MyDraftsChatView({
                 </div>
               </div>
             ) : (
-              <div className="mx-auto flex max-w-3xl flex-col gap-6 pb-2">
+              <div className="mx-auto flex max-w-3xl flex-col gap-4 pb-2">
                 {messages.map((m, i) => (
                   <div
                     key={`${currentChatId ?? "new"}-${i}-${m.role}`}
@@ -1513,101 +1513,89 @@ export function MyDraftsChatView({
                   >
                     {/* Avatar */}
                     {m.role === "user" ? (
-                      <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-violet-600 text-[11px] font-bold text-white shadow-sm">
+                      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-violet-600 text-[11px] font-bold text-white shadow-sm">
                         You
                       </div>
                     ) : (
-                      <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-emerald-600 text-[11px] font-bold text-white shadow-sm">
+                      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-emerald-600 text-[11px] font-bold text-white shadow-sm">
                         AI
                       </div>
                     )}
 
-                    {/* Bubble */}
-                    <div
-                      className={cn(
-                        "min-w-0 max-w-[82%] rounded-2xl px-4 py-3 text-sm leading-relaxed shadow-sm",
-                        m.role === "user"
-                          ? "bg-primary text-primary-foreground"
-                          : "border border-border bg-card text-foreground"
-                      )}
-                    >
-                      {m.role === "assistant" ? (
-                        <MarkdownRenderer content={m.content} className="text-sm" />
-                      ) : (
+                    {m.role === "user" ? (
+                      /* User bubble — colored pill, right-aligned */
+                      <div className="max-w-[80%] rounded-2xl bg-primary px-4 py-2.5 text-sm leading-relaxed text-primary-foreground shadow-sm">
                         <p className="whitespace-pre-wrap">{m.content}</p>
-                      )}
-                      {m.role === "assistant" && !m.streaming && (
-                        <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-border/60 pt-3">
-                          <button
-                            type="button"
-                            onClick={() => void copyAssistantContent(m.content)}
-                            className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-border bg-transparent px-3 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                          >
-                            <Copy className="h-3.5 w-3.5 shrink-0" aria-hidden />
-                            Copy
-                          </button>
-                          <div className="relative shrink-0" data-chat-export-root>
+                      </div>
+                    ) : (
+                      /* AI message — no card/border, full-width clean text */
+                      <div className="min-w-0 flex-1">
+                        <MarkdownRenderer content={m.content} className="text-sm leading-relaxed text-foreground" />
+                        {!m.streaming && (
+                          <div className="mt-2 flex flex-wrap items-center gap-1.5 pt-1">
                             <button
                               type="button"
-                              onClick={() =>
-                                setExportMenuIndex((idx) => (idx === i ? null : i))
-                              }
-                              className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border bg-transparent px-3 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                              aria-expanded={exportMenuIndex === i}
-                              aria-haspopup="menu"
+                              onClick={() => void copyAssistantContent(m.content)}
+                              className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
                             >
-                              <Download className="h-3.5 w-3.5 shrink-0" aria-hidden />
-                              Export
-                              <ChevronDown className="h-3.5 w-3.5 shrink-0 opacity-70" aria-hidden />
+                              <Copy className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                              Copy
                             </button>
-                            {exportMenuIndex === i && (
-                              <div
-                                className="absolute left-0 top-full z-20 mt-1 min-w-[11rem] rounded-lg border border-border bg-popover py-1 shadow-md"
-                                role="menu"
+                            <div className="relative shrink-0" data-chat-export-root>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setExportMenuIndex((idx) => (idx === i ? null : i))
+                                }
+                                className="inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                                aria-expanded={exportMenuIndex === i}
+                                aria-haspopup="menu"
                               >
-                                <button
-                                  type="button"
-                                  role="menuitem"
-                                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-muted"
-                                  onClick={() => exportAssistantContent("pdf", m.content)}
+                                <Download className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                                Export
+                                <ChevronDown className="h-3.5 w-3.5 shrink-0 opacity-70" aria-hidden />
+                              </button>
+                              {exportMenuIndex === i && (
+                                <div
+                                  className="absolute left-0 bottom-full z-30 mb-1 min-w-[11rem] rounded-lg border border-border bg-popover py-1 shadow-md"
+                                  role="menu"
                                 >
-                                  PDF
-                                </button>
-                                <button
-                                  type="button"
-                                  role="menuitem"
-                                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-muted"
-                                  onClick={() => exportAssistantContent("docx", m.content)}
-                                >
-                                  Word (.docx)
-                                </button>
-                                <button
-                                  type="button"
-                                  role="menuitem"
-                                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-muted"
-                                  onClick={() => exportAssistantContent("txt", m.content)}
-                                >
-                                  Plain Text (.txt)
-                                </button>
-                              </div>
-                            )}
+                                  <button
+                                    type="button"
+                                    role="menuitem"
+                                    className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-muted"
+                                    onClick={() => exportAssistantContent("pdf", m.content)}
+                                  >
+                                    PDF
+                                  </button>
+                                  <button
+                                    type="button"
+                                    role="menuitem"
+                                    className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-muted"
+                                    onClick={() => exportAssistantContent("docx", m.content)}
+                                  >
+                                    Word (.docx)
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => saveAssistantContentAsDraft(m.content)}
+                              className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium text-primary transition-colors hover:bg-primary/10"
+                            >
+                              <Save className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                              Save as Draft
+                            </button>
                           </div>
-                          <button
-                            type="button"
-                            onClick={() => saveAssistantContentAsDraft(m.content)}
-                            className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-primary bg-transparent px-3 text-xs font-medium text-primary transition-colors hover:bg-primary/10"
-                          >
-                            <Save className="h-3.5 w-3.5 shrink-0" aria-hidden />
-                            Save as Draft
-                          </button>
-                        </div>
-                      )}
-                    </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 ))}
                 {bidChatStreaming && streamStatusText !== null && (
                   <div className="flex flex-row items-start gap-3">
-                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-emerald-600 text-[11px] font-bold text-white shadow-sm">
+                    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-emerald-600 text-[11px] font-bold text-white shadow-sm">
                       AI
                     </div>
                     <div className="min-w-0 pt-1.5">
@@ -1630,7 +1618,7 @@ export function MyDraftsChatView({
           </div>
 
           {/* Sticky input area */}
-          <div className="shrink-0 bg-card px-4 pb-3 pt-3">
+          <div className="relative z-10 shrink-0 border-t border-border bg-background px-3 pb-3 pt-3 sm:px-6">
             <div className="mx-auto max-w-2xl">
               {/* Unified border container — textarea + sources inside one box */}
               <div
@@ -1693,7 +1681,7 @@ export function MyDraftsChatView({
 
               {/* Hint — outside the border, centered below */}
               <p className="mt-2 text-center text-[11px] text-muted-foreground">
-                Ctrl + Enter to send · Sources are cited inline as [1], [2]…
+                Enter to send · Shift + Enter for new line · Sources cited as [1], [2]…
               </p>
               {showClientProjectError && (
                 <p className="mt-1.5 text-center text-[11px] font-medium text-destructive">
