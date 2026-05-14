@@ -6,6 +6,7 @@
  * - POST /bid/framework/{seq}       — Toggle framework status for a bid
  * - GET  /api/folders               — Qdrant folder counts for filters
  * - GET  /bid/client/projects       — Client doc ingestion projects
+ * - DELETE /bid/client/projects/{project_id} — Remove a client project
  * - POST /bid/client/upload         — Upload client project ZIP (`multipart/form-data`, field `file`)
  * - GET  /bid/client/upload/progress/{job_id} — ZIP ingest progress
  * - GET  /bid/sessions              — Bid writing chat sessions (recent list)
@@ -20,6 +21,7 @@ import type {
   BidChatRequestBody,
   BidSessionDetail,
   BidSessionSummary,
+  ClientProjectDeleteResponse,
   ClientProjectOption,
   ClientZipUploadProgress,
   ClientZipUploadResponse,
@@ -127,6 +129,20 @@ export async function fetchClientUploadProgress(jobId: string): Promise<ClientZi
     throw new Error("Invalid upload progress response");
   }
   return data;
+}
+
+export async function deleteClientProject(projectId: string): Promise<ClientProjectDeleteResponse> {
+  const response = await apiClient.delete<ClientProjectDeleteResponse>(
+    `/bid/client/projects/${encodeURIComponent(projectId)}`,
+    { skipGlobalLoader: true } as object
+  );
+  const data = response.data;
+  if (data && typeof data === "object") return data;
+  return {
+    status: "deleted",
+    project_id: projectId,
+    project_name: "",
+  };
 }
 
 type BidSessionsApiResponse = {

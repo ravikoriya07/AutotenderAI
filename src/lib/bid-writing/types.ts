@@ -29,6 +29,14 @@ export type ClientProjectOption = {
   uploaded_at: string | null;
 };
 
+/** Response from `DELETE /bid/client/projects/{project_id}`. */
+export type ClientProjectDeleteResponse = {
+  status: string;
+  project_id: string;
+  project_name: string;
+  chunks_deleted?: number;
+};
+
 /** Response from `POST /bid/client/upload`. */
 export type ClientZipUploadResponse = {
   job_id: string;

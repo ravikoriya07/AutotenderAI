@@ -55,6 +55,7 @@ import {
   streamBidChat,
   uploadClientProjectZip,
   fetchClientUploadProgress,
+  deleteClientProject,
 } from "@/lib/bid-writing/bidWritingApi";
 
 function isHighScoringPresetBid(b: PastBid): boolean {
@@ -274,6 +275,8 @@ export function MyDraftsChatView({
   /** Which assistant message index has the export dropdown open (null = closed). */
   const [exportMenuIndex, setExportMenuIndex] = useState<number | null>(null);
   const [recentChatMenuOpenId, setRecentChatMenuOpenId] = useState<string | null>(null);
+  const [clientProjectMenuOpenId, setClientProjectMenuOpenId] = useState<string | null>(null);
+  const [clientProjectDeletingId, setClientProjectDeletingId] = useState<string | null>(null);
   /** Cancels in-flight `GET /bid/sessions/{id}` when switching chats or starting new. */
   const sessionFetchSeqRef = useRef(0);
   const [apiSessionLoading, setApiSessionLoading] = useState(false);
@@ -435,6 +438,8 @@ export function MyDraftsChatView({
       setClientZipProgress(null);
       setClientZipUploadError(null);
       setClientZipIngesting(false);
+      setClientProjectMenuOpenId(null);
+      setClientProjectDeletingId(null);
       if (clientZipInputRef.current) clientZipInputRef.current.value = "";
       return;
     }
@@ -540,6 +545,16 @@ export function MyDraftsChatView({
     document.addEventListener("mousedown", closeRecentMenu);
     return () => document.removeEventListener("mousedown", closeRecentMenu);
   }, [recentChatMenuOpenId]);
+
+  useEffect(() => {
+    if (clientProjectMenuOpenId === null) return;
+    function closeClientProjectMenu(e: MouseEvent) {
+      const target = e.target as HTMLElement;
+      if (!target.closest("[data-client-project-menu-root]")) setClientProjectMenuOpenId(null);
+    }
+    document.addEventListener("mousedown", closeClientProjectMenu);
+    return () => document.removeEventListener("mousedown", closeClientProjectMenu);
+  }, [clientProjectMenuOpenId]);
 
   const autoResizeTextarea = useCallback(() => {
     const el = textareaRef.current;
@@ -715,6 +730,43 @@ export function MyDraftsChatView({
     } catch (err) {
       console.error("[MyDraftsChat] Failed to delete session:", err);
       toast.error("Could not delete chat");
+    }
+  }
+
+  async function confirmDeleteClientProject(p: ClientProjectOption) {
+    if (!p.id) return;
+    setClientProjectMenuOpenId(null);
+    if (
+      !window.confirm(
+        `Delete project "${p.name}"? This removes indexed documents and cannot be undone.`
+      )
+    ) {
+      return;
+    }
+    setClientProjectDeletingId(p.id);
+    try {
+      const res = await deleteClientProject(p.id);
+      const label = res.project_name ?? p.name;
+      toast.success(`Deleted "${label}"`);
+      if (selectedClientProject?.id === p.id) {
+        setSelectedClientProject(null);
+        setShowClientProjectError(false);
+      }
+      const list = await fetchClientProjects();
+      setClientProjects(list);
+      setClientProjectsError(false);
+    } catch (err) {
+      console.error("[MyDraftsChat] Failed to delete client project:", err);
+      let msg = "Could not delete project";
+      if (err && typeof err === "object" && "response" in err) {
+        const data = (err as { response?: { data?: { message?: string; detail?: string; error?: string } } })
+          .response?.data;
+        const fromApi = data?.message || data?.detail || data?.error;
+        if (typeof fromApi === "string" && fromApi.trim()) msg = fromApi.trim();
+      } else if (err instanceof Error && err.message) msg = err.message;
+      toast.error(msg);
+    } finally {
+      setClientProjectDeletingId(null);
     }
   }
 
@@ -1007,6 +1059,13 @@ export function MyDraftsChatView({
       if (clientZipUploadCancelRef.current) return;
 
       let pollDelayMs = 0;
+      /** When set, polling stopped because ingest finished — refresh list after the loop. */
+      let uploadDoneContext: {
+        prog: ClientZipUploadProgress;
+        uploadRes: Awaited<ReturnType<typeof uploadClientProjectZip>>;
+        file: File;
+      } | null = null;
+
       for (;;) {
         if (clientZipUploadCancelRef.current) break;
         if (pollDelayMs > 0) await sleep(pollDelayMs);
@@ -1029,17 +1088,27 @@ export function MyDraftsChatView({
         }
 
         if (phase === "done") {
-          const label =
-            (typeof prog.project_name === "string" && prog.project_name) ||
-            uploadRes.project_name ||
-            file.name.replace(/\.zip$/i, "");
-          toast.success(`Uploaded: ${label}`);
-          setSelectedClientZip(null);
-          if (clientZipInputRef.current) clientZipInputRef.current.value = "";
-          setClientZipProgress(null);
+          uploadDoneContext = { prog, uploadRes, file };
+          break;
+        }
 
+        pollDelayMs = 1500;
+      }
+
+      if (uploadDoneContext && !clientZipUploadCancelRef.current) {
+        const { prog, uploadRes, file } = uploadDoneContext;
+        const label =
+          (typeof prog.project_name === "string" && prog.project_name) ||
+          uploadRes.project_name ||
+          file.name.replace(/\.zip$/i, "");
+        toast.success(`Uploaded: ${label}`);
+        setSelectedClientZip(null);
+        if (clientZipInputRef.current) clientZipInputRef.current.value = "";
+        setClientZipProgress(null);
+
+        try {
           const list = await fetchClientProjects();
-          if (clientZipUploadCancelRef.current) break;
+          if (clientZipUploadCancelRef.current) return;
           setClientProjects(list);
           setClientProjectsError(false);
 
@@ -1048,16 +1117,17 @@ export function MyDraftsChatView({
           const targetName =
             (typeof prog.project_name === "string" && prog.project_name) || uploadRes.project_name || "";
           const match = list.find(
-            (p) => (targetId && p.id === targetId) || (targetName.length > 0 && p.name === targetName)
+            (p) => (targetId.length > 0 && p.id === targetId) || (targetName.length > 0 && p.name === targetName)
           );
           if (match?.id) {
             setSelectedClientProject({ id: match.id, name: match.name });
             setShowClientProjectError(false);
           }
-          break;
+        } catch (refreshErr) {
+          console.error("[MyDraftsChat] Failed to refresh client projects after upload:", refreshErr);
+          toast.error("Upload finished but the project list could not be refreshed.");
+          setClientProjectsError(true);
         }
-
-        pollDelayMs = 1500;
       }
     } catch (err) {
       if (
@@ -2130,39 +2200,111 @@ export function MyDraftsChatView({
                     </p>
                   ) : (
                     <ul className="flex flex-col gap-2">
-                      {filteredClientProjects.map((p, index) => (
-                        <li key={clientProjectRowKey(p, index)}>
-                          <button
-                            type="button"
-                            className={cn(
-                              "flex w-full items-center justify-between gap-2 rounded-lg border border-border px-2.5 py-2 text-left text-sm transition-colors hover:bg-muted sm:gap-3 sm:px-3 sm:py-2.5",
-                              p.id &&
-                                selectedClientProject?.id &&
-                                selectedClientProject.id === p.id &&
-                                "border-primary/40 bg-primary/5"
-                            )}
-                            onClick={() => {
-                              if (!p.id) {
-                                toast.error("This project cannot be used (missing id).");
-                                return;
-                              }
-                              setSelectedClientProject({ id: p.id, name: p.name });
-                              setShowClientProjectError(false);
-                              setClientModalOpen(false);
-                            }}
-                          >
-                            <span className="flex min-w-0 flex-1 items-start gap-2">
-                              <FolderOpen className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden />
-                              <span className="min-w-0 flex-1 truncate font-medium leading-snug text-foreground">
-                                {p.name}
-                              </span>
-                            </span>
-                            <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground sm:text-xs">
-                              {p.chunks} chunks
-                            </span>
-                          </button>
-                        </li>
-                      ))}
+                      {filteredClientProjects.map((p, index) => {
+                        const isSelected = Boolean(
+                          p.id &&
+                          selectedClientProject?.id &&
+                          selectedClientProject.id === p.id
+                        );
+                        return (
+                          <li key={clientProjectRowKey(p, index)}>
+                            <div
+                              data-client-project-menu-root
+                              className={cn(
+                                "group flex min-h-0 items-stretch rounded-lg transition-colors",
+                                isSelected
+                                  ? "bg-primary/15 ring-1 ring-primary/30"
+                                  : "hover:bg-muted/60"
+                              )}
+                            >
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  if (!p.id) {
+                                    toast.error("This project cannot be used (missing id).");
+                                    return;
+                                  }
+                                  setSelectedClientProject({ id: p.id, name: p.name });
+                                  setShowClientProjectError(false);
+                                  setClientModalOpen(false);
+                                }}
+                                className="min-w-0 flex-1 rounded-l-lg px-2.5 py-2 text-left text-sm transition-colors sm:px-3 sm:py-2.5"
+                                title={p.name}
+                              >
+                                <span className="flex min-w-0 items-start gap-2">
+                                  <FolderOpen
+                                    className={cn(
+                                      "mt-0.5 h-3.5 w-3.5 shrink-0",
+                                      isSelected ? "text-primary" : "text-muted-foreground"
+                                    )}
+                                    aria-hidden
+                                  />
+                                  <span className="min-w-0 flex-1">
+                                    <span
+                                      className={cn(
+                                        "block truncate font-medium leading-snug",
+                                        isSelected ? "text-primary" : "text-foreground"
+                                      )}
+                                    >
+                                      {p.name}
+                                    </span>
+                                    <span
+                                      className={cn(
+                                        "mt-0.5 block text-[10px] tabular-nums",
+                                        isSelected ? "text-primary/70" : "text-muted-foreground"
+                                      )}
+                                    >
+                                      {p.chunks} chunks
+                                    </span>
+                                  </span>
+                                </span>
+                              </button>
+                              {p.id ? (
+                                <div className="relative flex shrink-0 items-start py-1 pr-1">
+                                  <button
+                                    type="button"
+                                    aria-label="Project actions"
+                                    aria-expanded={clientProjectMenuOpenId === p.id}
+                                    aria-haspopup="menu"
+                                    disabled={clientProjectDeletingId !== null}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setClientProjectMenuOpenId((v) => (v === p.id ? null : p.id));
+                                    }}
+                                    className={cn(
+                                      "rounded-md p-1.5 transition-opacity hover:bg-muted hover:text-foreground",
+                                      isSelected ? "text-primary/70" : "text-muted-foreground",
+                                      "opacity-100 sm:opacity-0 sm:group-hover:opacity-100",
+                                      clientProjectMenuOpenId === p.id && "opacity-100",
+                                      clientProjectDeletingId !== null &&
+                                        "pointer-events-none cursor-not-allowed opacity-40"
+                                    )}
+                                  >
+                                    <MoreHorizontal className="h-4 w-4" aria-hidden />
+                                  </button>
+                                  {clientProjectMenuOpenId === p.id && (
+                                    <div
+                                      className="absolute right-0 top-full z-30 mt-0.5 min-w-[9.5rem] rounded-lg border border-border bg-popover py-1 shadow-md"
+                                      role="menu"
+                                    >
+                                      <button
+                                        type="button"
+                                        role="menuitem"
+                                        disabled={clientProjectDeletingId !== null}
+                                        className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-destructive hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-40"
+                                        onClick={() => void confirmDeleteClientProject(p)}
+                                      >
+                                        <Trash2 className="h-4 w-4 shrink-0" aria-hidden />
+                                        Delete
+                                      </button>
+                                    </div>
+                                  )}
+                                </div>
+                              ) : null}
+                            </div>
+                          </li>
+                        );
+                      })}
                     </ul>
                   )}
                 </div>
