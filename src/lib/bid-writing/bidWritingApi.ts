@@ -6,6 +6,8 @@
  * - POST /bid/framework/{seq}       — Toggle framework status for a bid
  * - GET  /api/folders               — Qdrant folder counts for filters
  * - GET  /bid/client/projects       — Client doc ingestion projects
+ * - POST /bid/client/upload         — Upload client project ZIP (`multipart/form-data`, field `file`)
+ * - GET  /bid/client/upload/progress/{job_id} — ZIP ingest progress
  * - GET  /bid/sessions              — Bid writing chat sessions (recent list)
  * - GET  /bid/sessions/{session_id} — Full session + messages
  * - DELETE /bid/sessions/{session_id} — Remove a bid writing session
@@ -19,10 +21,17 @@ import type {
   BidSessionDetail,
   BidSessionSummary,
   ClientProjectOption,
+  ClientZipUploadProgress,
+  ClientZipUploadResponse,
   LibraryFolderOption,
   PastBid,
 } from "./types";
 import { MOCK_LIBRARY_FOLDERS } from "./mockBidFolders";
+
+const API_BASE_URL = (process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://91.199.227.82:31655").replace(
+  /\/$/,
+  ""
+);
 
 export async function fetchPastBids(): Promise<PastBid[]> {
   const response = await apiClient.get<PastBid[]>("/bid/library/metadata", {
@@ -60,6 +69,66 @@ export async function fetchClientProjects(): Promise<ClientProjectOption[]> {
   return Array.isArray(projects) ? projects : [];
 }
 
+/**
+ * POST /bid/client/upload — multipart body, field name `file`.
+ * Uses fetch so the default axios JSON Content-Type does not break multipart boundaries.
+ */
+export async function uploadClientProjectZip(
+  file: File,
+  options?: { signal?: AbortSignal }
+): Promise<ClientZipUploadResponse> {
+  const token = getAuthToken();
+  const formData = new FormData();
+  formData.append("file", file);
+  const res = await fetch(`${API_BASE_URL}/bid/client/upload`, {
+    method: "POST",
+    headers: {
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: formData,
+    signal: options?.signal,
+  });
+
+  if (!res.ok) {
+    let detail = `Upload failed (${res.status})`;
+    try {
+      const ct = res.headers.get("content-type") ?? "";
+      if (ct.includes("application/json")) {
+        const j = (await res.json()) as Record<string, unknown>;
+        const msg =
+          (typeof j.message === "string" && j.message) ||
+          (typeof j.error === "string" && j.error) ||
+          (typeof j.detail === "string" && j.detail);
+        if (msg) detail = msg;
+      } else {
+        const t = await res.text();
+        if (t.trim()) detail = t.slice(0, 500);
+      }
+    } catch {
+      // keep default detail
+    }
+    throw new Error(detail);
+  }
+
+  const data = (await res.json()) as ClientZipUploadResponse;
+  if (typeof data.job_id !== "string" || !data.job_id) {
+    throw new Error("Upload response missing job_id");
+  }
+  return data;
+}
+
+export async function fetchClientUploadProgress(jobId: string): Promise<ClientZipUploadProgress> {
+  const response = await apiClient.get<ClientZipUploadProgress>(
+    `/bid/client/upload/progress/${encodeURIComponent(jobId)}`,
+    { skipGlobalLoader: true } as object
+  );
+  const data = response.data;
+  if (!data || typeof data !== "object") {
+    throw new Error("Invalid upload progress response");
+  }
+  return data;
+}
+
 type BidSessionsApiResponse = {
   sessions?: BidSessionSummary[];
 };
@@ -85,11 +154,6 @@ export async function deleteBidSession(sessionId: string): Promise<void> {
     skipGlobalLoader: true,
   } as object);
 }
-
-const API_BASE_URL = (process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://91.199.227.82:31655").replace(
-  /\/$/,
-  ""
-);
 
 function stripBom(s: string): string {
   return s.length > 0 && s.charCodeAt(0) === 0xfeff ? s.slice(1) : s;

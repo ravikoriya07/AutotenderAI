@@ -29,6 +29,30 @@ export type ClientProjectOption = {
   uploaded_at: string | null;
 };
 
+/** Response from `POST /bid/client/upload`. */
+export type ClientZipUploadResponse = {
+  job_id: string;
+  project_id: string;
+  project_name: string;
+  status?: string;
+};
+
+/** Phases from `GET /bid/client/upload/progress/{job_id}`. */
+export type ClientZipUploadPhase = "queued" | "extracting" | "ingesting" | "done" | "error" | string;
+
+/** Progress payload from `GET /bid/client/upload/progress/{job_id}`. */
+export type ClientZipUploadProgress = {
+  phase: ClientZipUploadPhase;
+  job_id?: string;
+  project_id?: string;
+  project_name?: string;
+  done?: number;
+  total?: number;
+  chunks_uploaded?: number;
+  error?: string;
+  ingest_error?: string;
+};
+
 export type ChatTurn = {
   question: string;
   answer: string;

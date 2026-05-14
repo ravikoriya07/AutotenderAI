@@ -43,6 +43,7 @@ import type {
   PastBid,
   ClientProjectOption,
   BidSessionSummary,
+  ClientZipUploadProgress,
 } from "@/lib/bid-writing/types";
 import { loadChatHistory, saveChatHistory } from "@/lib/bid-writing/chatHistoryStorage";
 import {
@@ -52,6 +53,8 @@ import {
   fetchBidSession,
   deleteBidSession,
   streamBidChat,
+  uploadClientProjectZip,
+  fetchClientUploadProgress,
 } from "@/lib/bid-writing/bidWritingApi";
 
 function isHighScoringPresetBid(b: PastBid): boolean {
@@ -77,6 +80,52 @@ function seqsForPreset(preset: FilterPresetId, bids: PastBid[]): Set<number> {
 
 function clientProjectRowKey(p: ClientProjectOption, index: number): string {
   return p.id ?? `row-${index}-${p.name}`;
+}
+
+function isClientZipFile(file: File): boolean {
+  return (
+    file.name.toLowerCase().endsWith(".zip") ||
+    file.type === "application/zip" ||
+    file.type === "application/x-zip-compressed"
+  );
+}
+
+function clientZipBarPercent(prog: ClientZipUploadProgress | null): number {
+  if (!prog) return 8;
+  const phase = String(prog.phase ?? "").toLowerCase();
+  if (phase === "done") return 100;
+  if (phase === "error") return 0;
+  const done = prog.done ?? prog.chunks_uploaded;
+  const total = prog.total;
+  if (typeof done === "number" && typeof total === "number" && total > 0) {
+    return Math.min(98, Math.max(12, Math.round((done / total) * 100)));
+  }
+  if (phase === "ingesting") return 72;
+  if (phase === "extracting") return 42;
+  if (phase === "queued") return 18;
+  return 12;
+}
+
+function clientZipProgressCaption(prog: ClientZipUploadProgress): string {
+  const phase = String(prog.phase ?? "").toLowerCase();
+  const parts: string[] = [];
+  if (phase === "queued") parts.push("Waiting in queue…");
+  else if (phase === "extracting") parts.push("Extracting files…");
+  else if (phase === "ingesting") parts.push("Processing and uploading chunks…");
+  else if (phase === "done") parts.push("Complete");
+  else if (phase === "error") parts.push("Error");
+  else parts.push(`Status: ${prog.phase}`);
+
+  const done = prog.done ?? prog.chunks_uploaded;
+  const total = prog.total;
+  if (typeof done === "number" && typeof total === "number" && total > 0) {
+    parts.push(`${done} / ${total}`);
+  } else if (typeof prog.chunks_uploaded === "number" && typeof total === "number" && total > 0) {
+    parts.push(`${prog.chunks_uploaded} / ${total} chunks`);
+  } else if (typeof prog.chunks_uploaded === "number") {
+    parts.push(`${prog.chunks_uploaded} chunks uploaded`);
+  }
+  return parts.filter(Boolean).join(" · ");
 }
 
 const SUGGESTION_CARDS = [
@@ -215,9 +264,11 @@ export function MyDraftsChatView({
   const [selectedClientZip, setSelectedClientZip] = useState<File | null>(null);
   const [clientZipDragActive, setClientZipDragActive] = useState(false);
   const [clientZipIngesting, setClientZipIngesting] = useState(false);
-  const [clientZipProgressPct, setClientZipProgressPct] = useState(0);
+  const [clientZipProgress, setClientZipProgress] = useState<ClientZipUploadProgress | null>(null);
+  const [clientZipUploadError, setClientZipUploadError] = useState<string | null>(null);
   const clientZipInputRef = useRef<HTMLInputElement>(null);
-  const clientZipIntervalRef = useRef<number | null>(null);
+  const clientZipUploadCancelRef = useRef(false);
+  const clientZipUploadAbortRef = useRef<AbortController | null>(null);
 
   const [draftToast, setDraftToast] = useState(false);
   /** Which assistant message index has the export dropdown open (null = closed). */
@@ -375,18 +426,19 @@ export function MyDraftsChatView({
 
   useEffect(() => {
     if (!clientModalOpen) {
+      clientZipUploadCancelRef.current = true;
+      clientZipUploadAbortRef.current?.abort();
+      clientZipUploadAbortRef.current = null;
       setClientProjectSearch("");
       setSelectedClientZip(null);
       setClientZipDragActive(false);
-      setClientZipProgressPct(0);
+      setClientZipProgress(null);
+      setClientZipUploadError(null);
       setClientZipIngesting(false);
-      if (clientZipIntervalRef.current) {
-        window.clearInterval(clientZipIntervalRef.current);
-        clientZipIntervalRef.current = null;
-      }
       if (clientZipInputRef.current) clientZipInputRef.current.value = "";
       return;
     }
+    clientZipUploadCancelRef.current = false;
     let cancelled = false;
     setClientProjectsLoading(true);
     setClientProjectsError(false);
@@ -914,52 +966,127 @@ export function MyDraftsChatView({
 
   const clientZipUploadLocked = clientZipIngesting || clientProjectsLoading;
 
-  const runMockClientZipIngest = useCallback((file: File) => {
-    if (clientZipIntervalRef.current) {
-      window.clearInterval(clientZipIntervalRef.current);
-      clientZipIntervalRef.current = null;
+  const clientZipBarPct = useMemo(
+    () => clientZipBarPercent(clientZipProgress),
+    [clientZipProgress]
+  );
+
+  const clientZipStatusLine = useMemo(() => {
+    if (!clientZipIngesting) return "";
+    if (!clientZipProgress) return "Uploading archive…";
+    return clientZipProgressCaption(clientZipProgress);
+  }, [clientZipIngesting, clientZipProgress]);
+
+  async function handleSubmitClientZip() {
+    if (!selectedClientZip) {
+      toast.error("Please select a ZIP file before submitting.");
+      return;
     }
+    if (clientZipIngesting) return;
+    if (!isClientZipFile(selectedClientZip)) {
+      toast.error("Please choose a ZIP file.");
+      return;
+    }
+
+    const file = selectedClientZip;
+    clientZipUploadCancelRef.current = false;
+    clientZipUploadAbortRef.current?.abort();
+    const ac = new AbortController();
+    clientZipUploadAbortRef.current = ac;
+
+    setClientZipUploadError(null);
+    setClientZipProgress(null);
     setClientZipIngesting(true);
-    setClientZipProgressPct(0);
-    const steps = [15, 40, 72, 100];
-    let i = 0;
-    clientZipIntervalRef.current = window.setInterval(() => {
-      setClientZipProgressPct(steps[i] ?? 100);
-      i += 1;
-      if (i >= steps.length) {
-        if (clientZipIntervalRef.current) {
-          window.clearInterval(clientZipIntervalRef.current);
-          clientZipIntervalRef.current = null;
+
+    const sleep = (ms: number) => new Promise<void>((resolve) => {
+      window.setTimeout(resolve, ms);
+    });
+
+    try {
+      const uploadRes = await uploadClientProjectZip(file, { signal: ac.signal });
+      if (clientZipUploadCancelRef.current) return;
+
+      let pollDelayMs = 0;
+      for (;;) {
+        if (clientZipUploadCancelRef.current) break;
+        if (pollDelayMs > 0) await sleep(pollDelayMs);
+        if (clientZipUploadCancelRef.current) break;
+
+        const prog = await fetchClientUploadProgress(uploadRes.job_id);
+        if (clientZipUploadCancelRef.current) break;
+
+        setClientZipProgress(prog);
+        const phase = String(prog.phase ?? "").toLowerCase();
+
+        if (phase === "error") {
+          const errMsg =
+            (typeof prog.error === "string" && prog.error) ||
+            (typeof prog.ingest_error === "string" && prog.ingest_error) ||
+            "Upload processing failed";
+          setClientZipUploadError(errMsg);
+          toast.error(errMsg);
+          break;
         }
-        setClientZipIngesting(false);
-        setSelectedClientZip(null);
-        if (clientZipInputRef.current) clientZipInputRef.current.value = "";
-        toast.success(`Ingested ${file.name} (mock — connect ZIP API when ready)`);
-        void fetchClientProjects()
-          .then((data) => {
-            setClientProjects(data);
-            setClientProjectsError(false);
-          })
-          .catch((err) => {
-            console.error("[MyDraftsChat] Refresh client projects after ZIP:", err);
-            setClientProjectsError(true);
-          });
+
+        if (phase === "done") {
+          const label =
+            (typeof prog.project_name === "string" && prog.project_name) ||
+            uploadRes.project_name ||
+            file.name.replace(/\.zip$/i, "");
+          toast.success(`Uploaded: ${label}`);
+          setSelectedClientZip(null);
+          if (clientZipInputRef.current) clientZipInputRef.current.value = "";
+          setClientZipProgress(null);
+
+          const list = await fetchClientProjects();
+          if (clientZipUploadCancelRef.current) break;
+          setClientProjects(list);
+          setClientProjectsError(false);
+
+          const targetId =
+            (typeof prog.project_id === "string" && prog.project_id) || uploadRes.project_id || "";
+          const targetName =
+            (typeof prog.project_name === "string" && prog.project_name) || uploadRes.project_name || "";
+          const match = list.find(
+            (p) => (targetId && p.id === targetId) || (targetName.length > 0 && p.name === targetName)
+          );
+          if (match?.id) {
+            setSelectedClientProject({ id: match.id, name: match.name });
+            setShowClientProjectError(false);
+          }
+          break;
+        }
+
+        pollDelayMs = 1500;
       }
-    }, 400);
-  }, []);
+    } catch (err) {
+      if (
+        (err instanceof DOMException && err.name === "AbortError") ||
+        (err instanceof Error && err.name === "AbortError")
+      ) {
+        return;
+      }
+      const msg = err instanceof Error ? err.message : "Upload failed";
+      console.error("[MyDraftsChat] Client ZIP upload:", err);
+      setClientZipUploadError(msg);
+      toast.error(msg);
+    } finally {
+      if (clientZipUploadAbortRef.current === ac) {
+        clientZipUploadAbortRef.current = null;
+      }
+      setClientZipIngesting(false);
+    }
+  }
 
   function handleClientZipInputChange(e: ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
-    const ok =
-      file.name.toLowerCase().endsWith(".zip") ||
-      file.type === "application/zip" ||
-      file.type === "application/x-zip-compressed";
-    if (!ok) {
+    if (!isClientZipFile(file)) {
       toast.error("Please choose a ZIP file.");
       e.target.value = "";
       return;
     }
+    setClientZipUploadError(null);
     setSelectedClientZip(file);
   }
 
@@ -968,28 +1095,18 @@ export function MyDraftsChatView({
     setClientZipDragActive(false);
     const file = e.dataTransfer.files?.[0];
     if (!file) return;
-    const ok =
-      file.name.toLowerCase().endsWith(".zip") ||
-      file.type === "application/zip" ||
-      file.type === "application/x-zip-compressed";
-    if (!ok) {
+    if (!isClientZipFile(file)) {
       toast.error("Please drop a ZIP file.");
       return;
     }
+    setClientZipUploadError(null);
     setSelectedClientZip(file);
   }
 
   function clearSelectedClientZip() {
     setSelectedClientZip(null);
+    setClientZipUploadError(null);
     if (clientZipInputRef.current) clientZipInputRef.current.value = "";
-  }
-
-  function handleSubmitClientZip() {
-    if (!selectedClientZip) {
-      toast.error("Please select a ZIP file before submitting.");
-      return;
-    }
-    runMockClientZipIngest(selectedClientZip);
   }
 
   const filterLabel =
@@ -1932,27 +2049,35 @@ export function MyDraftsChatView({
 
                 {clientZipIngesting && (
                   <div className="mt-2 rounded-md border border-border bg-muted/40 px-2 py-1.5">
-                    <div className="mb-1 flex justify-between text-[10px] text-muted-foreground">
-                      <span>Ingesting…</span>
-                      <span>{clientZipProgressPct}%</span>
+                    <div className="mb-1 flex justify-between gap-2 text-[10px] text-muted-foreground">
+                      <span className="min-w-0 flex-1 leading-snug">{clientZipStatusLine}</span>
+                      <span className="shrink-0 tabular-nums">{clientZipBarPct}%</span>
                     </div>
                     <div className="h-1 overflow-hidden rounded-full bg-muted">
                       <div
                         className="h-full rounded-full bg-primary transition-[width] duration-300"
-                        style={{ width: `${clientZipProgressPct}%` }}
+                        style={{ width: `${clientZipBarPct}%` }}
                       />
                     </div>
                   </div>
+                )}
+
+                {clientZipUploadError && !clientZipIngesting && (
+                  <p className="mt-2 text-[11px] leading-snug text-destructive">{clientZipUploadError}</p>
                 )}
 
                 <div className="mt-2 flex justify-end">
                   <Button
                     type="button"
                     size="sm"
-                    onClick={handleSubmitClientZip}
+                    onClick={() => void handleSubmitClientZip()}
                     disabled={clientZipUploadLocked || !selectedClientZip}
                   >
-                    {clientZipIngesting ? "Submitting…" : "Submit"}
+                    {clientZipIngesting
+                      ? clientZipProgress
+                        ? "Processing…"
+                        : "Uploading…"
+                      : "Submit"}
                   </Button>
                 </div>
               </div>
