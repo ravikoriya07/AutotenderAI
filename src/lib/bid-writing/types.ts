@@ -76,3 +76,13 @@ export type DraftRecord = {
 };
 
 export type FilterPresetId = "high" | "full" | "framework" | "custom";
+
+/** POST /bid/chat request (fields optional per filter / first-turn rules). */
+export type BidChatRequestBody = {
+  client_project_id: string;
+  filter: FilterPresetId;
+  question: string;
+  use_web: boolean;
+  allowed_seq?: number[];
+  session_id?: string | null;
+};

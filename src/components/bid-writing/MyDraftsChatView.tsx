@@ -36,6 +36,7 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/Button";
 import { MarkdownRenderer } from "@/components/bid-writing/MarkdownRenderer";
 import type {
+  BidChatRequestBody,
   ChatSession,
   DraftRecord,
   FilterPresetId,
@@ -50,6 +51,7 @@ import {
   fetchBidSessions,
   fetchBidSession,
   deleteBidSession,
+  streamBidChat,
 } from "@/lib/bid-writing/bidWritingApi";
 
 function isHighScoringPresetBid(b: PastBid): boolean {
@@ -84,20 +86,16 @@ const SUGGESTION_CARDS = [
   "Explain your quality management and contract management strategy.",
 ];
 
-const MOCK_ASSISTANT_REPLY = `Based on your historical bid library, here is a structured response you can refine [1].
-
-**Mobilisation**  
-We stage works to minimise disruption and maintain a single point of contact for residents [2].
-
-**Governance**  
-Quality checkpoints align with your contract management plan and reporting cycle [1].
-
-*(Connect to the AI backend to stream live answers and sources.)*`;
-
 /** Matches Tailwind `duration-300` for client panel overlay + slide. */
 const CLIENT_PANEL_TRANSITION_MS = 300;
 
-type Msg = { role: "user" | "assistant"; content: string };
+type Msg = {
+  role: "user" | "assistant";
+  content: string;
+  streaming?: boolean;
+  sources?: unknown;
+  web_sources?: unknown;
+};
 
 type RecentChatRow = {
   id: string;
@@ -111,7 +109,10 @@ const CHAT_UI_PREFS_KEY = "autotender_chat_ui_prefs_v1";
 
 type ChatUiPrefs = {
   filterPreset: FilterPresetId;
-  clientProject: string | null;
+  /** Legacy display-only field (pre–client project id). */
+  clientProject?: string | null;
+  clientProjectId?: string | null;
+  clientProjectName?: string | null;
   customSeqs: number[];
 };
 
@@ -132,6 +133,22 @@ function saveChatUiPrefs(prefs: ChatUiPrefs) {
   } catch {
     // ignore quota errors
   }
+}
+
+function loadInitialSelectedClientProject(): { id: string; name: string } | null {
+  const prefs = loadChatUiPrefs();
+  if (!prefs) return null;
+  if (prefs.clientProjectId) {
+    return {
+      id: prefs.clientProjectId,
+      name: prefs.clientProjectName ?? prefs.clientProject ?? "Client project",
+    };
+  }
+  const name = prefs.clientProjectName ?? prefs.clientProject;
+  if (name) {
+    return { id: "", name };
+  }
+  return null;
 }
 // ──────────────────────────────────────────────────────────────────────────────
 
@@ -187,9 +204,10 @@ export function MyDraftsChatView({
   const [clientPanelMounted, setClientPanelMounted] = useState(false);
   const [clientPanelVisible, setClientPanelVisible] = useState(false);
   // Lazy-initialise from persisted prefs
-  const [clientProject, setClientProject] = useState<string | null>(() => {
-    return loadChatUiPrefs()?.clientProject ?? null;
-  });
+  const [selectedClientProject, setSelectedClientProject] = useState<{
+    id: string;
+    name: string;
+  } | null>(() => loadInitialSelectedClientProject());
   const [clientProjects, setClientProjects] = useState<ClientProjectOption[]>([]);
   const [clientProjectsLoading, setClientProjectsLoading] = useState(false);
   const [clientProjectsError, setClientProjectsError] = useState(false);
@@ -209,6 +227,11 @@ export function MyDraftsChatView({
   const sessionFetchSeqRef = useRef(0);
   const [apiSessionLoading, setApiSessionLoading] = useState(false);
   const [apiSessionLoadError, setApiSessionLoadError] = useState<string | null>(null);
+
+  const [showClientProjectError, setShowClientProjectError] = useState(false);
+  const [streamStatusText, setStreamStatusText] = useState<string | null>(null);
+  const [bidChatStreaming, setBidChatStreaming] = useState(false);
+  const bidStreamAbortRef = useRef<AbortController | null>(null);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const initialUrlSessionLoadedRef = useRef(false);
@@ -290,10 +313,23 @@ export function MyDraftsChatView({
   useEffect(() => {
     saveChatUiPrefs({
       filterPreset,
-      clientProject,
+      clientProject: selectedClientProject?.name ?? null,
+      clientProjectId: selectedClientProject?.id || null,
+      clientProjectName: selectedClientProject?.name ?? null,
       customSeqs: filterPreset === "custom" ? Array.from(selectedLibrarySeqs) : [],
     });
-  }, [filterPreset, clientProject, selectedLibrarySeqs]);
+  }, [filterPreset, selectedClientProject, selectedLibrarySeqs]);
+
+  // Resolve persisted client project name to API id once projects are loaded
+  useEffect(() => {
+    if (!selectedClientProject || selectedClientProject.id || clientProjects.length === 0) return;
+    const match = clientProjects.find(
+      (p) => p.name === selectedClientProject.name && p.id != null && p.id.length > 0
+    );
+    if (match?.id) {
+      setSelectedClientProject({ id: match.id, name: match.name });
+    }
+  }, [clientProjects, selectedClientProject]);
 
   // Auto-load session from URL (?session_id=…) once local sessions are ready
   useEffect(() => {
@@ -431,7 +467,7 @@ export function MyDraftsChatView({
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
-  }, [messages]);
+  }, [messages, streamStatusText, bidChatStreaming]);
 
   useEffect(() => {
     if (exportMenuIndex === null) return;
@@ -482,17 +518,24 @@ export function MyDraftsChatView({
   }
 
   function startNewChat() {
+    bidStreamAbortRef.current?.abort();
+    bidStreamAbortRef.current = null;
     sessionFetchSeqRef.current += 1;
     setApiSessionLoading(false);
     setApiSessionLoadError(null);
-    const id = `chat_${Date.now()}`;
-    setCurrentChatId(id);
+    setCurrentChatId(null);
     setMessages([]);
     setChatInput("");
+    setStreamStatusText(null);
+    setBidChatStreaming(false);
     clearSessionFromUrl();
   }
 
   function loadSession(id: string) {
+    bidStreamAbortRef.current?.abort();
+    bidStreamAbortRef.current = null;
+    setStreamStatusText(null);
+    setBidChatStreaming(false);
     const s = sessions.find((c) => c.id === id);
     if (!s) return;
     sessionFetchSeqRef.current += 1;
@@ -551,6 +594,10 @@ export function MyDraftsChatView({
   }
 
   function openRecentChat(row: RecentChatRow) {
+    bidStreamAbortRef.current?.abort();
+    bidStreamAbortRef.current = null;
+    setStreamStatusText(null);
+    setBidChatStreaming(false);
     setExportMenuIndex(null);
     setChatSidebarOpen(false);
 
@@ -630,54 +677,177 @@ export function MyDraftsChatView({
     const q = chatInput.trim();
     if (!q) return;
 
-    let chatId = currentChatId;
-    const isNewSession = !chatId;
-    if (!chatId) {
-      chatId = `chat_${Date.now()}`;
-      setCurrentChatId(chatId);
+    if (!selectedClientProject?.id) {
+      setShowClientProjectError(true);
+      toast.error("Please select a client project before sending a question.");
+      return;
     }
+    setShowClientProjectError(false);
 
-    // Push session_id to URL so a refresh re-opens this conversation
-    if (isNewSession) {
-      pushSessionToUrl(chatId);
-    }
+    const priorChatId = currentChatId;
+    bidStreamAbortRef.current?.abort();
+    const ac = new AbortController();
+    bidStreamAbortRef.current = ac;
 
     setChatInput("");
     setMessages((prev) => [...prev, { role: "user", content: q }]);
+    setStreamStatusText("");
+    setBidChatStreaming(true);
 
-    // Mock latency + assistant reply (replace with SSE)
-    await new Promise((r) => setTimeout(r, 450));
-    setMessages((prev) => [...prev, { role: "assistant", content: MOCK_ASSISTANT_REPLY }]);
+    const payload: BidChatRequestBody = {
+      client_project_id: selectedClientProject.id,
+      filter: filterPreset,
+      question: q,
+      use_web: webSourceOn,
+    };
+    if (filterPreset === "custom") {
+      payload.allowed_seq = Array.from(selectedLibrarySeqs).sort((a, b) => a - b);
+    }
+    if (priorChatId && !priorChatId.startsWith("chat_")) {
+      payload.session_id = priorChatId;
+    }
 
-    const title = q.length > 55 ? `${q.slice(0, 55).trim()}…` : q;
-    const answer = MOCK_ASSISTANT_REPLY;
-    setSessions((prev) => {
-      const updated = [...prev];
-      const idx = updated.findIndex((c) => c.id === chatId);
-      const now = new Date().toISOString();
-      if (idx >= 0) {
-        const existing = updated[idx];
-        const merged: ChatSession = {
-          ...existing,
-          title,
-          messages: [...existing.messages, { question: q, answer }],
-          updatedAt: now,
-        };
-        updated.splice(idx, 1);
-        updated.unshift(merged);
+    let firstAnswer = false;
+    let streamHadFatalError = false;
+
+    const refreshBidSessionsList = () => {
+      void fetchBidSessions()
+        .then((data) => {
+          setBidSessions(Array.isArray(data) ? data : []);
+          setBidSessionsError(false);
+        })
+        .catch((err) => {
+          console.error("[MyDraftsChat] Failed to refresh bid sessions:", err);
+        });
+    };
+
+    try {
+      await streamBidChat(
+        payload,
+        {
+          onSession: (sessionId) => {
+            pushSessionToUrl(sessionId);
+            setCurrentChatId(sessionId);
+            if (priorChatId?.startsWith("chat_")) {
+              setSessions((prev) => {
+                const next = prev.filter((s) => s.id !== priorChatId);
+                saveChatHistory(next);
+                return next;
+              });
+            }
+            refreshBidSessionsList();
+          },
+          onStatus: (message) => {
+            setStreamStatusText(message);
+          },
+          onAnswerToken: (token) => {
+            if (!firstAnswer) {
+              firstAnswer = true;
+              setStreamStatusText(null);
+              setMessages((prev) => [...prev, { role: "assistant", content: token, streaming: true }]);
+            } else {
+              setMessages((prev) => {
+                const next = [...prev];
+                const last = next[next.length - 1];
+                if (last?.role === "assistant") {
+                  next[next.length - 1] = {
+                    ...last,
+                    content: last.content + token,
+                    streaming: true,
+                  };
+                }
+                return next;
+              });
+            }
+          },
+          onDone: ({ sources, web_sources }) => {
+            setMessages((prev) => {
+              const next = [...prev];
+              const last = next[next.length - 1];
+              if (last?.role === "assistant") {
+                next[next.length - 1] = {
+                  ...last,
+                  streaming: false,
+                  sources,
+                  web_sources,
+                };
+              }
+              return next;
+            });
+          },
+        },
+        { signal: ac.signal }
+      );
+
+      if (!firstAnswer) {
+        setStreamStatusText(null);
+        setMessages((prev) => {
+          const next = [...prev];
+          const last = next[next.length - 1];
+          if (last?.role === "user") {
+            next.push({
+              role: "assistant",
+              content: "No answer was returned. Please try again.",
+              streaming: false,
+            });
+          }
+          return next;
+        });
       } else {
-        updated.unshift({
-          id: chatId,
-          title,
-          messages: [{ question: q, answer }],
-          createdAt: now,
-          updatedAt: now,
+        setMessages((prev) => {
+          const next = [...prev];
+          const last = next[next.length - 1];
+          if (last?.role === "assistant" && last.streaming) {
+            next[next.length - 1] = { ...last, streaming: false };
+          }
+          return next;
         });
       }
-      const next = updated.slice(0, 30);
-      saveChatHistory(next);
-      return next;
-    });
+    } catch (err) {
+      if (
+        (err instanceof DOMException && err.name === "AbortError") ||
+        (err instanceof Error && err.name === "AbortError")
+      ) {
+        return;
+      }
+      streamHadFatalError = true;
+      const detail = err instanceof Error ? err.message : "Something went wrong";
+      console.error("[MyDraftsChat] Bid chat stream failed:", err);
+      toast.error(detail);
+      setStreamStatusText(null);
+      setMessages((prev) => {
+        const next = [...prev];
+        const last = next[next.length - 1];
+        if (last?.role === "assistant" && last.streaming) {
+          next[next.length - 1] = {
+            ...last,
+            content: last.content.trim()
+              ? `${last.content}\n\n_(Could not finish: ${detail})_`
+              : `Could not get a response: ${detail}`,
+            streaming: false,
+          };
+          return next;
+        }
+        if (last?.role === "user") {
+          next.push({
+            role: "assistant",
+            content: `Could not get a response: ${detail}`,
+            streaming: false,
+          });
+        }
+        return next;
+      });
+    } finally {
+      setStreamStatusText(null);
+      setBidChatStreaming(false);
+      if (bidStreamAbortRef.current === ac) {
+        bidStreamAbortRef.current = null;
+      }
+    }
+
+    if (!streamHadFatalError) {
+      refreshBidSessionsList();
+    }
   }
 
   function saveAssistantContentAsDraft(content: string) {
@@ -1056,14 +1226,20 @@ export function MyDraftsChatView({
                 type="button"
                 onClick={() => {
                   setFilterOpen(false);
+                  setShowClientProjectError(false);
                   setClientModalOpen(true);
                 }}
-                className="flex max-w-[11rem] items-center gap-1.5 rounded-full border border-border bg-background px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                className={cn(
+                  "flex max-w-[11rem] items-center gap-1.5 rounded-full border bg-background px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground",
+                  showClientProjectError
+                    ? "border-destructive ring-2 ring-destructive/25"
+                    : "border-border"
+                )}
                 title="Select client project"
               >
                 <FolderOpen className="h-3.5 w-3.5 shrink-0" aria-hidden />
                 <span className="truncate">
-                  {clientProject ?? "No client doc"}
+                  {selectedClientProject?.name ?? "No client doc"}
                 </span>
               </button>
               <button
@@ -1173,7 +1349,7 @@ export function MyDraftsChatView({
                       ) : (
                         <p className="whitespace-pre-wrap">{m.content}</p>
                       )}
-                      {m.role === "assistant" && (
+                      {m.role === "assistant" && !m.streaming && (
                         <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-border/60 pt-3">
                           <button
                             type="button"
@@ -1242,6 +1418,26 @@ export function MyDraftsChatView({
                     </div>
                   </div>
                 ))}
+                {bidChatStreaming && streamStatusText !== null && (
+                  <div className="flex flex-row items-start gap-3">
+                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-emerald-600 text-[11px] font-bold text-white shadow-sm">
+                      AI
+                    </div>
+                    <div className="min-w-0 pt-1.5">
+                      <p className="flex flex-wrap items-center gap-1.5 text-sm italic text-muted-foreground">
+                        <Search className="h-3.5 w-3.5 shrink-0 opacity-80" aria-hidden />
+                        <span>
+                          {streamStatusText.length > 0 ? streamStatusText : "Preparing…"}
+                        </span>
+                        <span className="inline-flex gap-0.5 font-normal not-italic" aria-hidden>
+                          <span className="animate-bounce">.</span>
+                          <span className="animate-bounce [animation-delay:0.15s]">.</span>
+                          <span className="animate-bounce [animation-delay:0.3s]">.</span>
+                        </span>
+                      </p>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -1253,9 +1449,11 @@ export function MyDraftsChatView({
               <div
                 className={cn(
                   "rounded-2xl border bg-background px-4 pb-3 pt-3 transition-all duration-200",
-                  chatInput
-                    ? "border-primary ring-2 ring-primary/20"
-                    : "border-border focus-within:border-primary focus-within:ring-2 focus-within:ring-primary/20"
+                  showClientProjectError
+                    ? "border-destructive ring-2 ring-destructive/25"
+                    : chatInput
+                      ? "border-primary ring-2 ring-primary/20"
+                      : "border-border focus-within:border-primary focus-within:ring-2 focus-within:ring-primary/20"
                 )}
               >
                 {/* Textarea row */}
@@ -1263,17 +1461,20 @@ export function MyDraftsChatView({
                   <textarea
                     ref={textareaRef}
                     value={chatInput}
-                    onChange={(e) => setChatInput(e.target.value)}
+                    onChange={(e) => {
+                      setChatInput(e.target.value);
+                      if (showClientProjectError) setShowClientProjectError(false);
+                    }}
                     onKeyDown={handleChatKeyDown}
                     placeholder="Type your tender question here..."
                     rows={1}
-                    disabled={apiSessionLoading}
+                    disabled={apiSessionLoading || bidChatStreaming}
                     className="max-h-40 flex-1 resize-none bg-transparent pt-0.5 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
                     aria-label="Tender question input"
                   />
                   <button
                     type="button"
-                    disabled={!chatInput.trim() || apiSessionLoading}
+                    disabled={!chatInput.trim() || apiSessionLoading || bidChatStreaming}
                     onClick={() => void sendMessage()}
                     className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary text-primary-foreground shadow-sm transition-all hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-40"
                     aria-label="Send question"
@@ -1307,6 +1508,11 @@ export function MyDraftsChatView({
               <p className="mt-2 text-center text-[11px] text-muted-foreground">
                 Ctrl + Enter to send · Sources are cited inline as [1], [2]…
               </p>
+              {showClientProjectError && (
+                <p className="mt-1.5 text-center text-[11px] font-medium text-destructive">
+                  Select a client project (folder button, top right) before sending.
+                </p>
+              )}
             </div>
           </div>
         </div>
@@ -1755,7 +1961,8 @@ export function MyDraftsChatView({
                 type="button"
                 className="flex w-full items-center justify-center gap-2 rounded-lg border border-border bg-background px-3 py-2.5 text-sm text-muted-foreground transition-colors hover:bg-muted"
                 onClick={() => {
-                  setClientProject(null);
+                  setSelectedClientProject(null);
+                  setShowClientProjectError(false);
                   setClientModalOpen(false);
                 }}
               >
@@ -1804,10 +2011,18 @@ export function MyDraftsChatView({
                             type="button"
                             className={cn(
                               "flex w-full items-center justify-between gap-2 rounded-lg border border-border px-2.5 py-2 text-left text-sm transition-colors hover:bg-muted sm:gap-3 sm:px-3 sm:py-2.5",
-                              clientProject === p.name && "border-primary/40 bg-primary/5"
+                              p.id &&
+                                selectedClientProject?.id &&
+                                selectedClientProject.id === p.id &&
+                                "border-primary/40 bg-primary/5"
                             )}
                             onClick={() => {
-                              setClientProject(p.name);
+                              if (!p.id) {
+                                toast.error("This project cannot be used (missing id).");
+                                return;
+                              }
+                              setSelectedClientProject({ id: p.id, name: p.name });
+                              setShowClientProjectError(false);
                               setClientModalOpen(false);
                             }}
                           >
