@@ -87,7 +87,61 @@ export type BidSessionSummary = {
 export type BidSessionApiMessage = {
   role: string;
   content: string;
+  message_id?: string;
   ts?: string;
+};
+
+/** Request body for `POST /bid/drafts`. */
+export type BidDraftCreateRequest = {
+  message_id: string;
+};
+
+/** Supported formats for `POST /bid/export`. */
+export type BidExportFormat = "pdf" | "docx";
+
+/** Request body for `POST /bid/export`. */
+export type BidExportRequest = {
+  format: BidExportFormat;
+  message_id: string;
+};
+
+/** Response from `POST /bid/drafts`. */
+export type BidDraftRecord = {
+  id: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
+};
+
+/** Summary from `GET /bid/drafts` (`drafts[]`). */
+export type BidDraftSummary = {
+  id: string;
+  title: string;
+  created_at: string;
+  updated_at?: string;
+};
+
+/** Response shape for `GET /bid/drafts`. */
+export type BidDraftsListApiResponse = {
+  drafts?: BidDraftSummary[];
+  total?: number;
+};
+
+/** Detail from `GET /bid/drafts/{draft_id}`. */
+export type BidDraftDetail = BidDraftRecord & {
+  content?: string;
+  text?: string;
+  sources?: Record<string, string>;
+  web_sources?: unknown[];
+};
+
+export type DraftRecord = {
+  id: string;
+  title: string;
+  content: string;
+  createdAt: string;
+  sources?: Record<string, string> | null;
+  web_sources?: unknown[] | null;
 };
 
 /** Response from `GET /bid/sessions/{session_id}`. */
@@ -98,13 +152,6 @@ export type BidSessionDetail = {
   updated_at?: string;
   title?: string;
   messages: BidSessionApiMessage[];
-};
-
-export type DraftRecord = {
-  id: string;
-  title: string;
-  content: string;
-  createdAt: string;
 };
 
 export type FilterPresetId = "high" | "full" | "framework" | "custom";

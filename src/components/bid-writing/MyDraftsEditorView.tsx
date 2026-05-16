@@ -21,6 +21,7 @@ import {
   Check,
   ArrowDownToLine,
   HelpCircle,
+  Loader2,
 } from "lucide-react";
 import { toast } from "react-toastify";
 import { cn } from "@/lib/utils";
@@ -39,19 +40,75 @@ const TOOLS = [
 const EXPAND_PRESETS = [150, 300, 500, 750];
 const SHORTEN_PRESETS = [80, 120, 200];
 
+function sortDraftSourceKeys(keys: string[]): string[] {
+  return [...keys].sort((a, b) => {
+    const na = Number(a);
+    const nb = Number(b);
+    if (!Number.isNaN(na) && !Number.isNaN(nb)) return na - nb;
+    return a.localeCompare(b, undefined, { numeric: true });
+  });
+}
+
+function formatWebSourceLine(item: unknown): { label: string; href: string | null } {
+  if (typeof item === "string") {
+    const t = item.trim();
+    if (/^https?:\/\//i.test(t)) return { label: t, href: t };
+    return { label: t, href: null };
+  }
+  if (item && typeof item === "object" && !Array.isArray(item)) {
+    const o = item as Record<string, unknown>;
+    const url =
+      typeof o.url === "string"
+        ? o.url
+        : typeof o.href === "string"
+          ? o.href
+          : typeof o.link === "string"
+            ? o.link
+            : null;
+    const title =
+      typeof o.title === "string"
+        ? o.title
+        : typeof o.name === "string"
+          ? o.name
+          : url;
+    const label = title ?? url ?? JSON.stringify(o);
+    return { label: String(label), href: url };
+  }
+  try {
+    const s = JSON.stringify(item);
+    return { label: s, href: null };
+  } catch {
+    return { label: String(item), href: null };
+  }
+}
+
 interface MyDraftsEditorViewProps {
   drafts: DraftRecord[];
   setDrafts: React.Dispatch<React.SetStateAction<DraftRecord[]>>;
+  draftsLoading?: boolean;
+  draftsError?: boolean;
+  draftsTotal?: number;
   activeDraftId: string | null;
-  setActiveDraftId: React.Dispatch<React.SetStateAction<string | null>>;
+  activeDraftLoading?: boolean;
+  activeDraftLoadError?: string | null;
+  onSelectDraft: (draftId: string) => void;
+  onClearDraftSelection?: () => void;
+  onRetryDraftLoad?: () => void;
   onBackToChat: () => void;
 }
 
 export function MyDraftsEditorView({
   drafts,
   setDrafts,
+  draftsLoading = false,
+  draftsError = false,
+  draftsTotal = 0,
   activeDraftId,
-  setActiveDraftId,
+  activeDraftLoading = false,
+  activeDraftLoadError = null,
+  onSelectDraft,
+  onClearDraftSelection,
+  onRetryDraftLoad,
   onBackToChat,
 }: MyDraftsEditorViewProps) {
   const [editorSidebarOpen, setEditorSidebarOpen] = useState(false);
@@ -69,9 +126,14 @@ export function MyDraftsEditorView({
   const [wcShortenCustom, setWcShortenCustom] = useState("");
   const [wcExpandPreset, setWcExpandPreset] = useState<number | null>(300);
   const [wcShortenPreset, setWcShortenPreset] = useState<number | null>(120);
+  const [draftDocTab, setDraftDocTab] = useState<"preview" | "edit">("preview");
 
   const uploadDraftRef = useRef<HTMLInputElement>(null);
   const activeDraft = drafts.find((d) => d.id === activeDraftId) ?? null;
+
+  useEffect(() => {
+    setDraftDocTab("preview");
+  }, [activeDraftId]);
 
   useEffect(() => {
     function onDocClick(e: MouseEvent) {
@@ -85,7 +147,7 @@ export function MyDraftsEditorView({
 
   function handleDeleteDraft(id: string) {
     setDrafts((prev) => prev.filter((d) => d.id !== id));
-    if (activeDraftId === id) setActiveDraftId(null);
+    if (activeDraftId === id) onClearDraftSelection?.();
   }
 
   function handleDraftContentChange(content: string) {
@@ -284,11 +346,24 @@ export function MyDraftsEditorView({
         </div>
 
         <div className="flex flex-1 flex-col overflow-y-auto">
-          <p className="px-4 pb-1 pt-3 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
-            My Drafts
-          </p>
+          <div className="flex shrink-0 items-center justify-between gap-2 px-4 pb-1 pt-3">
+            <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+              My Drafts
+            </p>
+            {!draftsLoading && !draftsError && draftsTotal > 0 && (
+              <span className="text-[10px] font-semibold tabular-nums text-muted-foreground">
+                {draftsTotal}
+              </span>
+            )}
+          </div>
 
-          {drafts.length === 0 ? (
+          {draftsLoading ? (
+            <div className="px-4 py-8 text-center text-xs text-muted-foreground">Loading drafts…</div>
+          ) : draftsError ? (
+            <p className="px-4 py-6 text-center text-xs text-muted-foreground">
+              Could not load drafts. Check your connection and try again.
+            </p>
+          ) : drafts.length === 0 ? (
             <div className="flex flex-col items-center px-4 py-8 text-center">
               <p className="text-sm text-muted-foreground">No saved drafts yet.</p>
               <p className="mt-1 text-xs text-muted-foreground">
@@ -304,7 +379,7 @@ export function MyDraftsEditorView({
                     <button
                       type="button"
                       onClick={() => {
-                        setActiveDraftId(draft.id);
+                        onSelectDraft(draft.id);
                         setToolOutput(null);
                         setActiveTool(null);
                       }}
@@ -648,15 +723,129 @@ export function MyDraftsEditorView({
               </div>
             </div>
             <div className="min-h-0 flex-1 overflow-y-auto bg-background">
-              {activeDraft ? (
-                <textarea
-                  key={activeDraft.id}
-                  value={activeDraft.content}
-                  onChange={(e) => handleDraftContentChange(e.target.value)}
-                  placeholder="Start typing your draft here..."
-                  className="h-full min-h-full w-full resize-none bg-transparent px-4 py-4 text-sm leading-relaxed text-foreground placeholder:text-muted-foreground focus:outline-none sm:px-6 sm:py-6"
-                  aria-label="Draft content"
-                />
+              {activeDraftLoading && activeDraftId ? (
+                <div className="flex h-full flex-col items-center justify-center gap-3 px-6 py-12 text-center">
+                  <Loader2
+                    className="h-8 w-8 animate-spin text-primary"
+                    aria-hidden
+                  />
+                  <p className="text-sm font-medium text-foreground">Loading draft…</p>
+                  <p className="text-xs text-muted-foreground">Fetching document content.</p>
+                </div>
+              ) : activeDraftLoadError && activeDraftId ? (
+                <div className="flex h-full flex-col items-center justify-center gap-3 px-6 py-12 text-center">
+                  <p className="text-sm font-medium text-foreground">{activeDraftLoadError}</p>
+                  {onRetryDraftLoad && (
+                    <button
+                      type="button"
+                      onClick={onRetryDraftLoad}
+                      className="rounded-md border border-border px-3 py-1.5 text-xs font-medium text-foreground hover:bg-muted"
+                    >
+                      Retry
+                    </button>
+                  )}
+                </div>
+              ) : activeDraft ? (
+                <div className="flex h-full min-h-0 flex-1 flex-col">
+                  <div
+                    className="flex shrink-0 gap-1 border-b border-border/80 bg-muted/30 px-4 py-2 sm:px-6"
+                    role="tablist"
+                    aria-label="Draft document view"
+                  >
+                    {(
+                      [
+                        ["preview", "Preview"] as const,
+                        ["edit", "Edit markdown"] as const,
+                      ] as const
+                    ).map(([id, label]) => (
+                      <button
+                        key={id}
+                        type="button"
+                        role="tab"
+                        aria-selected={draftDocTab === id}
+                        onClick={() => setDraftDocTab(id)}
+                        className={cn(
+                          "rounded-lg px-3 py-1.5 text-xs font-medium transition-colors",
+                          draftDocTab === id
+                            ? "bg-background text-foreground shadow-sm ring-1 ring-border/70"
+                            : "text-muted-foreground hover:bg-background/80 hover:text-foreground"
+                        )}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="min-h-0 flex-1 overflow-y-auto" role="tabpanel">
+                    {draftDocTab === "preview" ? (
+                      <div className="px-4 py-4 sm:px-6 sm:py-6">
+                        {activeDraft.content.trim() ? (
+                          <MarkdownRenderer
+                            content={activeDraft.content}
+                            className="text-sm leading-relaxed text-foreground"
+                          />
+                        ) : (
+                          <p className="text-sm text-muted-foreground">
+                            No content yet. Switch to <strong>Edit markdown</strong> to add text.
+                          </p>
+                        )}
+                        {activeDraft.sources && Object.keys(activeDraft.sources).length > 0 && (
+                          <div className="mt-8 border-t border-border pt-6">
+                            <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+                              Sources
+                            </p>
+                            <ul className="mt-3 space-y-2.5 text-sm text-foreground">
+                              {sortDraftSourceKeys(Object.keys(activeDraft.sources)).map((key) => (
+                                <li key={key} className="flex gap-2.5">
+                                  <span className="shrink-0 font-mono text-xs font-medium text-muted-foreground">
+                                    [{key}]
+                                  </span>
+                                  <span className="min-w-0 leading-snug">{activeDraft.sources![key]}</span>
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                        {activeDraft.web_sources && activeDraft.web_sources.length > 0 && (
+                          <div className="mt-8 border-t border-border pt-6">
+                            <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+                              Web sources
+                            </p>
+                            <ul className="mt-3 list-disc space-y-2 pl-5 text-sm">
+                              {activeDraft.web_sources.map((item, idx) => {
+                                const { label, href } = formatWebSourceLine(item);
+                                return (
+                                  <li key={idx} className="break-words pl-1">
+                                    {href ? (
+                                      <a
+                                        href={href}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="text-primary underline-offset-4 hover:underline"
+                                      >
+                                        {label}
+                                      </a>
+                                    ) : (
+                                      <span className="text-foreground">{label}</span>
+                                    )}
+                                  </li>
+                                );
+                              })}
+                            </ul>
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <textarea
+                        key={activeDraft.id}
+                        value={activeDraft.content}
+                        onChange={(e) => handleDraftContentChange(e.target.value)}
+                        placeholder="Start typing your draft here..."
+                        className="h-full min-h-[50vh] w-full resize-none bg-transparent px-4 py-4 text-sm leading-relaxed text-foreground placeholder:text-muted-foreground focus:outline-none sm:px-6 sm:py-6"
+                        aria-label="Draft content"
+                      />
+                    )}
+                  </div>
+                </div>
               ) : (
                 <div className="flex h-full flex-col items-center justify-center gap-4 px-6 py-12 text-center">
                   <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-primary/15">

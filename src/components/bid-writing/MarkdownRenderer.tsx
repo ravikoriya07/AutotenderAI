@@ -1,9 +1,10 @@
 "use client";
 
-import type { ReactNode } from "react";
+import { useMemo, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Components } from "react-markdown";
+import { injectSourceReferences } from "@/components/bid-writing/injectSourceReferences";
 import { cn } from "@/lib/utils";
 
 function isLikelyBlockCode(className: string | undefined, children: ReactNode): boolean {
@@ -127,15 +128,91 @@ const markdownComponents: Components = {
     ) : null,
 };
 
+function createMarkdownComponents(
+  sourceLabelBySeq?: ReadonlyMap<number, string>
+): Components {
+  if (!sourceLabelBySeq?.size) return markdownComponents;
+
+  const inj = (children: ReactNode) => injectSourceReferences(children, sourceLabelBySeq);
+
+  return {
+    ...markdownComponents,
+    h1: ({ children }) => (
+      <h1 className="mt-4 mb-2 scroll-mt-20 border-b border-border pb-1.5 text-lg font-bold tracking-tight text-foreground first:mt-0">
+        {inj(children)}
+      </h1>
+    ),
+    h2: ({ children }) => (
+      <h2 className="mt-4 mb-2 scroll-mt-20 text-base font-semibold tracking-tight text-foreground first:mt-0">
+        {inj(children)}
+      </h2>
+    ),
+    h3: ({ children }) => (
+      <h3 className="mt-3 mb-1.5 scroll-mt-20 text-sm font-semibold text-foreground first:mt-0">{inj(children)}</h3>
+    ),
+    h4: ({ children }) => (
+      <h4 className="mt-3 mb-1 text-sm font-semibold text-foreground first:mt-0">{inj(children)}</h4>
+    ),
+    h5: ({ children }) => (
+      <h5 className="mt-2 mb-1 text-sm font-medium text-foreground first:mt-0">{inj(children)}</h5>
+    ),
+    h6: ({ children }) => (
+      <h6 className="mt-2 mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground first:mt-0">
+        {inj(children)}
+      </h6>
+    ),
+    p: ({ children }) => (
+      <p className="mb-3 text-sm leading-relaxed text-foreground [overflow-wrap:anywhere] last:mb-0">{inj(children)}</p>
+    ),
+    strong: ({ children }) => <strong className="font-semibold text-foreground">{inj(children)}</strong>,
+    em: ({ children }) => <em className="italic text-foreground">{inj(children)}</em>,
+    blockquote: ({ children }) => (
+      <blockquote className="my-3 border-l-[3px] border-primary/50 bg-muted/40 py-1 pl-3 text-sm italic leading-relaxed text-muted-foreground [&>p]:mb-2 [&>p:last-child]:mb-0">
+        {inj(children)}
+      </blockquote>
+    ),
+    li: ({ children }) => <li className="pl-1 [&>p]:mb-1 [&>p:last-child]:mb-0">{inj(children)}</li>,
+    a: ({ href, children }) => (
+      <a
+        href={href}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="break-words font-medium text-primary underline underline-offset-2 hover:text-primary/90"
+      >
+        {inj(children)}
+      </a>
+    ),
+    th: ({ children }) => (
+      <th className="whitespace-nowrap px-3 py-2 text-xs font-semibold uppercase tracking-wide text-foreground">
+        {inj(children)}
+      </th>
+    ),
+    td: ({ children }) => (
+      <td className="break-words px-3 py-2 align-top text-sm text-foreground [overflow-wrap:anywhere]">{inj(children)}</td>
+    ),
+  };
+}
+
 interface MarkdownRendererProps {
   content: string;
   className?: string;
+  /** Map of library `seq` → project name for inline `[n]` citation hovers. */
+  sourceLabelBySeq?: ReadonlyMap<number, string>;
 }
 
-export function MarkdownRenderer({ content, className }: MarkdownRendererProps) {
+export function MarkdownRenderer({
+  content,
+  className,
+  sourceLabelBySeq,
+}: MarkdownRendererProps) {
+  const components = useMemo(
+    () => createMarkdownComponents(sourceLabelBySeq),
+    [sourceLabelBySeq]
+  );
+
   return (
     <div className={cn("markdown-tool-output min-w-0 max-w-full text-foreground", className)}>
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
         {content}
       </ReactMarkdown>
     </div>

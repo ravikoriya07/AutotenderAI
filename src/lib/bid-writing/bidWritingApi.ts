@@ -13,12 +13,24 @@
  * - GET  /bid/sessions/{session_id} — Full session + messages
  * - DELETE /bid/sessions/{session_id} — Remove a bid writing session
  * - POST /bid/chat — Bid assistant (SSE)
+ * - POST /bid/drafts — Save assistant message as draft
+ * - GET  /bid/drafts — List saved drafts
+ * - GET  /bid/drafts/{draft_id} — Draft detail (content)
+ * - POST /bid/export — Export assistant message (PDF / DOCX blob)
  */
 
 import { getAuthToken } from "@/lib/authStorage";
 import { apiClient } from "@/lib/apiClient";
+import { parseContentDispositionFilename } from "@/lib/downloadFilename";
 import type {
   BidChatRequestBody,
+  BidDraftCreateRequest,
+  BidDraftDetail,
+  BidDraftRecord,
+  BidDraftSummary,
+  BidDraftsListApiResponse,
+  BidExportFormat,
+  BidExportRequest,
   BidSessionDetail,
   BidSessionSummary,
   ClientProjectDeleteResponse,
@@ -169,6 +181,157 @@ export async function deleteBidSession(sessionId: string): Promise<void> {
   await apiClient.delete(`/bid/sessions/${encodeURIComponent(sessionId)}`, {
     skipGlobalLoader: true,
   } as object);
+}
+
+export async function createBidDraft(messageId: string): Promise<BidDraftRecord> {
+  const body: BidDraftCreateRequest = { message_id: messageId };
+  const response = await apiClient.post<BidDraftRecord>("/bid/drafts", body, {
+    skipGlobalLoader: true,
+  } as object);
+  const data = response.data;
+  if (!data?.id) {
+    throw new Error("Invalid draft response");
+  }
+  return data;
+}
+
+type AxiosLikeHeaders = {
+  get?: (name: string) => unknown;
+  [key: string]: unknown;
+};
+
+function getResponseHeader(headers: AxiosLikeHeaders, name: string): string | undefined {
+  if (typeof headers.get === "function") {
+    const v = headers.get(name);
+    if (typeof v === "string" && v) return v;
+    if (Array.isArray(v) && typeof v[0] === "string") return v[0];
+  }
+  const lower = name.toLowerCase();
+  for (const k of Object.keys(headers)) {
+    if (k.toLowerCase() === lower) {
+      const val = headers[k];
+      if (typeof val === "string") return val;
+      if (Array.isArray(val) && typeof val[0] === "string") return val[0];
+    }
+  }
+  return undefined;
+}
+
+async function blobLooksLikeJsonError(blob: Blob): Promise<boolean> {
+  const ct = blob.type?.toLowerCase() ?? "";
+  if (ct.includes("application/json")) return true;
+  if (blob.size === 0 || blob.size > 65536) return false;
+  try {
+    const head = await blob.slice(0, 1).text();
+    return head === "{";
+  } catch {
+    return false;
+  }
+}
+
+async function messageFromJsonBlob(blob: Blob): Promise<string | null> {
+  try {
+    const text = await blob.text();
+    const data = JSON.parse(text) as {
+      message?: string;
+      detail?: string | { msg?: string }[];
+      error?: string;
+    };
+    if (typeof data.message === "string" && data.message.trim()) return data.message.trim();
+    if (typeof data.error === "string" && data.error.trim()) return data.error.trim();
+    if (typeof data.detail === "string" && data.detail.trim()) return data.detail.trim();
+    if (Array.isArray(data.detail)) {
+      const parts = data.detail
+        .map((d) => (typeof d === "string" ? d : d?.msg))
+        .filter((s): s is string => typeof s === "string" && s.trim().length > 0);
+      if (parts.length > 0) return parts.join("; ");
+    }
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
+function fallbackExportFilename(format: BidExportFormat, messageId: string): string {
+  const safeId = messageId.replace(/[^\w-]+/g, "").slice(0, 12) || "export";
+  return `bid-response-${safeId}.${format}`;
+}
+
+export type BidExportResult = {
+  blob: Blob;
+  filename: string;
+};
+
+/** POST /bid/export — returns a downloadable PDF or DOCX blob. */
+export async function exportBidMessage(body: BidExportRequest): Promise<BidExportResult> {
+  const response = await apiClient.post<Blob>("/bid/export", body, {
+    skipGlobalLoader: true,
+    responseType: "blob",
+    headers: { Accept: "*/*" },
+  } as object);
+
+  const blob = response.data instanceof Blob ? response.data : new Blob();
+  if (blob.size === 0) {
+    throw new Error("Export returned an empty file");
+  }
+
+  if (await blobLooksLikeJsonError(blob)) {
+    const apiMsg = await messageFromJsonBlob(blob);
+    throw new Error(apiMsg ?? "Export failed");
+  }
+
+  const contentDisposition = getResponseHeader(
+    response.headers as AxiosLikeHeaders,
+    "content-disposition"
+  );
+  const filename =
+    parseContentDispositionFilename(contentDisposition) ??
+    fallbackExportFilename(body.format, body.message_id);
+
+  return { blob, filename };
+}
+
+/** Trigger a browser download for an exported blob. */
+export function triggerBidExportDownload(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+}
+
+export type BidDraftsListResult = {
+  drafts: BidDraftSummary[];
+  total: number;
+};
+
+export async function fetchBidDrafts(): Promise<BidDraftsListResult> {
+  const response = await apiClient.get<BidDraftsListApiResponse>("/bid/drafts", {
+    skipGlobalLoader: true,
+  } as object);
+  const list = response.data?.drafts;
+  const drafts = Array.isArray(list) ? list : [];
+  const totalRaw = response.data?.total;
+  const total =
+    typeof totalRaw === "number" && Number.isFinite(totalRaw)
+      ? totalRaw
+      : drafts.length;
+  return { drafts, total };
+}
+
+export async function fetchBidDraft(draftId: string): Promise<BidDraftDetail> {
+  const response = await apiClient.get<BidDraftDetail>(
+    `/bid/drafts/${encodeURIComponent(draftId)}`,
+    { skipGlobalLoader: true } as object
+  );
+  const data = response.data;
+  if (!data?.id) {
+    throw new Error("Invalid draft response");
+  }
+  return data;
 }
 
 function stripBom(s: string): string {

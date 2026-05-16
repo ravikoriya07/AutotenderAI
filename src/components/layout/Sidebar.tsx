@@ -46,6 +46,7 @@ function isSidebarNavActive(pathname: string | null, href: string): boolean {
   if (href === "/quantity-take-off" && pathname.startsWith("/quantity-take-off/"))
     return true;
   if (href === "/projects" && pathname.startsWith("/projects/")) return true;
+  if (href === "/my-drafts" && pathname.startsWith("/my-drafts")) return true;
   return false;
 }
 

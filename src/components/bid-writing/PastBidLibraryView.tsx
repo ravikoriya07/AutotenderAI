@@ -236,7 +236,7 @@ export function PastBidLibraryView({ showInnerNav = true }: PastBidLibraryViewPr
               <span className="text-sm font-semibold">Bid writing</span>
             </div>
             <Link
-              href="/my-drafts"
+              href="/my-drafts/chat"
               className="flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
             >
               <ChevronLeft className="h-4 w-4" aria-hidden />
@@ -765,7 +765,7 @@ function DetailBody({
       ) : null}
 
       <Link
-        href="/my-drafts"
+        href="/my-drafts/chat"
         className="inline-flex items-center gap-2 text-sm font-medium text-primary hover:underline"
       >
         <ArrowLeft className="h-4 w-4" aria-hidden />

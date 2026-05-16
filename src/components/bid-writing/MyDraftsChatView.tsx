@@ -35,10 +35,12 @@ import { toast } from "react-toastify";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/Button";
 import { MarkdownRenderer } from "@/components/bid-writing/MarkdownRenderer";
+import { buildSourceLabelMapFromLibrary } from "@/lib/bid-writing/sourceReferences";
 import type {
   BidChatRequestBody,
   ChatSession,
   DraftRecord,
+  BidSessionApiMessage,
   FilterPresetId,
   PastBid,
   ClientProjectOption,
@@ -46,12 +48,16 @@ import type {
   ClientZipUploadProgress,
 } from "@/lib/bid-writing/types";
 import { loadChatHistory, saveChatHistory } from "@/lib/bid-writing/chatHistoryStorage";
+import { draftListDateLabel, DRAFTS_UPDATED_EVENT } from "@/lib/bid-writing/draftUtils";
 import {
   fetchPastBids,
   fetchClientProjects,
   fetchBidSessions,
   fetchBidSession,
   deleteBidSession,
+  createBidDraft,
+  exportBidMessage,
+  triggerBidExportDownload,
   streamBidChat,
   uploadClientProjectZip,
   fetchClientUploadProgress,
@@ -142,6 +148,7 @@ const CLIENT_PANEL_TRANSITION_MS = 300;
 type Msg = {
   role: "user" | "assistant";
   content: string;
+  message_id?: string;
   streaming?: boolean;
   sources?: unknown;
   web_sources?: unknown;
@@ -203,15 +210,13 @@ function loadInitialSelectedClientProject(): { id: string; name: string } | null
 // ──────────────────────────────────────────────────────────────────────────────
 
 interface MyDraftsChatViewProps {
-  drafts: DraftRecord[];
-  onOpenEditor: (draftId?: string) => void;
-  onSaveDraftFromAssistant: (title: string, body: string) => void;
+  draftCount: number;
+  onDraftSaved: (draft: DraftRecord) => void;
 }
 
 export function MyDraftsChatView({
-  drafts,
-  onOpenEditor,
-  onSaveDraftFromAssistant,
+  draftCount,
+  onDraftSaved,
 }: MyDraftsChatViewProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -272,8 +277,12 @@ export function MyDraftsChatView({
   const clientZipUploadAbortRef = useRef<AbortController | null>(null);
 
   const [draftToast, setDraftToast] = useState(false);
+  const [savingDraftMessageId, setSavingDraftMessageId] = useState<string | null>(null);
+  const pendingAssistantMessageIdRef = useRef<string | null>(null);
   /** Which assistant message index has the export dropdown open (null = closed). */
   const [exportMenuIndex, setExportMenuIndex] = useState<number | null>(null);
+  /** `${messageId}:${pdf|docx}` while export request is in flight. */
+  const [exportingKey, setExportingKey] = useState<string | null>(null);
   const [recentChatMenuOpenId, setRecentChatMenuOpenId] = useState<string | null>(null);
   const [clientProjectMenuOpenId, setClientProjectMenuOpenId] = useState<string | null>(null);
   const [clientProjectDeletingId, setClientProjectDeletingId] = useState<string | null>(null);
@@ -344,6 +353,11 @@ export function MyDraftsChatView({
       cancelled = true;
     };
   }, []);
+
+  const sourceLabelBySeq = useMemo(
+    () => buildSourceLabelMapFromLibrary(libraryBids),
+    [libraryBids]
+  );
 
   const filterPresetRef = useRef(filterPreset);
   filterPresetRef.current = filterPreset;
@@ -576,12 +590,12 @@ export function MyDraftsChatView({
   function pushSessionToUrl(sessionId: string) {
     const params = new URLSearchParams();
     params.set("session_id", sessionId);
-    router.replace(`/my-drafts?${params.toString()}`, { scroll: false });
+    router.replace(`/my-drafts/chat?${params.toString()}`, { scroll: false });
   }
 
   /** Remove ?session_id from the URL (new chat / clear state). */
   function clearSessionFromUrl() {
-    router.replace("/my-drafts", { scroll: false });
+    router.replace("/my-drafts/chat", { scroll: false });
   }
 
   function startNewChat() {
@@ -617,15 +631,14 @@ export function MyDraftsChatView({
     );
   }
 
-  function mapApiSessionMessages(
-    raw: { role: string; content?: string }[] | undefined
-  ): Msg[] {
+  function mapApiSessionMessages(raw: BidSessionApiMessage[] | undefined): Msg[] {
     if (!Array.isArray(raw)) return [];
     return raw
       .filter((m) => m.role === "user" || m.role === "assistant")
       .map((m) => ({
         role: m.role as "user" | "assistant",
         content: typeof m.content === "string" ? m.content : "",
+        message_id: typeof m.message_id === "string" ? m.message_id : undefined,
       }));
   }
 
@@ -794,6 +807,7 @@ export function MyDraftsChatView({
     bidStreamAbortRef.current = ac;
 
     setChatInput("");
+    pendingAssistantMessageIdRef.current = null;
     setMessages((prev) => [...prev, { role: "user", content: q }]);
     setStreamStatusText("");
     setBidChatStreaming(true);
@@ -829,9 +843,20 @@ export function MyDraftsChatView({
       await streamBidChat(
         payload,
         {
-          onSession: (sessionId) => {
+          onSession: (sessionId, messageId) => {
             pushSessionToUrl(sessionId);
             setCurrentChatId(sessionId);
+            if (messageId) {
+              pendingAssistantMessageIdRef.current = messageId;
+              setMessages((prev) => {
+                const next = [...prev];
+                const last = next[next.length - 1];
+                if (last?.role === "assistant") {
+                  next[next.length - 1] = { ...last, message_id: messageId };
+                }
+                return next;
+              });
+            }
             if (priorChatId?.startsWith("chat_")) {
               setSessions((prev) => {
                 const next = prev.filter((s) => s.id !== priorChatId);
@@ -848,7 +873,11 @@ export function MyDraftsChatView({
             if (!firstAnswer) {
               firstAnswer = true;
               setStreamStatusText(null);
-              setMessages((prev) => [...prev, { role: "assistant", content: token, streaming: true }]);
+              const mid = pendingAssistantMessageIdRef.current ?? undefined;
+              setMessages((prev) => [
+                ...prev,
+                { role: "assistant", content: token, streaming: true, message_id: mid },
+              ]);
             } else {
               setMessages((prev) => {
                 const next = [...prev];
@@ -954,12 +983,42 @@ export function MyDraftsChatView({
     }
   }
 
-  function saveAssistantContentAsDraft(content: string) {
-    const title = `Draft — ${new Date().toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" })}`;
-    onSaveDraftFromAssistant(title, content);
-    setDraftToast(true);
-    setTimeout(() => setDraftToast(false), 3200);
-    toast.success("Draft saved");
+  async function saveAssistantContentAsDraft(messageId: string | undefined, content: string) {
+    if (!messageId) {
+      toast.error("Cannot save this message. Open the chat from your session history and try again.");
+      return;
+    }
+    if (savingDraftMessageId) return;
+
+    setSavingDraftMessageId(messageId);
+    try {
+      const res = await createBidDraft(messageId);
+      const record: DraftRecord = {
+        id: res.id,
+        title: res.title,
+        content,
+        createdAt: draftListDateLabel(res.created_at, res.updated_at),
+      };
+      onDraftSaved(record);
+      window.dispatchEvent(new Event(DRAFTS_UPDATED_EVENT));
+      setDraftToast(true);
+      setTimeout(() => setDraftToast(false), 3200);
+      toast.success("Draft saved");
+    } catch (err) {
+      console.error("[MyDraftsChat] Failed to save draft:", err);
+      let msg = "Could not save draft";
+      if (err && typeof err === "object" && "response" in err) {
+        const data = (err as { response?: { data?: { message?: string; detail?: string; error?: string } } })
+          .response?.data;
+        const fromApi = data?.message || data?.detail || data?.error;
+        if (typeof fromApi === "string" && fromApi.trim()) msg = fromApi.trim();
+      } else if (err instanceof Error && err.message) {
+        msg = err.message;
+      }
+      toast.error(msg);
+    } finally {
+      setSavingDraftMessageId(null);
+    }
   }
 
   async function copyAssistantContent(content: string) {
@@ -971,13 +1030,55 @@ export function MyDraftsChatView({
     }
   }
 
-  function exportAssistantContent(kind: "pdf" | "docx" | "txt", content: string) {
-    if (!content.trim()) {
-      toast.info("Nothing to export.");
+  async function exportAssistantContent(
+    format: "pdf" | "docx",
+    messageId: string | undefined
+  ) {
+    if (!messageId) {
+      toast.error("Cannot export this message. Wait for the response to finish or reload the chat.");
       return;
     }
-    toast.info(`${kind.toUpperCase()} export will download when the API is connected.`);
-    setExportMenuIndex(null);
+    const key = `${messageId}:${format}`;
+    if (exportingKey) return;
+
+    setExportingKey(key);
+    try {
+      const { blob, filename } = await exportBidMessage({ format, message_id: messageId });
+      triggerBidExportDownload(blob, filename);
+      setExportMenuIndex(null);
+      toast.success(`Download started (${format.toUpperCase()})`);
+    } catch (err) {
+      console.error("[MyDraftsChat] Export failed:", err);
+      let msg = "Could not export";
+      if (err instanceof Error && err.message.trim()) {
+        msg = err.message.trim();
+      }
+      if (err && typeof err === "object" && "response" in err) {
+        const res = (err as { response?: { data?: unknown } }).response;
+        const data = res?.data;
+        if (data instanceof Blob) {
+          try {
+            const text = await data.text();
+            const parsed = JSON.parse(text) as {
+              message?: string;
+              detail?: string;
+              error?: string;
+            };
+            const fromApi = parsed.message || parsed.detail || parsed.error;
+            if (typeof fromApi === "string" && fromApi.trim()) msg = fromApi.trim();
+          } catch {
+            // keep msg
+          }
+        } else if (data && typeof data === "object") {
+          const d = data as { message?: string; detail?: string; error?: string };
+          const fromApi = d.message || d.detail || d.error;
+          if (typeof fromApi === "string" && fromApi.trim()) msg = fromApi.trim();
+        }
+      }
+      toast.error(msg);
+    } finally {
+      setExportingKey(null);
+    }
   }
 
   function toggleFolder(seq: number) {
@@ -1272,16 +1373,16 @@ export function MyDraftsChatView({
             <button
               type="button"
               onClick={() => {
-                onOpenEditor();
                 setChatSidebarOpen(false);
+                router.push("/my-drafts");
               }}
               className="mt-3 flex w-full items-center gap-2 rounded-lg border border-border bg-background px-3 py-2.5 text-left text-sm text-foreground transition-colors hover:bg-muted"
             >
               <FileText className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
               <span className="min-w-0 flex-1 truncate">My Drafts</span>
-              {drafts.length > 0 && (
+              {draftCount > 0 && (
                 <span className="inline-flex min-h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-emerald-600 px-1.5 text-[10px] font-semibold text-white dark:bg-emerald-500">
-                  {drafts.length}
+                  {draftCount}
                 </span>
               )}
             </button>
@@ -1530,7 +1631,11 @@ export function MyDraftsChatView({
                     ) : (
                       /* AI message — no card/border, full-width clean text */
                       <div className="min-w-0 flex-1">
-                        <MarkdownRenderer content={m.content} className="text-sm leading-relaxed text-foreground" />
+                        <MarkdownRenderer
+                          content={m.content}
+                          className="text-sm leading-relaxed text-foreground"
+                          sourceLabelBySeq={sourceLabelBySeq}
+                        />
                         {!m.streaming && (
                           <div className="mt-2 flex flex-wrap items-center gap-1.5 pt-1">
                             <button
@@ -1544,36 +1649,57 @@ export function MyDraftsChatView({
                             <div className="relative shrink-0" data-chat-export-root>
                               <button
                                 type="button"
+                                disabled={
+                                  Boolean(m.streaming) ||
+                                  !m.message_id ||
+                                  exportingKey !== null
+                                }
                                 onClick={() =>
                                   setExportMenuIndex((idx) => (idx === i ? null : i))
                                 }
-                                className="inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                                className="inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
                                 aria-expanded={exportMenuIndex === i}
                                 aria-haspopup="menu"
                               >
-                                <Download className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                                {exportingKey?.startsWith(`${m.message_id}:`) ? (
+                                  <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" aria-hidden />
+                                ) : (
+                                  <Download className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                                )}
                                 Export
                                 <ChevronDown className="h-3.5 w-3.5 shrink-0 opacity-70" aria-hidden />
                               </button>
                               {exportMenuIndex === i && (
                                 <div
-                                  className="absolute left-0 bottom-full z-30 mb-1 min-w-[11rem] rounded-lg border border-border bg-popover py-1 shadow-md"
+                                  className="absolute left-0 bottom-full z-30 mb-1 w-36 rounded-lg border border-border bg-popover py-1 shadow-md"
                                   role="menu"
                                 >
                                   <button
                                     type="button"
                                     role="menuitem"
-                                    className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-muted"
-                                    onClick={() => exportAssistantContent("pdf", m.content)}
+                                    disabled={exportingKey !== null}
+                                    className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                                    onClick={() => void exportAssistantContent("pdf", m.message_id)}
                                   >
+                                    {exportingKey === `${m.message_id}:pdf` ? (
+                                      <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground" aria-hidden />
+                                    ) : (
+                                      <FileText className="h-3.5 w-3.5 shrink-0 text-red-500" aria-hidden />
+                                    )}
                                     PDF
                                   </button>
                                   <button
                                     type="button"
                                     role="menuitem"
-                                    className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-muted"
-                                    onClick={() => exportAssistantContent("docx", m.content)}
+                                    disabled={exportingKey !== null}
+                                    className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                                    onClick={() => void exportAssistantContent("docx", m.message_id)}
                                   >
+                                    {exportingKey === `${m.message_id}:docx` ? (
+                                      <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground" aria-hidden />
+                                    ) : (
+                                      <FileText className="h-3.5 w-3.5 shrink-0 text-blue-500" aria-hidden />
+                                    )}
                                     Word (.docx)
                                   </button>
                                 </div>
@@ -1581,11 +1707,25 @@ export function MyDraftsChatView({
                             </div>
                             <button
                               type="button"
-                              onClick={() => saveAssistantContentAsDraft(m.content)}
-                              className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium text-primary transition-colors hover:bg-primary/10"
+                              disabled={
+                                Boolean(m.streaming) ||
+                                Boolean(savingDraftMessageId) ||
+                                !m.message_id
+                              }
+                              onClick={() => void saveAssistantContentAsDraft(m.message_id, m.content)}
+                              className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium text-primary transition-colors hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-40"
                             >
-                              <Save className="h-3.5 w-3.5 shrink-0" aria-hidden />
-                              Save as Draft
+                              {savingDraftMessageId === m.message_id ? (
+                                <>
+                                  <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" aria-hidden />
+                                  Saving…
+                                </>
+                              ) : (
+                                <>
+                                  <Save className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                                  Save as Draft
+                                </>
+                              )}
                             </button>
                           </div>
                         )}
@@ -2314,7 +2454,7 @@ export function MyDraftsChatView({
         <button
           type="button"
           className="font-semibold text-primary hover:underline"
-          onClick={() => onOpenEditor()}
+          onClick={() => router.push("/my-drafts")}
         >
           Open →
         </button>
