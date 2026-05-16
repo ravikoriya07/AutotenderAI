@@ -1,11 +1,11 @@
 "use client";
 
-import { Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { toast } from "react-toastify";
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
 import { MyDraftsEditorView } from "@/components/bid-writing/MyDraftsEditorView";
-import { fetchBidDraft, fetchBidDrafts } from "@/lib/bid-writing/bidWritingApi";
+import { fetchBidDraft, fetchBidDrafts, fetchPastBids } from "@/lib/bid-writing/bidWritingApi";
 import {
   draftListDateLabel,
   DRAFTS_UPDATED_EVENT,
@@ -13,7 +13,8 @@ import {
   normalizeDraftSources,
   normalizeWebSources,
 } from "@/lib/bid-writing/draftUtils";
-import type { DraftRecord } from "@/lib/bid-writing/types";
+import { buildSourceLabelMapFromLibrary } from "@/lib/bid-writing/sourceReferences";
+import type { DraftRecord, PastBid } from "@/lib/bid-writing/types";
 
 function mergeDraftListWithCachedDetail(rows: DraftRecord[], prev: DraftRecord[]): DraftRecord[] {
   const prevById = new Map(prev.map((d) => [d.id, d]));
@@ -49,6 +50,12 @@ function MyDraftsPageContent() {
   const [activeDraftId, setActiveDraftId] = useState<string | null>(null);
   const [activeDraftLoading, setActiveDraftLoading] = useState(false);
   const [activeDraftLoadError, setActiveDraftLoadError] = useState<string | null>(null);
+  const [libraryBids, setLibraryBids] = useState<PastBid[]>([]);
+
+  const sourceLabelBySeq = useMemo(
+    () => buildSourceLabelMapFromLibrary(libraryBids),
+    [libraryBids]
+  );
 
   const draftFetchSeqRef = useRef(0);
 
@@ -64,6 +71,18 @@ function MyDraftsPageContent() {
       router.replace(`/my-drafts/chat?session_id=${encodeURIComponent(sessionId)}`);
     }
   }, [searchParams, router]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void fetchPastBids()
+      .then((data) => {
+        if (!cancelled) setLibraryBids(Array.isArray(data) ? data : []);
+      })
+      .catch(() => {
+        if (!cancelled) setLibraryBids([]);
+      });
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -187,10 +206,6 @@ function MyDraftsPageContent() {
     loadDraftDetail(urlDraftId, seq);
   }, [draftsLoading, searchParams, activeDraftId, activeDraftLoadError, loadDraftDetail]);
 
-  function handleBackToChat() {
-    router.push("/my-drafts/chat");
-  }
-
   return (
     <MyDraftsEditorView
       drafts={drafts}
@@ -201,6 +216,7 @@ function MyDraftsPageContent() {
       activeDraftId={activeDraftId}
       activeDraftLoading={activeDraftLoading}
       activeDraftLoadError={activeDraftLoadError}
+      sourceLabelBySeq={sourceLabelBySeq}
       onSelectDraft={selectDraft}
       onClearDraftSelection={clearDraftSelection}
       onRetryDraftLoad={() => {
@@ -208,7 +224,6 @@ function MyDraftsPageContent() {
         const seq = ++draftFetchSeqRef.current;
         loadDraftDetail(activeDraftId, seq);
       }}
-      onBackToChat={handleBackToChat}
     />
   );
 }

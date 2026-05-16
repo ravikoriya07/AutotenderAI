@@ -23,6 +23,7 @@ import {
   HelpCircle,
   Loader2,
 } from "lucide-react";
+import Link from "next/link";
 import { toast } from "react-toastify";
 import { cn } from "@/lib/utils";
 import type { DraftRecord } from "@/lib/bid-writing/types";
@@ -91,10 +92,10 @@ interface MyDraftsEditorViewProps {
   activeDraftId: string | null;
   activeDraftLoading?: boolean;
   activeDraftLoadError?: string | null;
+  sourceLabelBySeq?: ReadonlyMap<number, string>;
   onSelectDraft: (draftId: string) => void;
   onClearDraftSelection?: () => void;
   onRetryDraftLoad?: () => void;
-  onBackToChat: () => void;
 }
 
 export function MyDraftsEditorView({
@@ -106,10 +107,10 @@ export function MyDraftsEditorView({
   activeDraftId,
   activeDraftLoading = false,
   activeDraftLoadError = null,
+  sourceLabelBySeq,
   onSelectDraft,
   onClearDraftSelection,
   onRetryDraftLoad,
-  onBackToChat,
 }: MyDraftsEditorViewProps) {
   const [editorSidebarOpen, setEditorSidebarOpen] = useState(false);
   const [toolOutput, setToolOutput] = useState<string | null>(null);
@@ -314,14 +315,14 @@ export function MyDraftsEditorView({
           </span>
         </div>
 
-        <button
-          type="button"
-          onClick={onBackToChat}
+        <Link
+          href="/my-drafts/chat"
+          prefetch
           className="flex shrink-0 items-center gap-1.5 border-b border-border px-4 py-3 text-left text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
         >
           <ChevronLeft className="h-4 w-4 shrink-0" aria-hidden />
           Back to Chat
-        </button>
+        </Link>
 
         <div className="border-b border-border p-3">
           <input
@@ -782,6 +783,7 @@ export function MyDraftsEditorView({
                           <MarkdownRenderer
                             content={activeDraft.content}
                             className="text-sm leading-relaxed text-foreground"
+                            sourceLabelBySeq={sourceLabelBySeq}
                           />
                         ) : (
                           <p className="text-sm text-muted-foreground">
@@ -793,13 +795,13 @@ export function MyDraftsEditorView({
                             <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
                               Sources
                             </p>
-                            <ul className="mt-3 space-y-2.5 text-sm text-foreground">
+                            <ul className="mt-3 space-y-2 text-sm text-foreground">
                               {sortDraftSourceKeys(Object.keys(activeDraft.sources)).map((key) => (
-                                <li key={key} className="flex gap-2.5">
-                                  <span className="shrink-0 font-mono text-xs font-medium text-muted-foreground">
+                                <li key={key} className="flex items-start gap-2.5">
+                                  <span className="mt-0.5 inline-flex shrink-0 items-center rounded-md bg-primary/10 px-1.5 py-0.5 text-[0.78em] font-semibold leading-none text-primary ring-1 ring-primary/20">
                                     [{key}]
                                   </span>
-                                  <span className="min-w-0 leading-snug">{activeDraft.sources![key]}</span>
+                                  <span className="min-w-0 leading-snug text-foreground">{activeDraft.sources![key]}</span>
                                 </li>
                               ))}
                             </ul>

@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect, useCallback, useMemo, type ChangeEvent, type DragEvent } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
+import Swal from "sweetalert2";
 import {
   Plus,
   FileText,
@@ -729,7 +730,26 @@ export function MyDraftsChatView({
 
   async function confirmDeleteRecentChat(row: RecentChatRow) {
     setRecentChatMenuOpenId(null);
-    if (!window.confirm("Delete this chat? This cannot be undone.")) return;
+    const result = await Swal.fire({
+      title: "Delete this chat?",
+      text: "This action cannot be undone.",
+      icon: "warning",
+      showCancelButton: true,
+      confirmButtonText: "Yes, delete",
+      cancelButtonText: "Cancel",
+      confirmButtonColor: "hsl(262 83% 58%)",
+      cancelButtonColor: "#6b7280",
+      reverseButtons: true,
+      focusCancel: true,
+      customClass: {
+        popup: "!rounded-2xl !shadow-2xl",
+        title: "!text-base !font-semibold",
+        htmlContainer: "!text-sm !text-gray-500",
+        confirmButton: "!rounded-lg !text-sm !font-medium !px-4 !py-2",
+        cancelButton: "!rounded-lg !text-sm !font-medium !px-4 !py-2",
+      },
+    });
+    if (!result.isConfirmed) return;
     try {
       if (row.source === "api") {
         await deleteBidSession(row.id);
@@ -749,13 +769,25 @@ export function MyDraftsChatView({
   async function confirmDeleteClientProject(p: ClientProjectOption) {
     if (!p.id) return;
     setClientProjectMenuOpenId(null);
-    if (
-      !window.confirm(
-        `Delete project "${p.name}"? This removes indexed documents and cannot be undone.`
-      )
-    ) {
-      return;
-    }
+    const result = await Swal.fire({
+      title: "Delete project?",
+      html: `<span class="text-sm text-gray-500">This will remove <strong>${p.name}</strong> and all indexed documents. This cannot be undone.</span>`,
+      icon: "warning",
+      showCancelButton: true,
+      confirmButtonText: "Yes, delete",
+      cancelButtonText: "Cancel",
+      confirmButtonColor: "hsl(0 84% 60%)",
+      cancelButtonColor: "#6b7280",
+      reverseButtons: true,
+      focusCancel: true,
+      customClass: {
+        popup: "!rounded-2xl !shadow-2xl",
+        title: "!text-base !font-semibold",
+        confirmButton: "!rounded-lg !text-sm !font-medium !px-4 !py-2",
+        cancelButton: "!rounded-lg !text-sm !font-medium !px-4 !py-2",
+      },
+    });
+    if (!result.isConfirmed) return;
     setClientProjectDeletingId(p.id);
     try {
       const res = await deleteClientProject(p.id);
@@ -1370,12 +1402,10 @@ export function MyDraftsChatView({
               <span className="whitespace-nowrap">New Bid Question</span>
             </button>
 
-            <button
-              type="button"
-              onClick={() => {
-                setChatSidebarOpen(false);
-                router.push("/my-drafts");
-              }}
+            <Link
+              href="/my-drafts"
+              prefetch
+              onClick={() => setChatSidebarOpen(false)}
               className="mt-3 flex w-full items-center gap-2 rounded-lg border border-border bg-background px-3 py-2.5 text-left text-sm text-foreground transition-colors hover:bg-muted"
             >
               <FileText className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
@@ -1385,7 +1415,7 @@ export function MyDraftsChatView({
                   {draftCount}
                 </span>
               )}
-            </button>
+            </Link>
 
             <Link
               href="/past-bid-library"
@@ -2451,13 +2481,13 @@ export function MyDraftsChatView({
       >
         <span className="text-primary">✓</span>
         Draft saved!
-        <button
-          type="button"
+        <Link
+          href="/my-drafts"
+          prefetch
           className="font-semibold text-primary hover:underline"
-          onClick={() => router.push("/my-drafts")}
         >
           Open →
-        </button>
+        </Link>
       </div>
     </>
   );
