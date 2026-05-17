@@ -2,10 +2,16 @@
 
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import Swal from "sweetalert2";
 import { toast } from "react-toastify";
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
 import { MyDraftsEditorView } from "@/components/bid-writing/MyDraftsEditorView";
-import { fetchBidDraft, fetchBidDrafts, fetchPastBids } from "@/lib/bid-writing/bidWritingApi";
+import {
+  deleteBidDraft,
+  fetchBidDraft,
+  fetchBidDrafts,
+  fetchPastBids,
+} from "@/lib/bid-writing/bidWritingApi";
 import {
   draftListDateLabel,
   DRAFTS_UPDATED_EVENT,
@@ -50,6 +56,7 @@ function MyDraftsPageContent() {
   const [activeDraftId, setActiveDraftId] = useState<string | null>(null);
   const [activeDraftLoading, setActiveDraftLoading] = useState(false);
   const [activeDraftLoadError, setActiveDraftLoadError] = useState<string | null>(null);
+  const [deletingDraftId, setDeletingDraftId] = useState<string | null>(null);
   const [libraryBids, setLibraryBids] = useState<PastBid[]>([]);
 
   const sourceLabelBySeq = useMemo(
@@ -58,6 +65,8 @@ function MyDraftsPageContent() {
   );
 
   const draftFetchSeqRef = useRef(0);
+  /** Ignore detail-load errors while clearing selection (e.g. after delete). */
+  const suppressDraftDetailErrorsRef = useRef(false);
 
   const refreshDraftList = useCallback(async () => {
     const { drafts: apiDrafts, total } = await fetchBidDrafts();
@@ -151,6 +160,7 @@ function MyDraftsPageContent() {
       })
       .catch((err) => {
         if (seq !== draftFetchSeqRef.current) return;
+        if (suppressDraftDetailErrorsRef.current) return;
         console.error("[MyDrafts] Failed to load draft:", err);
         setActiveDraftLoadError("Could not load this draft.");
         toast.error("Could not load draft");
@@ -184,6 +194,7 @@ function MyDraftsPageContent() {
   );
 
   const clearDraftSelection = useCallback(() => {
+    suppressDraftDetailErrorsRef.current = true;
     draftFetchSeqRef.current += 1;
     setActiveDraftId(null);
     setActiveDraftLoading(false);
@@ -191,20 +202,112 @@ function MyDraftsPageContent() {
     pushDraftToUrl(null);
   }, [pushDraftToUrl]);
 
+  const confirmDeleteDraft = useCallback(
+    async (draft: { id: string; title: string }) => {
+      const result = await Swal.fire({
+        title: "Delete this draft?",
+        html: `<span class="text-sm text-gray-500"><strong>${draft.title.replace(/</g, "&lt;").replace(/>/g, "&gt;")}</strong> will be permanently removed.</span>`,
+        icon: "warning",
+        showCancelButton: true,
+        confirmButtonText: "Yes, delete",
+        cancelButtonText: "Cancel",
+        confirmButtonColor: "hsl(0 84% 60%)",
+        cancelButtonColor: "#6b7280",
+        reverseButtons: true,
+        focusCancel: true,
+        customClass: {
+          popup: "!rounded-2xl !shadow-2xl",
+          title: "!text-base !font-semibold",
+          htmlContainer: "!text-sm !text-gray-500",
+          confirmButton: "!rounded-lg !text-sm !font-medium !px-4 !py-2",
+          cancelButton: "!rounded-lg !text-sm !font-medium !px-4 !py-2",
+        },
+      });
+      if (!result.isConfirmed) return;
+
+      setDeletingDraftId(draft.id);
+      const wasActive = activeDraftId === draft.id;
+      if (wasActive) {
+        clearDraftSelection();
+      }
+      setDrafts((prev) => prev.filter((d) => d.id !== draft.id));
+      setDraftsTotal((t) => Math.max(0, t - 1));
+      try {
+        await deleteBidDraft(draft.id);
+        const { rows, total } = await refreshDraftList();
+        setDrafts(rows);
+        setDraftsTotal(total);
+        setDraftsError(false);
+        window.dispatchEvent(new Event(DRAFTS_UPDATED_EVENT));
+        toast.success("Draft deleted");
+      } catch (err) {
+        console.error("[MyDrafts] Failed to delete draft:", err);
+        let msg = "Could not delete draft";
+        if (err && typeof err === "object" && "response" in err) {
+          const data = (err as {
+            response?: { data?: { message?: string; detail?: string; error?: string } };
+          }).response?.data;
+          const fromApi = data?.message || data?.detail || data?.error;
+          if (typeof fromApi === "string" && fromApi.trim()) msg = fromApi.trim();
+        } else if (err instanceof Error && err.message) {
+          msg = err.message;
+        }
+        toast.error(msg);
+      } finally {
+        setDeletingDraftId(null);
+      }
+    },
+    [activeDraftId, clearDraftSelection, refreshDraftList]
+  );
+
   useEffect(() => {
     if (draftsLoading) return;
 
     const urlDraftId = searchParams?.get("draft_id")?.trim() || null;
-    if (!urlDraftId) {
+
+    if (deletingDraftId && urlDraftId === deletingDraftId) {
       return;
     }
+
+    if (!urlDraftId) {
+      suppressDraftDetailErrorsRef.current = false;
+      if (activeDraftId !== null) {
+        draftFetchSeqRef.current += 1;
+        setActiveDraftId(null);
+        setActiveDraftLoading(false);
+        setActiveDraftLoadError(null);
+      }
+      return;
+    }
+
+    const draftInList = drafts.some((d) => d.id === urlDraftId);
+    if (!draftInList) {
+      suppressDraftDetailErrorsRef.current = true;
+      draftFetchSeqRef.current += 1;
+      setActiveDraftId(null);
+      setActiveDraftLoading(false);
+      setActiveDraftLoadError(null);
+      router.replace("/my-drafts", { scroll: false });
+      return;
+    }
+
+    suppressDraftDetailErrorsRef.current = false;
 
     if (activeDraftId === urlDraftId && !activeDraftLoadError) return;
 
     setActiveDraftId(urlDraftId);
     const seq = ++draftFetchSeqRef.current;
     loadDraftDetail(urlDraftId, seq);
-  }, [draftsLoading, searchParams, activeDraftId, activeDraftLoadError, loadDraftDetail]);
+  }, [
+    draftsLoading,
+    searchParams,
+    activeDraftId,
+    activeDraftLoadError,
+    loadDraftDetail,
+    drafts,
+    router,
+    deletingDraftId,
+  ]);
 
   return (
     <MyDraftsEditorView
@@ -224,6 +327,8 @@ function MyDraftsPageContent() {
         const seq = ++draftFetchSeqRef.current;
         loadDraftDetail(activeDraftId, seq);
       }}
+      deletingDraftId={deletingDraftId}
+      onDeleteDraft={(draft) => void confirmDeleteDraft(draft)}
     />
   );
 }

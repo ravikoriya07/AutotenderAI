@@ -127,6 +127,12 @@ export type BidDraftsListApiResponse = {
   total?: number;
 };
 
+/** Response from `DELETE /bid/drafts/{draft_id}`. */
+export type BidDraftDeleteResponse = {
+  status: string;
+  id: string;
+};
+
 /** Detail from `GET /bid/drafts/{draft_id}`. */
 export type BidDraftDetail = BidDraftRecord & {
   content?: string;

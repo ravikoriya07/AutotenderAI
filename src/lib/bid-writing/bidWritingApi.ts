@@ -16,6 +16,7 @@
  * - POST /bid/drafts — Save assistant message as draft
  * - GET  /bid/drafts — List saved drafts
  * - GET  /bid/drafts/{draft_id} — Draft detail (content)
+ * - DELETE /bid/drafts/{draft_id} — Delete a saved draft
  * - POST /bid/export — Export assistant message (PDF / DOCX blob)
  */
 
@@ -25,6 +26,7 @@ import { parseContentDispositionFilename } from "@/lib/downloadFilename";
 import type {
   BidChatRequestBody,
   BidDraftCreateRequest,
+  BidDraftDeleteResponse,
   BidDraftDetail,
   BidDraftRecord,
   BidDraftSummary,
@@ -330,6 +332,18 @@ export async function fetchBidDraft(draftId: string): Promise<BidDraftDetail> {
   const data = response.data;
   if (!data?.id) {
     throw new Error("Invalid draft response");
+  }
+  return data;
+}
+
+export async function deleteBidDraft(draftId: string): Promise<BidDraftDeleteResponse> {
+  const response = await apiClient.delete<BidDraftDeleteResponse>(
+    `/bid/drafts/${encodeURIComponent(draftId)}`,
+    { skipGlobalLoader: true } as object
+  );
+  const data = response.data;
+  if (!data?.id) {
+    throw new Error("Invalid delete draft response");
   }
   return data;
 }

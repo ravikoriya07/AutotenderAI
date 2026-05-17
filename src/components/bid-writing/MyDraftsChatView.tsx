@@ -278,6 +278,7 @@ export function MyDraftsChatView({
   const clientZipUploadAbortRef = useRef<AbortController | null>(null);
 
   const [draftToast, setDraftToast] = useState(false);
+  const [toastDraftId, setToastDraftId] = useState<string | null>(null);
   const [savingDraftMessageId, setSavingDraftMessageId] = useState<string | null>(null);
   const pendingAssistantMessageIdRef = useRef<string | null>(null);
   /** Which assistant message index has the export dropdown open (null = closed). */
@@ -1015,6 +1016,14 @@ export function MyDraftsChatView({
     }
   }
 
+  function openSavedDraftFromToast() {
+    if (!toastDraftId) return;
+    const draftId = toastDraftId;
+    setDraftToast(false);
+    setToastDraftId(null);
+    router.push(`/my-drafts?draft_id=${encodeURIComponent(draftId)}`);
+  }
+
   async function saveAssistantContentAsDraft(messageId: string | undefined, content: string) {
     if (!messageId) {
       toast.error("Cannot save this message. Open the chat from your session history and try again.");
@@ -1033,8 +1042,12 @@ export function MyDraftsChatView({
       };
       onDraftSaved(record);
       window.dispatchEvent(new Event(DRAFTS_UPDATED_EVENT));
+      setToastDraftId(res.id);
       setDraftToast(true);
-      setTimeout(() => setDraftToast(false), 3200);
+      setTimeout(() => {
+        setDraftToast(false);
+        setToastDraftId(null);
+      }, 3200);
       toast.success("Draft saved");
     } catch (err) {
       console.error("[MyDraftsChat] Failed to save draft:", err);
@@ -2481,13 +2494,14 @@ export function MyDraftsChatView({
       >
         <span className="text-primary">✓</span>
         Draft saved!
-        <Link
-          href="/my-drafts"
-          prefetch
-          className="font-semibold text-primary hover:underline"
+        <button
+          type="button"
+          onClick={openSavedDraftFromToast}
+          disabled={!toastDraftId}
+          className="font-semibold text-primary hover:underline disabled:cursor-not-allowed disabled:opacity-50"
         >
           Open →
-        </Link>
+        </button>
       </div>
     </>
   );

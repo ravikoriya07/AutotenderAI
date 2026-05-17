@@ -22,6 +22,8 @@ import {
   ArrowDownToLine,
   HelpCircle,
   Loader2,
+  MoreHorizontal,
+  Trash2,
 } from "lucide-react";
 import Link from "next/link";
 import { toast } from "react-toastify";
@@ -38,8 +40,20 @@ const TOOLS = [
   { id: "makeFormal", label: "Make Formal", icon: Feather },
 ] as const;
 
-const EXPAND_PRESETS = [150, 300, 500, 750];
-const SHORTEN_PRESETS = [80, 120, 200];
+function buildExpandPresets(base: number): number[] {
+  return [base + 50, base + 100, base + 150];
+}
+
+function buildShortenPresets(base: number): number[] {
+  if (base <= 0) return [];
+  const raw = [
+    Math.max(10, Math.round(base * 5 / 6)),
+    Math.max(10, Math.round(base * 2 / 3)),
+    Math.max(10, Math.round(base / 3)),
+  ];
+  const unique = [...new Set(raw)];
+  return unique.filter(v => v < base);
+}
 
 function sortDraftSourceKeys(keys: string[]): string[] {
   return [...keys].sort((a, b) => {
@@ -48,6 +62,10 @@ function sortDraftSourceKeys(keys: string[]): string[] {
     if (!Number.isNaN(na) && !Number.isNaN(nb)) return na - nb;
     return a.localeCompare(b, undefined, { numeric: true });
   });
+}
+
+function countWords(text: string): number {
+  return text.trim() ? text.trim().split(/\s+/).filter(Boolean).length : 0;
 }
 
 function formatWebSourceLine(item: unknown): { label: string; href: string | null } {
@@ -96,6 +114,8 @@ interface MyDraftsEditorViewProps {
   onSelectDraft: (draftId: string) => void;
   onClearDraftSelection?: () => void;
   onRetryDraftLoad?: () => void;
+  deletingDraftId?: string | null;
+  onDeleteDraft?: (draft: { id: string; title: string }) => void;
 }
 
 export function MyDraftsEditorView({
@@ -111,6 +131,8 @@ export function MyDraftsEditorView({
   onSelectDraft,
   onClearDraftSelection,
   onRetryDraftLoad,
+  deletingDraftId = null,
+  onDeleteDraft,
 }: MyDraftsEditorViewProps) {
   const [editorSidebarOpen, setEditorSidebarOpen] = useState(false);
   const [toolOutput, setToolOutput] = useState<string | null>(null);
@@ -125,31 +147,133 @@ export function MyDraftsEditorView({
   const [wcShortenOpen, setWcShortenOpen] = useState(false);
   const [wcExpandCustom, setWcExpandCustom] = useState("");
   const [wcShortenCustom, setWcShortenCustom] = useState("");
-  const [wcExpandPreset, setWcExpandPreset] = useState<number | null>(300);
-  const [wcShortenPreset, setWcShortenPreset] = useState<number | null>(120);
+  const [wcExpandPreset, setWcExpandPreset] = useState<number | null>(null);
+  const [wcShortenPreset, setWcShortenPreset] = useState<number | null>(null);
+  const [wcExpandError, setWcExpandError] = useState<string | null>(null);
+  const [wcShortenError, setWcShortenError] = useState<string | null>(null);
   const [draftDocTab, setDraftDocTab] = useState<"preview" | "edit">("preview");
+  const [draftMenuOpenId, setDraftMenuOpenId] = useState<string | null>(null);
+  const [selectedText, setSelectedText] = useState("");
+  // DOM-sourced word count — kept in sync via useEffect; see comment on that effect.
+  const [renderedWordCount, setRenderedWordCount] = useState(0);
 
   const uploadDraftRef = useRef<HTMLInputElement>(null);
+  const contentPreviewRef = useRef<HTMLDivElement>(null);
   const activeDraft = drafts.find((d) => d.id === activeDraftId) ?? null;
+  const selectionWordCount = countWords(selectedText);
+  const baseWordCount = selectionWordCount > 0 ? selectionWordCount : renderedWordCount;
+  const expandPresets = buildExpandPresets(baseWordCount);
+  const shortenPresets = buildShortenPresets(baseWordCount);
 
   useEffect(() => {
     setDraftDocTab("preview");
+    setSelectedText("");
+    setRenderedWordCount(0);
+    window.getSelection()?.removeAllRanges();
   }, [activeDraftId]);
+
+  // activeDraft.content is raw markdown and excludes sources rendered separately, so it
+  // gives a lower word count than the visible text. Read from the committed DOM instead to
+  // match what the user sees (and what Ctrl+A selects). Edit-tab falls back to raw content.
+  useEffect(() => {
+    if (draftDocTab === "preview") {
+      // If the preview DOM isn't mounted yet (loading spinner visible), skip — the effect
+      // will re-run once activeDraftLoading becomes false and the DOM is ready.
+      if (!contentPreviewRef.current) return;
+      setRenderedWordCount(countWords(contentPreviewRef.current.textContent ?? ""));
+    } else {
+      setRenderedWordCount(countWords(activeDraft?.content ?? ""));
+    }
+  }, [activeDraftId, activeDraft?.content, draftDocTab, activeDraftLoading]);
 
   useEffect(() => {
     function onDocClick(e: MouseEvent) {
       if (downloadRef.current && !downloadRef.current.contains(e.target as Node)) {
         setDownloadOpen(false);
       }
+      const target = e.target as HTMLElement;
+      if (!target.closest("[data-draft-menu-root]")) setDraftMenuOpenId(null);
     }
     document.addEventListener("mousedown", onDocClick);
     return () => document.removeEventListener("mousedown", onDocClick);
   }, []);
 
-  function handleDeleteDraft(id: string) {
-    setDrafts((prev) => prev.filter((d) => d.id !== id));
-    if (activeDraftId === id) onClearDraftSelection?.();
-  }
+  // Clear selection when switching tabs
+  useEffect(() => {
+    setSelectedText("");
+  }, [draftDocTab]);
+
+  // Track browser text selection within the preview content area
+  useEffect(() => {
+    if (draftDocTab !== "preview") return;
+    function handleSelChange() {
+      const sel = window.getSelection();
+      if (!sel || sel.isCollapsed || !contentPreviewRef.current) {
+        setSelectedText("");
+        return;
+      }
+      try {
+        const range = sel.getRangeAt(0);
+        if (contentPreviewRef.current.contains(range.commonAncestorContainer)) {
+          setSelectedText(sel.toString());
+        } else {
+          setSelectedText("");
+        }
+      } catch {
+        setSelectedText("");
+      }
+    }
+    document.addEventListener("selectionchange", handleSelChange);
+    return () => document.removeEventListener("selectionchange", handleSelChange);
+  }, [draftDocTab]);
+
+  // Keyboard shortcuts scoped to the preview content area
+  useEffect(() => {
+    if (draftDocTab !== "preview") return;
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") {
+        window.getSelection()?.removeAllRanges();
+        setSelectedText("");
+        return;
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "a") {
+        const el = contentPreviewRef.current;
+        if (!el) return;
+        const sel = window.getSelection();
+        const hasSelectionInContent =
+          sel && !sel.isCollapsed &&
+          el.contains(sel.getRangeAt(0).commonAncestorContainer);
+        const hasFocusInContent = el.contains(document.activeElement);
+        if (hasSelectionInContent || hasFocusInContent) {
+          e.preventDefault();
+          const range = document.createRange();
+          range.selectNodeContents(el);
+          sel?.removeAllRanges();
+          sel?.addRange(range);
+          setSelectedText(el.textContent ?? "");
+        }
+      }
+    }
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [draftDocTab, selectedText]);
+
+  // Auto-select default expand preset when popover opens or base word count changes
+  useEffect(() => {
+    if (!wcExpandOpen) return;
+    setWcExpandPreset(baseWordCount + 100);
+    setWcExpandCustom("");
+    setWcExpandError(null);
+  }, [wcExpandOpen, baseWordCount]);
+
+  // Auto-select default shorten preset when popover opens or base word count changes
+  useEffect(() => {
+    if (!wcShortenOpen) return;
+    const defaultPreset = shortenPresets[0] ?? null;
+    setWcShortenPreset(defaultPreset);
+    setWcShortenCustom("");
+    setWcShortenError(null);
+  }, [wcShortenOpen, baseWordCount]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function handleDraftContentChange(content: string) {
     if (!activeDraftId) return;
@@ -168,9 +292,13 @@ export function MyDraftsEditorView({
   function handleRunTool(toolId: string, wcNote?: string) {
     if (!activeDraft) return;
     setActiveTool(toolId);
-    setToolOutput(mockToolMessage(toolId, wcNote));
-    if (toolId !== "expand") setWcExpandOpen(false);
-    if (toolId !== "shorten") setWcShortenOpen(false);
+    const hasSelection = selectedText.trim().length > 0;
+    const scope = hasSelection
+      ? `selection (${selectionWordCount} word${selectionWordCount !== 1 ? "s" : ""})`
+      : wcNote ?? "full draft";
+    setToolOutput(mockToolMessage(toolId, scope));
+    setWcExpandOpen(false);
+    setWcShortenOpen(false);
   }
 
   function handleToolClick(toolId: string) {
@@ -189,26 +317,30 @@ export function MyDraftsEditorView({
   }
 
   function runExpandWithWc() {
-    const n =
-      wcExpandCustom.trim() !== ""
-        ? parseInt(wcExpandCustom, 10)
-        : wcExpandPreset;
+    const n = wcExpandCustom.trim() !== "" ? parseInt(wcExpandCustom, 10) : wcExpandPreset;
     if (!n || Number.isNaN(n)) {
-      toast.info("Pick a target word count.");
+      setWcExpandError("Pick a target word count.");
       return;
     }
+    if (n <= baseWordCount) {
+      setWcExpandError(`Must be greater than ${baseWordCount} (current word count).`);
+      return;
+    }
+    setWcExpandError(null);
     handleRunTool("expand", `target ${n} words`);
   }
 
   function runShortenWithWc() {
-    const n =
-      wcShortenCustom.trim() !== ""
-        ? parseInt(wcShortenCustom, 10)
-        : wcShortenPreset;
+    const n = wcShortenCustom.trim() !== "" ? parseInt(wcShortenCustom, 10) : wcShortenPreset;
     if (!n || Number.isNaN(n)) {
-      toast.info("Pick a target word count.");
+      setWcShortenError("Pick a target word count.");
       return;
     }
+    if (n >= baseWordCount) {
+      setWcShortenError(`Must be less than ${baseWordCount} (current word count).`);
+      return;
+    }
+    setWcShortenError(null);
     handleRunTool("shorten", `target ${n} words`);
   }
 
@@ -375,17 +507,19 @@ export function MyDraftsEditorView({
             <ul className="space-y-0.5 px-2 pb-4 pt-1" role="list">
               {drafts.map((draft) => {
                 const isActive = activeDraftId === draft.id;
+                const isDeleting = deletingDraftId === draft.id;
                 return (
-                  <li key={draft.id}>
+                  <li key={draft.id} className="group relative flex items-stretch">
                     <button
                       type="button"
                       onClick={() => {
                         onSelectDraft(draft.id);
                         setToolOutput(null);
                         setActiveTool(null);
+                        setDraftMenuOpenId(null);
                       }}
                       className={cn(
-                        "w-full rounded-lg px-3 py-2.5 text-left transition-colors",
+                        "min-w-0 flex-1 rounded-l-lg px-3 py-2.5 text-left transition-colors",
                         isActive
                           ? "bg-primary/15 text-primary"
                           : "text-foreground hover:bg-muted"
@@ -402,17 +536,53 @@ export function MyDraftsEditorView({
                       </p>
                       <p className="mt-0.5 text-xs text-muted-foreground">{draft.createdAt}</p>
                     </button>
-                    {isActive && (
-                      <div className="px-3 pb-1.5">
-                        <button
-                          type="button"
-                          onClick={() => handleDeleteDraft(draft.id)}
-                          className="rounded px-2 py-0.5 text-xs text-destructive transition-colors hover:bg-destructive/10 hover:text-destructive"
+                    <div
+                      className="relative flex shrink-0 items-start py-1 pr-1"
+                      data-draft-menu-root
+                    >
+                      <button
+                        type="button"
+                        aria-label="Draft actions"
+                        aria-expanded={draftMenuOpenId === draft.id}
+                        aria-haspopup="menu"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setDraftMenuOpenId((v) => (v === draft.id ? null : draft.id));
+                        }}
+                        className={cn(
+                          "rounded-md p-1.5 transition-opacity hover:bg-muted hover:text-foreground",
+                          isActive ? "text-primary/70" : "text-muted-foreground",
+                          "opacity-100 sm:opacity-0 sm:group-hover:opacity-100",
+                          draftMenuOpenId === draft.id && "opacity-100"
+                        )}
+                      >
+                        {isDeleting ? (
+                          <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+                        ) : (
+                          <MoreHorizontal className="h-4 w-4" aria-hidden />
+                        )}
+                      </button>
+                      {draftMenuOpenId === draft.id && (
+                        <div
+                          className="absolute right-0 top-full z-30 mt-0.5 min-w-[9.5rem] rounded-lg border border-border bg-popover py-1 shadow-md"
+                          role="menu"
                         >
-                          Delete
-                        </button>
-                      </div>
-                    )}
+                          <button
+                            type="button"
+                            role="menuitem"
+                            disabled={deletingDraftId !== null}
+                            className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-destructive hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-40"
+                            onClick={() => {
+                              setDraftMenuOpenId(null);
+                              onDeleteDraft?.({ id: draft.id, title: draft.title });
+                            }}
+                          >
+                            <Trash2 className="h-4 w-4 shrink-0" aria-hidden />
+                            Delete
+                          </button>
+                        </div>
+                      )}
+                    </div>
                   </li>
                 );
               })}
@@ -590,100 +760,123 @@ export function MyDraftsEditorView({
                                 </button>
 
                                 {tool.id === "expand" && wcExpandOpen && (
-                                  <div className="absolute left-0 top-full z-40 mt-1 w-52 rounded-lg border border-border bg-popover p-2 shadow-md">
-                                <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                                  Target word count
-                                </p>
-                                <div className="mt-2 flex flex-wrap gap-1">
-                                  {EXPAND_PRESETS.map((n) => (
-                                    <button
-                                      key={n}
-                                      type="button"
-                                      onClick={() => {
-                                        setWcExpandPreset(n);
-                                        setWcExpandCustom("");
-                                      }}
-                                      className={cn(
-                                        "rounded px-2 py-0.5 text-xs",
-                                        wcExpandPreset === n && wcExpandCustom === ""
-                                          ? "bg-primary text-primary-foreground"
-                                          : "bg-background text-muted-foreground hover:bg-muted"
-                                      )}
-                                    >
-                                      {n}
-                                    </button>
-                                  ))}
-                                </div>
-                                <div className="mt-2 flex gap-1">
-                                  <input
-                                    type="number"
-                                    min={50}
-                                    max={2000}
-                                    placeholder="Custom…"
-                                    value={wcExpandCustom}
-                                    onChange={(e) => {
-                                      setWcExpandCustom(e.target.value);
-                                      setWcExpandPreset(null);
-                                    }}
-                                    className="min-w-0 flex-1 rounded border border-border bg-background px-2 py-1 text-xs"
-                                  />
-                                  <button
-                                    type="button"
-                                    onClick={runExpandWithWc}
-                                    className="rounded bg-primary px-2 py-1 text-xs font-medium text-primary-foreground"
-                                  >
-                                    Run
-                                  </button>
-                                  </div>
+                                  <div className="absolute left-0 top-full z-40 mt-1 w-56 rounded-lg border border-border bg-popover p-2.5 shadow-md">
+                                    <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                                      Target word count
+                                    </p>
+                                    <p className="mt-0.5 text-[10px] text-muted-foreground">
+                                      Base: <span className="font-medium text-foreground">{baseWordCount}</span> word{baseWordCount !== 1 ? "s" : ""}
+                                    </p>
+                                    <div className="mt-2 flex flex-wrap gap-1">
+                                      {expandPresets.map((n) => (
+                                        <button
+                                          key={n}
+                                          type="button"
+                                          onClick={() => {
+                                            setWcExpandPreset(n);
+                                            setWcExpandCustom("");
+                                            setWcExpandError(null);
+                                          }}
+                                          className={cn(
+                                            "rounded px-2 py-0.5 text-xs",
+                                            wcExpandPreset === n && wcExpandCustom === ""
+                                              ? "bg-primary text-primary-foreground"
+                                              : "bg-background text-muted-foreground hover:bg-muted"
+                                          )}
+                                        >
+                                          {n}
+                                        </button>
+                                      ))}
+                                    </div>
+                                    <div className="mt-2 flex gap-1">
+                                      <input
+                                        type="number"
+                                        min={baseWordCount + 1}
+                                        placeholder="Custom…"
+                                        value={wcExpandCustom}
+                                        onChange={(e) => {
+                                          setWcExpandCustom(e.target.value);
+                                          setWcExpandPreset(null);
+                                          setWcExpandError(null);
+                                        }}
+                                        className={cn(
+                                          "min-w-0 flex-1 rounded border bg-background px-2 py-1 text-xs",
+                                          wcExpandError ? "border-destructive" : "border-border"
+                                        )}
+                                      />
+                                      <button
+                                        type="button"
+                                        onClick={runExpandWithWc}
+                                        className="rounded bg-primary px-2 py-1 text-xs font-medium text-primary-foreground"
+                                      >
+                                        Run
+                                      </button>
+                                    </div>
+                                    {wcExpandError && (
+                                      <p className="mt-1.5 text-[10px] leading-snug text-destructive">{wcExpandError}</p>
+                                    )}
                                   </div>
                                 )}
 
                                 {tool.id === "shorten" && wcShortenOpen && (
-                                  <div className="absolute left-0 top-full z-40 mt-1 w-52 rounded-lg border border-border bg-popover p-2 shadow-md">
-                                <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                                  Target word count
-                                </p>
-                                <div className="mt-2 flex flex-wrap gap-1">
-                                  {SHORTEN_PRESETS.map((n) => (
-                                    <button
-                                      key={n}
-                                      type="button"
-                                      onClick={() => {
-                                        setWcShortenPreset(n);
-                                        setWcShortenCustom("");
-                                      }}
-                                      className={cn(
-                                        "rounded px-2 py-0.5 text-xs",
-                                        wcShortenPreset === n && wcShortenCustom === ""
-                                          ? "bg-primary text-primary-foreground"
-                                          : "bg-background text-muted-foreground hover:bg-muted"
+                                  <div className="absolute left-0 top-full z-40 mt-1 w-56 rounded-lg border border-border bg-popover p-2.5 shadow-md">
+                                    <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                                      Target word count
+                                    </p>
+                                    <p className="mt-0.5 text-[10px] text-muted-foreground">
+                                      Base: <span className="font-medium text-foreground">{baseWordCount}</span> word{baseWordCount !== 1 ? "s" : ""}
+                                    </p>
+                                    <div className="mt-2 flex flex-wrap gap-1">
+                                      {shortenPresets.length > 0 ? shortenPresets.map((n) => (
+                                        <button
+                                          key={n}
+                                          type="button"
+                                          onClick={() => {
+                                            setWcShortenPreset(n);
+                                            setWcShortenCustom("");
+                                            setWcShortenError(null);
+                                          }}
+                                          className={cn(
+                                            "rounded px-2 py-0.5 text-xs",
+                                            wcShortenPreset === n && wcShortenCustom === ""
+                                              ? "bg-primary text-primary-foreground"
+                                              : "bg-background text-muted-foreground hover:bg-muted"
+                                          )}
+                                        >
+                                          {n}
+                                        </button>
+                                      )) : (
+                                        <p className="text-[10px] text-muted-foreground">No presets — draft is too short.</p>
                                       )}
-                                    >
-                                      {n}
-                                    </button>
-                                  ))}
-                                </div>
-                                <div className="mt-2 flex gap-1">
-                                  <input
-                                    type="number"
-                                    min={20}
-                                    max={2000}
-                                    placeholder="Custom…"
-                                    value={wcShortenCustom}
-                                    onChange={(e) => {
-                                      setWcShortenCustom(e.target.value);
-                                      setWcShortenPreset(null);
-                                    }}
-                                    className="min-w-0 flex-1 rounded border border-border bg-background px-2 py-1 text-xs"
-                                  />
-                                  <button
-                                    type="button"
-                                    onClick={runShortenWithWc}
-                                    className="rounded bg-primary px-2 py-1 text-xs font-medium text-primary-foreground"
-                                  >
-                                    Run
-                                  </button>
-                                  </div>
+                                    </div>
+                                    <div className="mt-2 flex gap-1">
+                                      <input
+                                        type="number"
+                                        min={1}
+                                        max={Math.max(1, baseWordCount - 1)}
+                                        placeholder="Custom…"
+                                        value={wcShortenCustom}
+                                        onChange={(e) => {
+                                          setWcShortenCustom(e.target.value);
+                                          setWcShortenPreset(null);
+                                          setWcShortenError(null);
+                                        }}
+                                        className={cn(
+                                          "min-w-0 flex-1 rounded border bg-background px-2 py-1 text-xs",
+                                          wcShortenError ? "border-destructive" : "border-border"
+                                        )}
+                                      />
+                                      <button
+                                        type="button"
+                                        onClick={runShortenWithWc}
+                                        className="rounded bg-primary px-2 py-1 text-xs font-medium text-primary-foreground"
+                                      >
+                                        Run
+                                      </button>
+                                    </div>
+                                    {wcShortenError && (
+                                      <p className="mt-1.5 text-[10px] leading-snug text-destructive">{wcShortenError}</p>
+                                    )}
                                   </div>
                                 )}
                               </div>
@@ -696,8 +889,17 @@ export function MyDraftsEditorView({
                 </div>
 
                 {activeDraft && (
-                  <p className="mt-2 text-[10px] font-semibold uppercase leading-snug tracking-[0.15em] text-muted-foreground">
-                    Select text to view more tools or pick a global tool
+                  <p
+                    className={cn(
+                      "mt-2 text-[10px] font-semibold leading-snug tracking-[0.15em]",
+                      selectedText.trim()
+                        ? "text-primary/80"
+                        : "uppercase text-muted-foreground"
+                    )}
+                  >
+                    {selectedText.trim()
+                      ? `${selectionWordCount} word${selectionWordCount !== 1 ? "s" : ""} selected — tool will process selection only`
+                      : "Select text then pick a tool · click to edit"}
                   </p>
                 )}
 
@@ -778,7 +980,12 @@ export function MyDraftsEditorView({
                   </div>
                   <div className="min-h-0 flex-1 overflow-y-auto" role="tabpanel">
                     {draftDocTab === "preview" ? (
-                      <div className="px-4 py-4 sm:px-6 sm:py-6">
+                      <div
+                        ref={contentPreviewRef}
+                        tabIndex={0}
+                        className="px-4 py-4 focus:outline-none sm:px-6 sm:py-6"
+                        onMouseDown={() => contentPreviewRef.current?.focus()}
+                      >
                         {activeDraft.content.trim() ? (
                           <MarkdownRenderer
                             content={activeDraft.content}
@@ -840,7 +1047,22 @@ export function MyDraftsEditorView({
                       <textarea
                         key={activeDraft.id}
                         value={activeDraft.content}
-                        onChange={(e) => handleDraftContentChange(e.target.value)}
+                        onChange={(e) => {
+                          handleDraftContentChange(e.target.value);
+                          setSelectedText("");
+                        }}
+                        onSelect={(e) => {
+                          const ta = e.currentTarget;
+                          const sel = ta.value.substring(ta.selectionStart, ta.selectionEnd);
+                          setSelectedText(sel);
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === "Escape") {
+                            const ta = e.currentTarget;
+                            ta.setSelectionRange(ta.selectionStart, ta.selectionStart);
+                            setSelectedText("");
+                          }
+                        }}
                         placeholder="Start typing your draft here..."
                         className="h-full min-h-[50vh] w-full resize-none bg-transparent px-4 py-4 text-sm leading-relaxed text-foreground placeholder:text-muted-foreground focus:outline-none sm:px-6 sm:py-6"
                         aria-label="Draft content"
@@ -919,6 +1141,13 @@ export function MyDraftsEditorView({
                     Copy Output
                   </button>
                 </div>
+              </div>
+            )}
+            {activeDraft && selectedText.trim() && (
+              <div className="shrink-0 border-t border-border bg-muted/30 px-3 py-2">
+                <p className="text-[10px] text-muted-foreground">
+                  {selectionWordCount} word{selectionWordCount !== 1 ? "s" : ""} selected — tool will process selection only.
+                </p>
               </div>
             )}
           </div>
