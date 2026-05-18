@@ -1,6 +1,19 @@
 import type { DraftRecord } from "./types";
 
 export const DRAFTS_UPDATED_EVENT = "autotender:drafts-updated" as const;
+
+export const UPLOAD_DRAFT_EXTENSIONS = [".pdf", ".docx", ".doc", ".txt"] as const;
+
+export function isAllowedUploadDraftFile(file: File): boolean {
+  const lower = file.name.toLowerCase();
+  return UPLOAD_DRAFT_EXTENSIONS.some((ext) => lower.endsWith(ext));
+}
+
+/** Use uploaded filename (without extension) as draft title. */
+export function titleFromUploadFilename(filename: string): string {
+  const base = filename.replace(/\.[^.]+$/i, "").trim();
+  return base || "Uploaded draft";
+}
 export function formatDraftDisplayDate(iso: string): string {
   try {
     return new Date(iso).toLocaleString("en-GB", {

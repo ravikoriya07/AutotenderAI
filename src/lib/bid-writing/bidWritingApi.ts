@@ -17,7 +17,10 @@
  * - GET  /bid/drafts — List saved drafts
  * - GET  /bid/drafts/{draft_id} — Draft detail (content)
  * - DELETE /bid/drafts/{draft_id} — Delete a saved draft
- * - POST /bid/export — Export assistant message (PDF / DOCX blob)
+ * - POST /bid/export — Export chat message or draft (PDF / DOCX / TXT blob)
+ * - POST /bid/upload_draft — Extract text from uploaded draft file (multipart `file`)
+ * - POST /bid/tools/run — Draft editor AI tools (SSE)
+ * - POST /bid/drafts/ask — Ask AI on a draft (SSE)
  */
 
 import { getAuthToken } from "@/lib/authStorage";
@@ -25,16 +28,21 @@ import { apiClient } from "@/lib/apiClient";
 import { parseContentDispositionFilename } from "@/lib/downloadFilename";
 import type {
   BidChatRequestBody,
+  BidDraftAskRequest,
   BidDraftCreateRequest,
   BidDraftDeleteResponse,
   BidDraftDetail,
   BidDraftRecord,
   BidDraftSummary,
   BidDraftsListApiResponse,
+  BidDraftExportRequest,
   BidExportFormat,
   BidExportRequest,
+  BidMessageExportRequest,
   BidSessionDetail,
   BidSessionSummary,
+  BidToolRunRequest,
+  BidUploadDraftResponse,
   ClientProjectDeleteResponse,
   ClientProjectOption,
   ClientZipUploadProgress,
@@ -254,9 +262,25 @@ async function messageFromJsonBlob(blob: Blob): Promise<string | null> {
   return null;
 }
 
-function fallbackExportFilename(format: BidExportFormat, messageId: string): string {
+function fallbackMessageExportFilename(format: BidExportFormat, messageId: string): string {
   const safeId = messageId.replace(/[^\w-]+/g, "").slice(0, 12) || "export";
   return `bid-response-${safeId}.${format}`;
+}
+
+function fallbackDraftExportFilename(
+  format: BidExportFormat,
+  draftId: string,
+  title?: string
+): string {
+  const slug =
+    title
+      ?.trim()
+      .replace(/[^\w\s-]+/g, "")
+      .replace(/\s+/g, "-")
+      .slice(0, 48) ||
+    draftId.replace(/[^\w-]+/g, "").slice(0, 12) ||
+    "draft";
+  return `${slug}.${format}`;
 }
 
 export type BidExportResult = {
@@ -264,8 +288,10 @@ export type BidExportResult = {
   filename: string;
 };
 
-/** POST /bid/export — returns a downloadable PDF or DOCX blob. */
-export async function exportBidMessage(body: BidExportRequest): Promise<BidExportResult> {
+async function postBidExport(
+  body: BidMessageExportRequest | BidDraftExportRequest,
+  fallbackFilename: string
+): Promise<BidExportResult> {
   const response = await apiClient.post<Blob>("/bid/export", body, {
     skipGlobalLoader: true,
     responseType: "blob",
@@ -287,10 +313,51 @@ export async function exportBidMessage(body: BidExportRequest): Promise<BidExpor
     "content-disposition"
   );
   const filename =
-    parseContentDispositionFilename(contentDisposition) ??
-    fallbackExportFilename(body.format, body.message_id);
+    parseContentDispositionFilename(contentDisposition) ?? fallbackFilename;
 
   return { blob, filename };
+}
+
+/** POST /bid/export — chat message (PDF / DOCX / TXT blob). */
+export async function exportBidMessage(
+  body: BidMessageExportRequest | BidExportRequest
+): Promise<BidExportResult> {
+  return postBidExport(
+    body,
+    fallbackMessageExportFilename(body.format, body.message_id)
+  );
+}
+
+/** POST /bid/export — saved draft (PDF / DOCX / TXT blob). */
+export async function exportBidDraft(
+  body: BidDraftExportRequest,
+  options?: { title?: string }
+): Promise<BidExportResult> {
+  return postBidExport(
+    body,
+    fallbackDraftExportFilename(body.format, body.draft_id, options?.title)
+  );
+}
+
+/** Best-effort error message from failed export requests. */
+export async function messageFromBidExportError(err: unknown): Promise<string> {
+  let msg = "Could not export";
+  if (err instanceof Error && err.message.trim()) {
+    msg = err.message.trim();
+  }
+  if (err && typeof err === "object" && "response" in err) {
+    const res = (err as { response?: { data?: unknown } }).response;
+    const data = res?.data;
+    if (data instanceof Blob) {
+      const fromApi = await messageFromJsonBlob(data);
+      if (fromApi) return fromApi;
+    } else if (data && typeof data === "object") {
+      const d = data as { message?: string; detail?: string; error?: string };
+      const fromApi = d.message || d.detail || d.error;
+      if (typeof fromApi === "string" && fromApi.trim()) return fromApi.trim();
+    }
+  }
+  return msg;
 }
 
 /** Trigger a browser download for an exported blob. */
@@ -332,6 +399,57 @@ export async function fetchBidDraft(draftId: string): Promise<BidDraftDetail> {
   const data = response.data;
   if (!data?.id) {
     throw new Error("Invalid draft response");
+  }
+  return data;
+}
+
+/**
+ * POST /bid/upload_draft — multipart body, field name `file`.
+ * PDF, DOCX, DOC, and TXT supported.
+ */
+export async function uploadBidDraft(
+  file: File,
+  options?: { signal?: AbortSignal }
+): Promise<BidUploadDraftResponse> {
+  const token = getAuthToken();
+  const formData = new FormData();
+  formData.append("file", file);
+  const res = await fetch(`${API_BASE_URL}/bid/upload_draft`, {
+    method: "POST",
+    headers: {
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: formData,
+    signal: options?.signal,
+  });
+
+  if (!res.ok) {
+    let detail = `Upload failed (${res.status})`;
+    try {
+      const ct = res.headers.get("content-type") ?? "";
+      if (ct.includes("application/json")) {
+        const j = (await res.json()) as Record<string, unknown>;
+        const msg =
+          (typeof j.message === "string" && j.message) ||
+          (typeof j.error === "string" && j.error) ||
+          (typeof j.detail === "string" && j.detail);
+        if (msg) detail = msg;
+      } else {
+        const t = await res.text();
+        if (t.trim()) detail = t.slice(0, 500);
+      }
+    } catch {
+      // keep default detail
+    }
+    throw new Error(detail);
+  }
+
+  const data = (await res.json()) as BidUploadDraftResponse;
+  if (typeof data.text !== "string") {
+    throw new Error("Upload response missing text");
+  }
+  if (typeof data.filename !== "string" || !data.filename.trim()) {
+    throw new Error("Upload response missing filename");
   }
   return data;
 }
@@ -427,20 +545,163 @@ export type StreamBidChatHandlers = {
   onSession?: (sessionId: string, messageId?: string) => void;
   onStatus?: (message: string) => void;
   onAnswerToken?: (token: string) => void;
-  onDone?: (payload: { sources?: unknown; web_sources?: unknown }) => void;
+  onDone?: (payload: { sources?: unknown; web_sources?: unknown; message_id?: string }) => void;
+  onError?: (message: string) => void;
 };
 
-/**
- * POST /bid/chat with Server-Sent Events (`data: {json}` lines).
- * Uses fetch + ReadableStream so the global axios loader is not triggered.
- */
-export async function streamBidChat(
-  body: BidChatRequestBody,
+function sseEventKind(typ: unknown): string {
+  return String(typ ?? "")
+    .trim()
+    .toLowerCase();
+}
+
+function sseErrorMessage(o: Record<string, unknown>): string {
+  return (
+    (typeof o.message === "string" && o.message) ||
+    (typeof o.error === "string" && o.error) ||
+    "Request failed"
+  );
+}
+
+function processBidChatSseObject(
+  o: Record<string, unknown>,
   handlers: StreamBidChatHandlers,
+  options?: { throwOnError?: boolean }
+): void {
+  const kind = sseEventKind(o.type);
+  if (kind === "session") {
+    const sid = o.session_id;
+    if (typeof sid === "string" && sid.length > 0) {
+      const mid = o.message_id;
+      handlers.onSession?.(sid, typeof mid === "string" ? mid : undefined);
+    }
+    return;
+  }
+  if (kind === "status") {
+    const msg = statusTextFromPayload(o);
+    if (msg.length > 0) handlers.onStatus?.(msg);
+    return;
+  }
+  if (kind === "answer") {
+    const piece = answerTokenFromPayload(o);
+    if (piece.length > 0) handlers.onAnswerToken?.(piece);
+    return;
+  }
+  if (kind === "done") {
+    const mid = o.message_id;
+    handlers.onDone?.({
+      sources: o.sources,
+      web_sources: o.web_sources,
+      message_id: typeof mid === "string" ? mid : undefined,
+    });
+    return;
+  }
+  if (kind === "error") {
+    const msg = sseErrorMessage(o);
+    handlers.onError?.(msg);
+    if (options?.throwOnError) {
+      throw new Error(msg);
+    }
+  }
+}
+
+async function postBidSse(
+  path: string,
+  body: unknown,
+  options?: { signal?: AbortSignal }
+): Promise<Response> {
+  const token = getAuthToken();
+  const res = await fetch(`${API_BASE_URL}${path}`, {
+    method: "POST",
+    headers: {
+      Accept: "text/event-stream",
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify(body),
+    signal: options?.signal,
+  });
+  return res;
+}
+
+async function readSseErrorDetail(res: Response, fallback: string): Promise<string> {
+  let detail = fallback;
+  const ct = res.headers.get("content-type") ?? "";
+  try {
+    if (ct.includes("application/json")) {
+      const j = (await res.json()) as Record<string, unknown>;
+      const msg =
+        (typeof j.message === "string" && j.message) ||
+        (typeof j.error === "string" && j.error) ||
+        (typeof j.detail === "string" && j.detail);
+      if (msg) detail = msg;
+    } else {
+      const t = await res.text();
+      if (t.trim()) detail = t.slice(0, 500);
+    }
+  } catch {
+    // keep default detail
+  }
+  return detail;
+}
+
+export type StreamBidToolHandlers = {
+  onToken?: (token: string) => void;
+  onDone?: (payload?: { content?: string }) => void;
+  onError?: (message: string) => void;
+};
+
+function toolTokenFromPayload(o: Record<string, unknown>): string {
+  const tok = o.token;
+  if (typeof tok === "string") return tok;
+  const t = o.text;
+  if (typeof t === "string") return t;
+  const c = o.content;
+  if (typeof c === "string") return c;
+  return "";
+}
+
+async function consumeSseResponse(
+  res: Response,
+  processRawLine: (rawLine: string) => void
+): Promise<void> {
+  const reader = res.body?.getReader();
+  if (!reader) {
+    throw new Error("No response body from stream");
+  }
+
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const parts = buffer.split("\n");
+      buffer = parts.pop() ?? "";
+      for (const line of parts) {
+        processRawLine(line);
+      }
+    }
+    if (buffer.trim().length > 0) {
+      processRawLine(buffer);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+/**
+ * POST /bid/tools/run with Server-Sent Events (`type: token` | `type: done`).
+ */
+export async function streamBidToolRun(
+  body: BidToolRunRequest,
+  handlers: StreamBidToolHandlers,
   options?: { signal?: AbortSignal }
 ): Promise<void> {
   const token = getAuthToken();
-  const res = await fetch(`${API_BASE_URL}/bid/chat`, {
+  const res = await fetch(`${API_BASE_URL}/bid/tools/run`, {
     method: "POST",
     headers: {
       Accept: "text/event-stream",
@@ -452,7 +713,7 @@ export async function streamBidChat(
   });
 
   if (!res.ok) {
-    let detail = `Chat request failed (${res.status})`;
+    let detail = `Tool request failed (${res.status})`;
     const ct = res.headers.get("content-type") ?? "";
     try {
       if (ct.includes("application/json")) {
@@ -472,64 +733,88 @@ export async function streamBidChat(
     throw new Error(detail);
   }
 
-  const reader = res.body?.getReader();
-  if (!reader) {
-    throw new Error("No response body from chat stream");
-  }
-
-  const decoder = new TextDecoder();
-  let buffer = "";
-
   function eventKind(typ: unknown): string {
     return String(typ ?? "")
       .trim()
       .toLowerCase();
   }
 
-  function processRawLine(rawLine: string) {
+  await consumeSseResponse(res, (rawLine) => {
     const parsed = parseSseDataLine(rawLine);
     if (parsed === null) return;
     if (typeof parsed !== "object" || Array.isArray(parsed)) return;
     const o = parsed as Record<string, unknown>;
     const kind = eventKind(o.type);
-    if (kind === "session") {
-      const sid = o.session_id;
-      if (typeof sid === "string" && sid.length > 0) {
-        const mid = o.message_id;
-        handlers.onSession?.(sid, typeof mid === "string" ? mid : undefined);
-      }
-      return;
-    }
-    if (kind === "status") {
-      const msg = statusTextFromPayload(o);
-      if (msg.length > 0) handlers.onStatus?.(msg);
-      return;
-    }
-    if (kind === "answer") {
-      const piece = answerTokenFromPayload(o);
-      if (piece.length > 0) handlers.onAnswerToken?.(piece);
+    if (kind === "token") {
+      const piece = toolTokenFromPayload(o);
+      if (piece.length > 0) handlers.onToken?.(piece);
       return;
     }
     if (kind === "done") {
-      handlers.onDone?.({ sources: o.sources, web_sources: o.web_sources });
+      const final =
+        (typeof o.content === "string" && o.content) ||
+        (typeof o.text === "string" && o.text) ||
+        undefined;
+      handlers.onDone?.(final ? { content: final } : undefined);
+      return;
     }
+    if (kind === "error") {
+      const msg =
+        (typeof o.message === "string" && o.message) ||
+        (typeof o.error === "string" && o.error) ||
+        "Tool failed";
+      handlers.onError?.(msg);
+    }
+  });
+}
+
+/**
+ * POST /bid/chat with Server-Sent Events (`data: {json}` lines).
+ * Uses fetch + ReadableStream so the global axios loader is not triggered.
+ */
+export async function streamBidChat(
+  body: BidChatRequestBody,
+  handlers: StreamBidChatHandlers,
+  options?: { signal?: AbortSignal }
+): Promise<void> {
+  const res = await postBidSse("/bid/chat", body, options);
+  if (!res.ok) {
+    throw new Error(await readSseErrorDetail(res, `Chat request failed (${res.status})`));
   }
 
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const parts = buffer.split("\n");
-      buffer = parts.pop() ?? "";
-      for (const line of parts) {
-        processRawLine(line);
-      }
-    }
-    if (buffer.trim().length > 0) {
-      processRawLine(buffer);
-    }
-  } finally {
-    reader.releaseLock();
+  await consumeSseResponse(res, (rawLine) => {
+    const parsed = parseSseDataLine(rawLine);
+    if (parsed === null) return;
+    if (typeof parsed !== "object" || Array.isArray(parsed)) return;
+    processBidChatSseObject(parsed as Record<string, unknown>, handlers);
+  });
+}
+
+/**
+ * POST /bid/drafts/ask — Ask AI on draft content (SSE; same event types as chat).
+ */
+export async function streamBidDraftAsk(
+  body: BidDraftAskRequest,
+  handlers: StreamBidChatHandlers,
+  options?: { signal?: AbortSignal }
+): Promise<void> {
+  const payload: BidDraftAskRequest = {
+    question: body.question,
+    draft_id: body.draft_id,
+    ...(body.selected_text?.trim() ? { selected_text: body.selected_text.trim() } : {}),
+  };
+
+  const res = await postBidSse("/bid/drafts/ask", payload, options);
+  if (!res.ok) {
+    throw new Error(await readSseErrorDetail(res, `Ask AI request failed (${res.status})`));
   }
+
+  await consumeSseResponse(res, (rawLine) => {
+    const parsed = parseSseDataLine(rawLine);
+    if (parsed === null) return;
+    if (typeof parsed !== "object" || Array.isArray(parsed)) return;
+    processBidChatSseObject(parsed as Record<string, unknown>, handlers, {
+      throwOnError: true,
+    });
+  });
 }

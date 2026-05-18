@@ -11,13 +11,16 @@ import {
   fetchBidDraft,
   fetchBidDrafts,
   fetchPastBids,
+  uploadBidDraft,
 } from "@/lib/bid-writing/bidWritingApi";
 import {
   draftListDateLabel,
   DRAFTS_UPDATED_EVENT,
+  isAllowedUploadDraftFile,
   mapBidDraftSummaryToRecord,
   normalizeDraftSources,
   normalizeWebSources,
+  titleFromUploadFilename,
 } from "@/lib/bid-writing/draftUtils";
 import { buildSourceLabelMapFromLibrary } from "@/lib/bid-writing/sourceReferences";
 import type { DraftRecord, PastBid } from "@/lib/bid-writing/types";
@@ -57,6 +60,7 @@ function MyDraftsPageContent() {
   const [activeDraftLoading, setActiveDraftLoading] = useState(false);
   const [activeDraftLoadError, setActiveDraftLoadError] = useState<string | null>(null);
   const [deletingDraftId, setDeletingDraftId] = useState<string | null>(null);
+  const [draftUploading, setDraftUploading] = useState(false);
   const [libraryBids, setLibraryBids] = useState<PastBid[]>([]);
 
   const sourceLabelBySeq = useMemo(
@@ -202,6 +206,121 @@ function MyDraftsPageContent() {
     pushDraftToUrl(null);
   }, [pushDraftToUrl]);
 
+  const openUploadedDraft = useCallback(
+    (
+      draftId: string,
+      title: string,
+      content: string,
+      rows: DraftRecord[],
+      total: number
+    ) => {
+      suppressDraftDetailErrorsRef.current = false;
+      draftFetchSeqRef.current += 1;
+      setActiveDraftLoadError(null);
+      setActiveDraftLoading(false);
+
+      const withContent = rows.map((r) =>
+        r.id === draftId
+          ? { ...r, title, content, sources: null, web_sources: null }
+          : r
+      );
+      const inList = withContent.some((r) => r.id === draftId);
+      setDrafts(
+        inList
+          ? withContent
+          : [
+              {
+                id: draftId,
+                title,
+                content,
+                createdAt: draftListDateLabel(new Date().toISOString()),
+                sources: null,
+                web_sources: null,
+              },
+              ...rows,
+            ]
+      );
+      setDraftsTotal(total);
+      setActiveDraftId(draftId);
+      pushDraftToUrl(draftId);
+    },
+    [pushDraftToUrl]
+  );
+
+  const resolveDraftIdAfterUpload = useCallback(
+    (
+      rows: DraftRecord[],
+      opts: { responseId?: string; title: string; previousIds: Set<string> }
+    ): string | null => {
+      if (opts.responseId) return opts.responseId;
+      const normalizedTitle = opts.title.trim().toLowerCase();
+      const byTitle = rows.find((r) => r.title.trim().toLowerCase() === normalizedTitle);
+      if (byTitle) return byTitle.id;
+      const newlyAdded = rows.filter((r) => !opts.previousIds.has(r.id));
+      if (newlyAdded.length > 0) return newlyAdded[0].id;
+      return null;
+    },
+    []
+  );
+
+  const handleUploadDraft = useCallback(
+    async (file: File) => {
+      if (!isAllowedUploadDraftFile(file)) {
+        toast.error("Only PDF, DOCX, DOC, and TXT files are supported.");
+        return;
+      }
+
+      const previousIds = new Set(drafts.map((d) => d.id));
+      setDraftUploading(true);
+      try {
+        const upload = await uploadBidDraft(file);
+        const text = upload.text.trim();
+        if (!text) {
+          toast.error("No text could be extracted from the file.");
+          return;
+        }
+
+        const title =
+          (typeof upload.title === "string" && upload.title.trim()) ||
+          titleFromUploadFilename(upload.filename);
+
+        const { rows, total } = await refreshDraftList();
+        setDraftsError(false);
+
+        const draftId = resolveDraftIdAfterUpload(rows, {
+          responseId: typeof upload.id === "string" ? upload.id : undefined,
+          title,
+          previousIds,
+        });
+
+        if (draftId) {
+          openUploadedDraft(draftId, title, text, rows, total);
+        } else {
+          const localId = `upload-${Date.now()}`;
+          openUploadedDraft(localId, title, text, rows, total);
+        }
+
+        window.dispatchEvent(new Event(DRAFTS_UPDATED_EVENT));
+        toast.success("Draft uploaded");
+      } catch (err) {
+        console.error("[MyDrafts] Failed to upload draft:", err);
+        let msg = "Could not upload draft";
+        if (err instanceof Error && err.message.trim()) {
+          msg = err.message.trim();
+        }
+        toast.error(msg);
+      } finally {
+        setDraftUploading(false);
+      }
+    },
+    [
+      drafts,
+      openUploadedDraft,
+      refreshDraftList,
+      resolveDraftIdAfterUpload,
+    ]
+  );
+
   const confirmDeleteDraft = useCallback(
     async (draft: { id: string; title: string }) => {
       const result = await Swal.fire({
@@ -329,6 +448,8 @@ function MyDraftsPageContent() {
       }}
       deletingDraftId={deletingDraftId}
       onDeleteDraft={(draft) => void confirmDeleteDraft(draft)}
+      draftUploading={draftUploading}
+      onUploadDraft={(file) => void handleUploadDraft(file)}
     />
   );
 }

@@ -129,10 +129,7 @@ type PersistedToolState = {
   activeTool: string | null;
   toolOutputHeadingTarget: number;
   toolInputSelectedText: string;
-  /** Edit-mode only: character offsets within the textarea value. */
   toolInputSelectionRange: [number, number] | null;
-  /** Preview-mode only: character offsets within the raw markdown string. */
-  toolInputMarkdownRange: [number, number] | null;
   toolOutputSources?: Record<string, string> | null;
 };
 
@@ -229,42 +226,6 @@ function findTextRangeInElement(el: Element, searchText: string): Range | null {
   }
 }
 
-// Find the character range in `markdown` that corresponds to `selectedText`
-// (which comes from the rendered DOM and may have collapsed whitespace).
-// Returns [start, end] offsets in the original markdown string, or null if not found.
-function findSelectionInMarkdown(markdown: string, selectedText: string): [number, number] | null {
-  const trimmed = selectedText.trim();
-  if (!trimmed) return null;
-
-  // Strategy 1: exact substring match
-  const exactIdx = markdown.indexOf(trimmed);
-  if (exactIdx !== -1) return [exactIdx, exactIdx + trimmed.length];
-
-  // Strategy 2: whitespace-collapsed match.
-  // Build `norm` (whitespace collapsed to single space) and `map` (norm char index →
-  // original markdown index) so we can translate found offsets back to original.
-  const norm: string[] = [];
-  const map: number[] = [];
-  let prevWs = false;
-  for (let i = 0; i < markdown.length; i++) {
-    if (/\s/.test(markdown[i])) {
-      if (!prevWs) { norm.push(' '); map.push(i); prevWs = true; }
-    } else {
-      norm.push(markdown[i]); map.push(i); prevWs = false;
-    }
-  }
-  const normMd = norm.join('');
-  const normSel = trimmed.replace(/\s+/g, ' ');
-  const normStart = normMd.indexOf(normSel);
-  if (normStart === -1) return null;
-
-  const origStart = map[normStart];
-  const normEnd = normStart + normSel.length;
-  // map[normEnd] is the original index of the first character AFTER the match.
-  const origEnd = normEnd < map.length ? map[normEnd] : markdown.length;
-  return [origStart, origEnd];
-}
-
 // ---------------------------------------------------------------------------
 
 interface MyDraftsEditorViewProps {
@@ -349,10 +310,7 @@ export function MyDraftsEditorView({
   // Snapshot of the selection captured when a tool is run, so Apply uses
   // the original selection even if the user changes it while streaming.
   const [toolInputSelectedText, setToolInputSelectedText] = useState<string>("");
-  // Edit mode: character offsets within the textarea value.
   const [toolInputSelectionRange, setToolInputSelectionRange] = useState<[number, number] | null>(null);
-  // Preview mode: character offsets within the raw markdown string (computed at tool-run time).
-  const [toolInputMarkdownRange, setToolInputMarkdownRange] = useState<[number, number] | null>(null);
 
   const uploadDraftRef = useRef<HTMLInputElement>(null);
   const contentPreviewRef = useRef<HTMLDivElement>(null);
@@ -384,7 +342,6 @@ export function MyDraftsEditorView({
     setRenderedWordCount(0);
     setToolInputSelectedText("");
     setToolInputSelectionRange(null);
-    setToolInputMarkdownRange(null);
     clearLockedHighlight();
     lockedRangeRef.current = null;
     selectionLockedRef.current = false;
@@ -401,7 +358,6 @@ export function MyDraftsEditorView({
         setToolOutputHeadingTarget(saved.toolOutputHeadingTarget);
         setToolInputSelectedText(saved.toolInputSelectedText);
         setToolInputSelectionRange(saved.toolInputSelectionRange);
-        setToolInputMarkdownRange(saved.toolInputMarkdownRange ?? null);
         setToolOutputSources(saved.toolOutputSources ?? null);
         if (saved.toolInputSelectedText) {
           // The CSS highlight requires a live DOM Range and cannot survive a page
@@ -431,7 +387,6 @@ export function MyDraftsEditorView({
         toolOutputHeadingTarget,
         toolInputSelectedText,
         toolInputSelectionRange,
-        toolInputMarkdownRange,
         toolOutputSources,
       });
     } else {
@@ -638,8 +593,16 @@ export function MyDraftsEditorView({
   function clearAllToolState() {
     toolStreamAbortRef.current?.abort();
     toolStreamAbortRef.current = null;
+    unlockSelection();
+    setPendingHighlightRestore(false);
+    setToolOutput(null);
+    setActiveTool(null);
+    setToolOutputSources(null);
     setToolStreaming(false);
-    clearOutputState();
+    setToolInputSelectedText("");
+    setToolInputSelectionRange(null);
+    setSelectedText("");
+    window.getSelection()?.removeAllRanges();
   }
 
   function handleDraftContentChange(content: string) {
@@ -678,18 +641,9 @@ export function MyDraftsEditorView({
     const selAtRun = selectedText.trim();
     setToolInputSelectedText(selAtRun);
     if (selAtRun && draftDocTab === "edit") {
-      // Edit mode: store exact textarea character offsets.
       setToolInputSelectionRange([textareaSelStartRef.current, textareaSelEndRef.current]);
-      setToolInputMarkdownRange(null);
-    } else if (selAtRun && draftDocTab === "preview") {
-      // Preview mode: find the selection in the raw markdown NOW (before content changes).
-      // The DOM text and raw markdown differ (bold markers, bullet prefixes, whitespace),
-      // so we use findSelectionInMarkdown which tries exact then whitespace-collapsed match.
-      setToolInputSelectionRange(null);
-      setToolInputMarkdownRange(findSelectionInMarkdown(activeDraft.content, selAtRun));
     } else {
       setToolInputSelectionRange(null);
-      setToolInputMarkdownRange(null);
     }
 
     // Lock the selection visually for the entire tool lifecycle.
@@ -842,19 +796,6 @@ export function MyDraftsEditorView({
     }
   }
 
-  function clearOutputState() {
-    unlockSelection();
-    setPendingHighlightRestore(false);
-    setToolOutput(null);
-    setActiveTool(null);
-    setToolOutputSources(null);
-    setToolInputSelectedText("");
-    setToolInputSelectionRange(null);
-    setToolInputMarkdownRange(null);
-    setSelectedText("");
-    window.getSelection()?.removeAllRanges();
-  }
-
   function applyOutput() {
     if (!toolOutput || !activeDraftId || !activeDraft) return;
     const currentContent = activeDraft.content;
@@ -862,29 +803,35 @@ export function MyDraftsEditorView({
 
     if (toolInputSelectedText) {
       if (toolInputSelectionRange) {
-        // Edit mode: splice using exact textarea character offsets.
+        // Edit mode: precise position-based splice using saved range
         const [start, end] = toolInputSelectionRange;
         newContent = currentContent.slice(0, start) + toolOutput + currentContent.slice(end);
-      } else if (toolInputMarkdownRange) {
-        // Preview mode: splice using the markdown character range computed at tool-run time.
-        const [start, end] = toolInputMarkdownRange;
-        newContent = currentContent.slice(0, start) + toolOutput + currentContent.slice(end);
       } else {
-        // Selection existed but couldn't be mapped to a markdown range (e.g. selection
-        // crossed heavily-formatted elements). Refuse to silently replace the full draft.
-        toast.error(
-          "Could not locate the selected range in the raw markdown. " +
-          "Switch to the Edit tab, re-select the text there, and run the tool again."
-        );
-        return;
+        // Preview mode: find the selected text as a substring in the raw markdown
+        const idx = currentContent.indexOf(toolInputSelectedText);
+        if (idx !== -1) {
+          newContent = currentContent.slice(0, idx) + toolOutput + currentContent.slice(idx + toolInputSelectedText.length);
+        } else {
+          // Selected text not found verbatim in markdown — fall back to full replacement
+          newContent = toolOutput;
+        }
       }
     } else {
-      // No selection — replace the full draft content.
       newContent = toolOutput;
     }
 
     handleDraftContentChange(newContent);
-    clearOutputState();
+    // Clear all tool state — the output has been applied.
+    // unlockSelection removes the CSS highlight; setting toolOutput to null causes
+    // the persistence effect to wipe sessionStorage.
+    unlockSelection();
+    setToolOutput(null);
+    setActiveTool(null);
+    setToolOutputSources(null);
+    setToolInputSelectedText("");
+    setToolInputSelectionRange(null);
+    setSelectedText("");
+    window.getSelection()?.removeAllRanges();
     toast.success(toolInputSelectedText ? "Applied to selection" : "Applied to draft");
   }
 
@@ -902,7 +849,6 @@ export function MyDraftsEditorView({
           : d
       )
     );
-    clearOutputState();
     toast.success("Appended to draft");
   }
 
@@ -922,13 +868,8 @@ export function MyDraftsEditorView({
     setToolInputSelectedText(selAtRun);
     if (selAtRun && draftDocTab === "edit") {
       setToolInputSelectionRange([textareaSelStartRef.current, textareaSelEndRef.current]);
-      setToolInputMarkdownRange(null);
-    } else if (selAtRun && draftDocTab === "preview") {
-      setToolInputSelectionRange(null);
-      setToolInputMarkdownRange(findSelectionInMarkdown(activeDraft.content, selAtRun));
     } else {
       setToolInputSelectionRange(null);
-      setToolInputMarkdownRange(null);
     }
 
     toolStreamAbortRef.current?.abort();
@@ -1332,11 +1273,11 @@ export function MyDraftsEditorView({
                               ))}
                             </div>
                           )}
-                        </div>
-                        </div>
-                      </div>
+                        </motion.div>
+                        </motion.div>
+                      </motion.div>
                     )}
-                  </div>
+                  </motion.div>
                   {activeDraft && (
                     <div className="min-w-0 rounded-2xl border border-border/50 bg-muted/50 p-2 shadow-sm dark:bg-muted/30">
                       <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-center sm:gap-0">

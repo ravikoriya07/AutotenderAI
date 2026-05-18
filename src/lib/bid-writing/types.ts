@@ -97,13 +97,22 @@ export type BidDraftCreateRequest = {
 };
 
 /** Supported formats for `POST /bid/export`. */
-export type BidExportFormat = "pdf" | "docx";
+export type BidExportFormat = "pdf" | "docx" | "txt";
 
-/** Request body for `POST /bid/export`. */
-export type BidExportRequest = {
+/** Chat export: `POST /bid/export` with `message_id`. */
+export type BidMessageExportRequest = {
   format: BidExportFormat;
   message_id: string;
 };
+
+/** Draft editor export: `POST /bid/export` with `draft_id`. */
+export type BidDraftExportRequest = {
+  format: BidExportFormat;
+  draft_id: string;
+};
+
+/** @deprecated Use `BidMessageExportRequest` — kept for existing call sites. */
+export type BidExportRequest = BidMessageExportRequest;
 
 /** Response from `POST /bid/drafts`. */
 export type BidDraftRecord = {
@@ -131,6 +140,32 @@ export type BidDraftsListApiResponse = {
 export type BidDraftDeleteResponse = {
   status: string;
   id: string;
+};
+
+/** Tool ids accepted by `POST /bid/tools/run`. */
+export type BidToolApiId =
+  | "expand"
+  | "shorten"
+  | "formal"
+  | "rephrase"
+  | "spell_check"
+  | "summarize";
+
+/** Request body for `POST /bid/tools/run`. */
+export type BidToolRunRequest = {
+  tool: BidToolApiId;
+  text: string;
+  draft_id: string;
+  target_words?: number;
+};
+
+/** Response from `POST /bid/upload_draft`. */
+export type BidUploadDraftResponse = {
+  text: string;
+  filename: string;
+  /** Present when the server creates/persists a draft record. */
+  id?: string;
+  title?: string;
 };
 
 /** Detail from `GET /bid/drafts/{draft_id}`. */
@@ -170,4 +205,11 @@ export type BidChatRequestBody = {
   use_web: boolean;
   allowed_seq?: number[];
   session_id?: string | null;
+};
+
+/** POST /bid/drafts/ask — Ask AI on a draft (SSE, same events as `/bid/chat`). */
+export type BidDraftAskRequest = {
+  question: string;
+  draft_id: string;
+  selected_text?: string;
 };
