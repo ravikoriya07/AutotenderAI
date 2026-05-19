@@ -56,7 +56,7 @@ export function ToolOutputHeader({
   return (
     <div
       className={cn(
-        "flex shrink-0 items-start justify-between gap-3 border-b border-border bg-card/50 px-3 py-2",
+        "flex shrink-0 select-none items-start justify-between gap-3 border-b border-border bg-card/50 px-3 py-2",
         className
       )}
     >

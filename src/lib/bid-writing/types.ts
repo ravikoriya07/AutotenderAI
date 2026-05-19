@@ -168,6 +168,26 @@ export type BidUploadDraftResponse = {
   title?: string;
 };
 
+/** Response from `POST /bid/library/ingest`. */
+export type BidLibraryIngestResponse = {
+  job_id: string;
+};
+
+/** Response from `GET /bid/library/jobs/{job_id}`. */
+export type BidLibraryJobStatus = {
+  status: string;
+  error?: string;
+};
+
+/** Response from `PUT /bid/drafts/{draft_id}`. */
+export type BidDraftUpdateResponse = {
+  id: string;
+  title: string;
+  content: string;
+  created_at: string;
+  updated_at: string;
+};
+
 /** Detail from `GET /bid/drafts/{draft_id}`. */
 export type BidDraftDetail = BidDraftRecord & {
   content?: string;

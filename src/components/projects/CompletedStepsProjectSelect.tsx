@@ -1,7 +1,10 @@
 "use client";
 
+import { useEffect, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
 import type { CompletedStepProject } from "@/services/statsService";
+import { useResearchProjectOptional } from "@/contexts/ResearchProjectContext";
+import { cn } from "@/lib/utils";
 
 type CompletedStepsProjectSelectProps = {
   projects: CompletedStepProject[];
@@ -16,6 +19,25 @@ export function CompletedStepsProjectSelect({
   value,
   onChange,
 }: CompletedStepsProjectSelectProps) {
+  const ctx = useResearchProjectOptional();
+  const needsHighlight = ctx?.needsProjectHighlight ?? false;
+
+  const [shaking, setShaking] = useState(false);
+  const prevHighlight = useRef(false);
+
+  useEffect(() => {
+    const wasHighlighted = prevHighlight.current;
+    prevHighlight.current = needsHighlight;
+    if (needsHighlight && !wasHighlighted) {
+      setShaking(false);
+      const id = requestAnimationFrame(() => setShaking(true));
+      return () => cancelAnimationFrame(id);
+    }
+    if (!needsHighlight) {
+      setShaking(false);
+    }
+  }, [needsHighlight]);
+
   const selectValue =
     value && projects.some((p) => p.job_id === value) ? value : "";
 
@@ -42,7 +64,14 @@ export function CompletedStepsProjectSelect({
         value={selectValue}
         onChange={(e) => onChange(e.target.value)}
         disabled={projects.length === 0}
-        className="h-9 min-h-9 min-w-0 w-full flex-1 rounded-md border border-sidebar-foreground/25 bg-sidebar px-2 py-1 text-xs text-sidebar-foreground shadow-sm focus:outline-none focus:ring-2 focus:ring-sidebar-foreground/30 disabled:cursor-not-allowed disabled:opacity-60 sm:h-8 sm:min-h-0"
+        onAnimationEnd={() => setShaking(false)}
+        className={cn(
+          "h-9 min-h-9 min-w-0 w-full flex-1 rounded-md border bg-sidebar px-2 py-1 text-xs text-sidebar-foreground shadow-sm focus:outline-none focus:ring-2 disabled:cursor-not-allowed disabled:opacity-60 sm:h-8 sm:min-h-0",
+          needsHighlight
+            ? "border-red-400 ring-2 ring-red-400/50 focus:ring-red-400/70"
+            : "border-sidebar-foreground/25 focus:ring-sidebar-foreground/30",
+          shaking && "animate-project-select-shake"
+        )}
       >
         <option value="">
           {projects.length === 0

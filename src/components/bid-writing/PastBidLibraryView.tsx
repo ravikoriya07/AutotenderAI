@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, useCallback, useEffect } from "react";
+import { useMemo, useState, useCallback, useEffect, useRef } from "react";
 import Link from "next/link";
 import {
   ArrowLeft,
@@ -10,11 +10,18 @@ import {
   FileText,
   Flag,
   Loader2,
+  Upload,
   X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { PastBid } from "@/lib/bid-writing/types";
-import { fetchPastBids, updateFrameworkStatus } from "@/lib/bid-writing/bidWritingApi";
+import {
+  fetchBidLibraryJobStatus,
+  fetchPastBids,
+  updateFrameworkStatus,
+  uploadBidLibraryZip,
+} from "@/lib/bid-writing/bidWritingApi";
+import { Modal } from "@/components/ui/Modal";
 import { toast } from "react-toastify";
 
 type GroupFilter = "all" | "won" | "lost" | "other";
@@ -94,6 +101,16 @@ export function PastBidLibraryView({ showInnerNav = true }: PastBidLibraryViewPr
   /** Seqs whose toggle is currently awaiting an API response. */
   const [frameworkLoading, setFrameworkLoading] = useState<Set<number>>(new Set());
 
+  // Upload bid modal state
+  const [uploadOpen, setUploadOpen] = useState(false);
+  const [uploadProjectName, setUploadProjectName] = useState("");
+  const [uploadFile, setUploadFile] = useState<File | null>(null);
+  const [uploadPhase, setUploadPhase] = useState<"idle" | "uploading" | "polling">("idle");
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const uploadFileRef = useRef<HTMLInputElement>(null);
+  const uploadCancelRef = useRef(false);
+  const uploadAbortRef = useRef<AbortController | null>(null);
+
   useEffect(() => {
     let cancelled = false;
     void fetchPastBids()
@@ -114,6 +131,112 @@ export function PastBidLibraryView({ showInnerNav = true }: PastBidLibraryViewPr
       cancelled = true;
     };
   }, []);
+
+  // Cancel any in-flight upload when component unmounts
+  useEffect(() => {
+    return () => {
+      uploadCancelRef.current = true;
+      uploadAbortRef.current?.abort();
+    };
+  }, []);
+
+  const uploadBusy = uploadPhase !== "idle";
+  const canSubmit =
+    uploadProjectName.trim().length > 0 && uploadFile !== null && !uploadBusy;
+
+  function openUploadModal() {
+    setUploadProjectName("");
+    setUploadFile(null);
+    setUploadPhase("idle");
+    setUploadError(null);
+    setUploadOpen(true);
+  }
+
+  function closeUploadModal() {
+    if (uploadBusy) return;
+    uploadCancelRef.current = true;
+    uploadAbortRef.current?.abort();
+    setUploadOpen(false);
+    setUploadProjectName("");
+    setUploadFile(null);
+    setUploadPhase("idle");
+    setUploadError(null);
+  }
+
+  async function handleUploadSubmit() {
+    if (!canSubmit || !uploadFile) return;
+    setUploadError(null);
+    uploadCancelRef.current = false;
+
+    const ac = new AbortController();
+    uploadAbortRef.current = ac;
+
+    setUploadPhase("uploading");
+    let jobId: string;
+    try {
+      const result = await uploadBidLibraryZip(
+        uploadProjectName.trim(),
+        uploadFile,
+        { signal: ac.signal }
+      );
+      jobId = result.job_id;
+    } catch (err) {
+      if (uploadCancelRef.current) return;
+      if (err instanceof Error && err.name === "AbortError") return;
+      const msg = err instanceof Error && err.message.trim() ? err.message.trim() : "Upload failed";
+      setUploadError(msg);
+      setUploadPhase("idle");
+      toast.error(msg);
+      return;
+    }
+
+    setUploadPhase("polling");
+
+    while (!uploadCancelRef.current) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 1500));
+      if (uploadCancelRef.current) break;
+
+      let status: { status: string; error?: string };
+      try {
+        status = await fetchBidLibraryJobStatus(jobId);
+      } catch (err) {
+        if (uploadCancelRef.current) return;
+        const msg =
+          err instanceof Error && err.message.trim()
+            ? err.message.trim()
+            : "Failed to check job status";
+        setUploadError(msg);
+        setUploadPhase("idle");
+        toast.error(msg);
+        return;
+      }
+
+      if (status.status === "completed") {
+        try {
+          const fresh = await fetchPastBids();
+          setBids(fresh);
+          setFrameworkBids(
+            new Set(fresh.filter((b) => b.is_framework).map((b) => b.seq))
+          );
+        } catch {
+          // Non-fatal: listing may be stale
+        }
+        setUploadPhase("idle");
+        setUploadOpen(false);
+        toast.success("Bid uploaded and indexed successfully.");
+        return;
+      }
+
+      if (status.status === "failed") {
+        const msg = status.error?.trim() || "Ingestion failed. Please try again.";
+        setUploadError(msg);
+        setUploadPhase("idle");
+        toast.error(msg);
+        return;
+      }
+      // still running — keep polling
+    }
+  }
 
   const toggleFramework = useCallback(
     async (seq: number) => {
@@ -369,15 +492,25 @@ export function PastBidLibraryView({ showInnerNav = true }: PastBidLibraryViewPr
               </p>
             </div>
           </div>
-          <div className="relative w-44 shrink-0 sm:w-56">
-            <BookOpen className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-            <input
-              type="search"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search projects…"
-              className="w-full rounded-lg border border-border bg-background py-1.5 pl-8 pr-3 text-sm outline-none ring-offset-background focus-visible:ring-2 focus-visible:ring-primary/30"
-            />
+          <div className="flex shrink-0 items-center gap-2">
+            <button
+              type="button"
+              onClick={openUploadModal}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground transition-colors hover:bg-primary/90"
+            >
+              <Upload className="h-3.5 w-3.5 shrink-0" aria-hidden />
+              Upload Bid
+            </button>
+            <div className="relative w-44 sm:w-56">
+              <BookOpen className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+              <input
+                type="search"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Search projects…"
+                className="w-full rounded-lg border border-border bg-background py-1.5 pl-8 pr-3 text-sm outline-none ring-offset-background focus-visible:ring-2 focus-visible:ring-primary/30"
+              />
+            </div>
           </div>
         </div>
 
@@ -571,6 +704,126 @@ export function PastBidLibraryView({ showInnerNav = true }: PastBidLibraryViewPr
           )}
         </div>
       </div>
+
+      {/* ── Upload Bid modal ─────────────────────────────────────────── */}
+      <Modal
+        open={uploadOpen}
+        onClose={closeUploadModal}
+        title="Upload Bid"
+      >
+        <div className="space-y-4">
+
+          {/* Project name */}
+          <div className="space-y-1.5">
+            <label className="text-sm font-medium text-foreground">
+              Project Name <span className="text-destructive" aria-hidden>*</span>
+            </label>
+            <input
+              type="text"
+              value={uploadProjectName}
+              onChange={(e) => setUploadProjectName(e.target.value)}
+              disabled={uploadBusy}
+              placeholder="e.g. London Borough of Haringey — Repairs 2024"
+              className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none ring-offset-background focus-visible:ring-2 focus-visible:ring-primary/30 disabled:cursor-not-allowed disabled:opacity-60"
+            />
+          </div>
+
+          {/* ZIP file */}
+          <div className="space-y-1.5">
+            <label className="text-sm font-medium text-foreground">
+              ZIP File <span className="text-destructive" aria-hidden>*</span>
+            </label>
+            <input
+              ref={uploadFileRef}
+              type="file"
+              accept=".zip"
+              className="hidden"
+              onChange={(e) => {
+                const f = e.target.files?.[0] ?? null;
+                e.target.value = "";
+                setUploadFile(f);
+                setUploadError(null);
+              }}
+            />
+            <button
+              type="button"
+              disabled={uploadBusy}
+              onClick={() => uploadFileRef.current?.click()}
+              className={cn(
+                "flex w-full flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed px-4 py-6 text-center text-sm transition-colors",
+                "disabled:cursor-not-allowed disabled:opacity-60",
+                uploadFile
+                  ? "border-primary/40 bg-primary/5 hover:bg-primary/10"
+                  : "border-border bg-muted/40 hover:border-primary/40 hover:bg-muted/60"
+              )}
+            >
+              {uploadFile ? (
+                <>
+                  <FileText className="h-8 w-8 text-primary" aria-hidden />
+                  <span className="max-w-full truncate font-medium text-foreground">
+                    {uploadFile.name}
+                  </span>
+                  <span className="text-xs text-muted-foreground">Click to change file</span>
+                </>
+              ) : (
+                <>
+                  <Upload className="h-8 w-8 text-muted-foreground/50" aria-hidden />
+                  <span className="text-muted-foreground">
+                    Click to select a{" "}
+                    <strong className="font-semibold text-foreground">.zip</strong> file
+                  </span>
+                </>
+              )}
+            </button>
+          </div>
+
+          {/* Error message */}
+          {uploadError && (
+            <p className="rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">
+              {uploadError}
+            </p>
+          )}
+
+          {/* In-progress status */}
+          {uploadBusy && (
+            <div className="flex items-center gap-2.5 rounded-lg bg-primary/10 px-3 py-2.5 text-sm text-primary">
+              <Loader2 className="h-4 w-4 shrink-0 animate-spin" aria-hidden />
+              {uploadPhase === "uploading"
+                ? "Uploading file…"
+                : "Processing bid data, please wait…"}
+            </div>
+          )}
+
+          {/* Actions */}
+          <div className="flex justify-end gap-2 pt-1">
+            <button
+              type="button"
+              disabled={uploadBusy}
+              onClick={closeUploadModal}
+              className="rounded-lg px-4 py-2 text-sm text-muted-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              disabled={!canSubmit}
+              onClick={() => void handleUploadSubmit()}
+              className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {uploadBusy ? (
+                <Loader2 className="h-4 w-4 shrink-0 animate-spin" aria-hidden />
+              ) : (
+                <Upload className="h-4 w-4 shrink-0" aria-hidden />
+              )}
+              {uploadPhase === "uploading"
+                ? "Uploading…"
+                : uploadPhase === "polling"
+                  ? "Processing…"
+                  : "Upload Bid"}
+            </button>
+          </div>
+        </div>
+      </Modal>
 
       {/* ── Drawer backdrop ───────────────────────────────────────────── */}
       <div

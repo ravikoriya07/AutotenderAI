@@ -377,7 +377,7 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
     [router]
   );
 
-  const { completedStepProjects: catalogProjects } = useResearchProject();
+  const { completedStepProjects: catalogProjects, setNeedsProjectHighlight } = useResearchProject();
 
   const projectTitle = useMemo(() => {
     if (!trimmedJobId) return "Select a project";
@@ -1378,22 +1378,21 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
 
   const chipClassNameSticky = cn(
     "inline-flex w-fit max-w-[min(100%,40rem)] min-w-[16rem] shrink-0 items-center gap-1.5 rounded-full border border-border/80 bg-card px-3 py-1.5 text-left text-xs font-medium text-foreground shadow-sm transition hover:bg-muted/70 sm:gap-2 sm:px-3.5 sm:py-1.5 sm:text-sm",
-    !trimmedJobId && "cursor-not-allowed opacity-45"
+    !trimmedJobId && "opacity-60"
   );
 
   /** Full-width header control inside the sidebar (no close button; dismiss via backdrop / Escape). */
   const chipClassNameSidebarHeader = cn(
     "flex w-full min-w-0 items-center gap-2 rounded-lg border border-border/80 bg-card px-2.5 py-2 text-left text-sm font-medium text-foreground shadow-sm transition hover:bg-muted/70 sm:px-3 sm:py-2.5",
-    !trimmedJobId && "cursor-not-allowed opacity-45"
+    !trimmedJobId && "opacity-60"
   );
 
   const projectChipSticky = (
     <button
       type="button"
-      disabled={!trimmedJobId}
-      onClick={toggleSidebar}
-      aria-expanded={Boolean(drawerMounted && translateOpen)}
-      aria-controls="quantity-take-off-drawing-drawer"
+      onClick={trimmedJobId ? toggleSidebar : () => setNeedsProjectHighlight(true)}
+      aria-expanded={trimmedJobId ? Boolean(drawerMounted && translateOpen) : undefined}
+      aria-controls={trimmedJobId ? "quantity-take-off-drawing-drawer" : undefined}
       className={chipClassNameSticky}
     >
       <LayoutGrid
@@ -1411,10 +1410,9 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
   const projectChipSidebarHeader = (
     <button
       type="button"
-      disabled={!trimmedJobId}
-      onClick={toggleSidebar}
-      aria-expanded={Boolean(drawerMounted && translateOpen)}
-      aria-controls="quantity-take-off-drawing-drawer"
+      onClick={trimmedJobId ? toggleSidebar : () => setNeedsProjectHighlight(true)}
+      aria-expanded={trimmedJobId ? Boolean(drawerMounted && translateOpen) : undefined}
+      aria-controls={trimmedJobId ? "quantity-take-off-drawing-drawer" : undefined}
       className={chipClassNameSidebarHeader}
     >
       <LayoutGrid
@@ -1432,9 +1430,18 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
   const muted = "text-muted-foreground";
 
   const layersBlock = !trimmedJobId ? (
-    <p className={cn("text-xs leading-relaxed", muted)}>
-      Select a project in the header to load drawings.
-    </p>
+    <div className="flex flex-col gap-2.5">
+      <p className={cn("text-xs leading-relaxed", muted)}>
+        Select a project in the header to load drawings.
+      </p>
+      <button
+        type="button"
+        onClick={() => setNeedsProjectHighlight(true)}
+        className="inline-flex w-fit items-center gap-1.5 rounded-md border border-primary/40 bg-primary/10 px-2.5 py-1 text-xs font-medium text-primary hover:bg-primary/15"
+      >
+        Select project
+      </button>
+    </div>
   ) : treeLoading ? (
     <div
       className="flex min-h-[88px] flex-col items-center justify-center gap-2 py-4"
@@ -3299,12 +3306,31 @@ export function QuantityTakeOffView({ jobId }: QuantityTakeOffViewProps) {
                     }
                   />
                 ) : (
-                  <div className="flex w-full min-w-0 flex-1 flex-col items-center justify-center px-3 py-6 sm:px-4 sm:py-8">
-                    <p className="max-w-sm text-center text-xs text-muted-foreground sm:text-sm">
-                      {trimmedJobId
-                        ? "Use the project chip to open the layers panel and browse drawing PDFs. The canvas is reserved for future viewing tools."
-                        : "Select a project in the header to use Quantity take-off."}
-                    </p>
+                  <div className="flex w-full min-w-0 flex-1 flex-col items-center justify-center gap-4 px-3 py-6 sm:px-4 sm:py-8">
+                    {trimmedJobId ? (
+                      <p className="max-w-sm text-center text-xs text-muted-foreground sm:text-sm">
+                        Use the project chip to open the layers panel and browse drawing PDFs. The canvas is reserved for future viewing tools.
+                      </p>
+                    ) : (
+                      <>
+                        <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-primary/10">
+                          <LayoutGrid className="h-6 w-6 text-primary" aria-hidden />
+                        </div>
+                        <div className="max-w-xs text-center">
+                          <p className="text-sm font-medium text-foreground">No project selected</p>
+                          <p className="mt-1 text-xs text-muted-foreground sm:text-sm">
+                            Select a project in the header to use Quantity Take-off.
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setNeedsProjectHighlight(true)}
+                          className="inline-flex items-center gap-2 rounded-full bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow-sm hover:bg-primary/90"
+                        >
+                          Select project
+                        </button>
+                      </>
+                    )}
                   </div>
                 )}
               </div>

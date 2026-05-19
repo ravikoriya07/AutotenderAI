@@ -22,6 +22,7 @@ import {
   Archive,
   ChevronLeft,
   Download,
+  FolderOpen,
   Loader2,
   Trash2,
 } from "lucide-react";
@@ -53,6 +54,7 @@ import {
   findPathToNode,
   nodeToProjectActionPath,
 } from "@/lib/libraryListingUtils";
+import { useResearchProjectOptional } from "@/contexts/ResearchProjectContext";
 
 /** Parent-fetched tree so sidebar + listing share one GET /project-tree call. */
 export type LibrarySharedTreeState = {
@@ -88,6 +90,7 @@ export function LibraryFileListing({
   onTreeRefreshRequest,
   highlightRowId,
 }: LibraryFileListingProps) {
+  const researchCtx = useResearchProjectOptional();
   const controlled = onSelectedIdChange != null;
   const useSharedTree = sharedTree !== undefined;
   const [treeNodes, setTreeNodes] = useState<FolderNode[]>([]);
@@ -478,8 +481,23 @@ export function LibraryFileListing({
     ) : null;
 
   const noJobEmptyBody = !jobId.trim() ? (
-    <div className="p-6 text-sm text-muted-foreground">
-      Select a project in the header to view its library.
+    <div className="flex flex-col items-center justify-center gap-4 px-6 py-12 text-center">
+      <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-primary/10">
+        <FolderOpen className="h-6 w-6 text-primary" aria-hidden />
+      </div>
+      <div className="max-w-xs">
+        <p className="text-sm font-medium text-foreground">No project selected</p>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Select a project from the header to browse its library.
+        </p>
+      </div>
+      <button
+        type="button"
+        onClick={() => researchCtx?.setNeedsProjectHighlight(true)}
+        className="inline-flex items-center gap-2 rounded-full bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow-sm hover:bg-primary/90"
+      >
+        Select project
+      </button>
     </div>
   ) : null;
 

@@ -36,8 +36,11 @@ import type {
   BidDraftSummary,
   BidDraftsListApiResponse,
   BidDraftExportRequest,
+  BidDraftUpdateResponse,
   BidExportFormat,
   BidExportRequest,
+  BidLibraryIngestResponse,
+  BidLibraryJobStatus,
   BidMessageExportRequest,
   BidSessionDetail,
   BidSessionSummary,
@@ -62,6 +65,69 @@ export async function fetchPastBids(): Promise<PastBid[]> {
     skipGlobalLoader: true,
   } as object);
   return Array.isArray(response.data) ? response.data : [];
+}
+
+/**
+ * POST /bid/library/ingest — upload a bid ZIP for library ingestion.
+ * Uses fetch so multipart boundaries are set correctly by the browser.
+ */
+export async function uploadBidLibraryZip(
+  projectName: string,
+  file: File,
+  options?: { signal?: AbortSignal }
+): Promise<BidLibraryIngestResponse> {
+  const token = getAuthToken();
+  const formData = new FormData();
+  formData.append("project_name", projectName);
+  formData.append("zip_file", file);
+  const res = await fetch(`${API_BASE_URL}/bid/library/ingest`, {
+    method: "POST",
+    headers: {
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: formData,
+    signal: options?.signal,
+  });
+
+  if (!res.ok) {
+    let detail = `Upload failed (${res.status})`;
+    try {
+      const ct = res.headers.get("content-type") ?? "";
+      if (ct.includes("application/json")) {
+        const j = (await res.json()) as Record<string, unknown>;
+        const msg =
+          (typeof j.message === "string" && j.message) ||
+          (typeof j.error === "string" && j.error) ||
+          (typeof j.detail === "string" && j.detail);
+        if (msg) detail = msg;
+      } else {
+        const t = await res.text();
+        if (t.trim()) detail = t.slice(0, 500);
+      }
+    } catch {
+      // keep default detail
+    }
+    throw new Error(detail);
+  }
+
+  const data = (await res.json()) as BidLibraryIngestResponse;
+  if (typeof data.job_id !== "string" || !data.job_id) {
+    throw new Error("Upload response missing job_id");
+  }
+  return data;
+}
+
+/** GET /bid/library/jobs/{job_id} — poll ingestion job status. */
+export async function fetchBidLibraryJobStatus(jobId: string): Promise<BidLibraryJobStatus> {
+  const response = await apiClient.get<BidLibraryJobStatus>(
+    `/bid/library/jobs/${encodeURIComponent(jobId)}`,
+    { skipGlobalLoader: true } as object
+  );
+  const data = response.data;
+  if (!data || typeof data !== "object") {
+    throw new Error("Invalid job status response");
+  }
+  return data;
 }
 
 export async function updateFrameworkStatus(
@@ -450,6 +516,23 @@ export async function uploadBidDraft(
   }
   if (typeof data.filename !== "string" || !data.filename.trim()) {
     throw new Error("Upload response missing filename");
+  }
+  return data;
+}
+
+/** PUT /bid/drafts/{draft_id} — update draft content. */
+export async function updateBidDraft(
+  draftId: string,
+  content: string
+): Promise<BidDraftUpdateResponse> {
+  const response = await apiClient.put<BidDraftUpdateResponse>(
+    `/bid/drafts/${encodeURIComponent(draftId)}`,
+    { content },
+    { skipGlobalLoader: true } as object
+  );
+  const data = response.data;
+  if (!data?.id) {
+    throw new Error("Invalid update draft response");
   }
   return data;
 }

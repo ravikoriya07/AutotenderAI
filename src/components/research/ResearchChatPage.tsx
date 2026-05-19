@@ -279,6 +279,7 @@ function ChatInput({
   blockSendForProject,
   showSources,
   onToggleShowSources,
+  showProjectError,
 }: {
   value: string;
   onChange: (v: string) => void;
@@ -288,6 +289,7 @@ function ChatInput({
   blockSendForProject: boolean;
   showSources: boolean;
   onToggleShowSources: () => void;
+  showProjectError?: boolean;
 }) {
   return (
     <div className="w-full min-w-0 rounded-[1.75rem] border border-border/80 bg-card p-3 shadow-md sm:p-4">
@@ -328,12 +330,17 @@ function ChatInput({
             Source Providers
           </button>
         </div>
-        <div className="flex shrink-0 justify-end sm:justify-start">
+        <div className="flex shrink-0 items-center gap-3 justify-end sm:justify-start">
+          {showProjectError && (
+            <p className="text-xs font-medium text-destructive" role="alert">
+              Please select a project first
+            </p>
+          )}
           <button
             type="button"
             onClick={onSend}
-            disabled={disabled || !value.trim() || blockSendForProject}
-            className="flex h-11 w-11 items-center justify-center rounded-full bg-muted text-muted-foreground hover:bg-primary hover:text-primary-foreground disabled:cursor-not-allowed disabled:opacity-60 sm:h-10 sm:w-10"
+            disabled={disabled || !value.trim()}
+            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground hover:bg-primary hover:text-primary-foreground disabled:cursor-not-allowed disabled:opacity-60 sm:h-10 sm:w-10"
             aria-label="Send"
           >
             {disabled ? (
@@ -667,6 +674,7 @@ export function ResearchChatPage() {
     selectedProjectJobId,
     completedStepProjects: catalogProjects,
     completedStepsLoading: catalogProjectsLoading,
+    setNeedsProjectHighlight,
   } = useResearchProject();
 
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -696,6 +704,7 @@ export function ResearchChatPage() {
   const [deleteBusySessionId, setDeleteBusySessionId] = useState<string | null>(
     null
   );
+  const [showProjectError, setShowProjectError] = useState(false);
   const chatScrollRef = useRef<HTMLDivElement>(null);
   const chatCacheRef = useRef<Record<string, StoredChat>>({});
   const researchSessionsRef = useRef<Record<string, string>>({});
@@ -704,6 +713,12 @@ export function ResearchChatPage() {
   const loadedHistoryKeyRef = useRef<string | null>(null);
   /** Tracks last selected project to reset chat only on real project changes. */
   const lastProjectForClearRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (selectedProjectJobId.trim()) {
+      setShowProjectError(false);
+    }
+  }, [selectedProjectJobId]);
 
   const openSourcesDrawer = useCallback((ctx: unknown) => {
     setSourcesDrawerContexts(ctx);
@@ -1019,7 +1034,11 @@ export function ResearchChatPage() {
 
     const projectJobId = selectedProjectJobId.trim();
     if (!projectJobId) {
-      if (!hadUserMessage) return;
+      if (!hadUserMessage) {
+        setNeedsProjectHighlight(true);
+        setShowProjectError(true);
+        return;
+      }
       toast.error("Select a project in the header to continue.");
       return;
     }
@@ -1412,6 +1431,7 @@ export function ResearchChatPage() {
                     onToggleShowSources={() =>
                       setShowSources((prev) => !prev)
                     }
+                    showProjectError={showProjectError}
                   />
                 </div>
               </div>
@@ -1468,6 +1488,7 @@ export function ResearchChatPage() {
                         onToggleShowSources={() =>
                           setShowSources((prev) => !prev)
                         }
+                        showProjectError={showProjectError}
                       />
                     </div>
                   </div>

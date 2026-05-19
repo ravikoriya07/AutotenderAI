@@ -18,6 +18,7 @@ import { toast } from "react-toastify";
 import axios from "axios";
 import { cn } from "@/lib/utils";
 import { LibraryFileListing } from "@/components/library/LibraryFileListing";
+import { useResearchProjectOptional } from "@/contexts/ResearchProjectContext";
 import { resolveLibraryDeepLinkFile } from "@/lib/libraryListingUtils";
 
 function treeLoadErrorMessage(e: unknown): string {
@@ -48,6 +49,7 @@ export type OrganisationLibraryViewProps = {
 
 /** Shared tree + listing layout used by `/library` and `/libraries?job_id=`. */
 export function OrganisationLibraryView({ jobId }: OrganisationLibraryViewProps) {
+  const researchCtx = useResearchProjectOptional();
   const router = useRouter();
   const searchParams = useSearchParams();
   const deepLinkKeyRef = useRef<string | null>(null);
@@ -236,9 +238,18 @@ export function OrganisationLibraryView({ jobId }: OrganisationLibraryViewProps)
             <Loader2 className="h-8 w-8 animate-spin text-primary" />
           </div>
         ) : !jobId.trim() ? (
-          <p className="text-sm text-muted-foreground">
-            Select a project in the header to view its library.
-          </p>
+          <div className="flex flex-col gap-2.5">
+            <p className="text-sm text-muted-foreground">
+              Select a project in the header to view its library.
+            </p>
+            <button
+              type="button"
+              onClick={() => researchCtx?.setNeedsProjectHighlight(true)}
+              className="inline-flex w-fit items-center gap-1.5 rounded-md border border-primary/40 bg-primary/10 px-3 py-1.5 text-xs font-medium text-primary hover:bg-primary/15"
+            >
+              Select project
+            </button>
+          </div>
         ) : loadError ? (
           <p className="text-sm text-muted-foreground">{loadError}</p>
         ) : treeNodes.length === 0 ? (

@@ -20,6 +20,9 @@ type ResearchProjectContextValue = {
   /** Shared catalog for header + research/library/QTO (one GET /stats/completed-steps per route). */
   completedStepProjects: CompletedStepProject[];
   completedStepsLoading: boolean;
+  /** True when user tried to submit without a project — triggers shake + error ring on the select. */
+  needsProjectHighlight: boolean;
+  setNeedsProjectHighlight: (v: boolean) => void;
 };
 
 const ResearchProjectContext =
@@ -31,6 +34,7 @@ export function ResearchProjectProvider({
   children: React.ReactNode;
 }) {
   const [selectedProjectJobId, setSelectedProjectJobIdState] = useState("");
+  const [needsProjectHighlight, setNeedsProjectHighlight] = useState(false);
 
   useEffect(() => {
     try {
@@ -45,6 +49,9 @@ export function ResearchProjectProvider({
 
   const setSelectedProjectJobId = useCallback((jobId: string) => {
     setSelectedProjectJobIdState(jobId);
+    if (jobId.trim()) {
+      setNeedsProjectHighlight(false);
+    }
     if (typeof window === "undefined") return;
     try {
       if (jobId.trim()) {
@@ -80,12 +87,15 @@ export function ResearchProjectProvider({
       setSelectedProjectJobId,
       completedStepProjects,
       completedStepsLoading,
+      needsProjectHighlight,
+      setNeedsProjectHighlight,
     }),
     [
       selectedProjectJobId,
       setSelectedProjectJobId,
       completedStepProjects,
       completedStepsLoading,
+      needsProjectHighlight,
     ]
   );
 

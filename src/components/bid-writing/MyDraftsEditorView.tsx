@@ -36,8 +36,10 @@ import {
   streamBidDraftAsk,
   streamBidToolRun,
   triggerBidExportDownload,
+  updateBidDraft,
 } from "@/lib/bid-writing/bidWritingApi";
 import { isPersistedDraftId, uiToolIdToApiTool } from "@/lib/bid-writing/bidToolUtils";
+import { draftListDateLabel } from "@/lib/bid-writing/draftUtils";
 import { detectMinHeadingLevel } from "@/lib/bid-writing/markdownToolOutput";
 import {
   sourceLabelMapFromRecord,
@@ -119,6 +121,17 @@ function formatWebSourceLine(item: unknown): { label: string; href: string | nul
     return { label: String(item), href: null };
   }
 }
+
+// ---------------------------------------------------------------------------
+// Undo/Redo history entry
+// ---------------------------------------------------------------------------
+
+type HistoryEntry = {
+  content: string;
+  /** Textarea cursor positions (edit mode only) for best-effort restoration. */
+  cursorStart?: number;
+  cursorEnd?: number;
+};
 
 // ---------------------------------------------------------------------------
 // sessionStorage helpers — persist completed tool output across page refreshes
@@ -354,9 +367,26 @@ export function MyDraftsEditorView({
   // Preview mode: character offsets within the raw markdown string (computed at tool-run time).
   const [toolInputMarkdownRange, setToolInputMarkdownRange] = useState<[number, number] | null>(null);
 
+  // Undo/Redo history — stored in refs so pushes don't cause re-renders.
+  // canUndo/canRedo are state so the buttons re-render when they change.
+  const historyRef = useRef<HistoryEntry[]>([]);
+  const historyIdxRef = useRef(-1);
+  const historyDraftIdRef = useRef<string | null>(null);
+  const historyDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const [canUndo, setCanUndo] = useState(false);
+  const [canRedo, setCanRedo] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  // Stable refs so the keyboard-shortcut effect (registered once) always calls
+  // the current render's undo/redo/save without needing to re-register on every change.
+  const undoFnRef = useRef<() => void>(() => {});
+  const redoFnRef = useRef<() => void>(() => {});
+  const saveDraftFnRef = useRef<() => void>(() => {});
+
   const uploadDraftRef = useRef<HTMLInputElement>(null);
   const contentPreviewRef = useRef<HTMLDivElement>(null);
   const activeDraft = drafts.find((d) => d.id === activeDraftId) ?? null;
+  const activeDraftContent = activeDraft?.content;
   const selectionWordCount = countWords(selectedText);
   const baseWordCount = selectionWordCount > 0 ? selectionWordCount : renderedWordCount;
   const expandPresets = buildExpandPresets(baseWordCount);
@@ -368,6 +398,18 @@ export function MyDraftsEditorView({
   );
 
   useEffect(() => {
+    // Reset undo/redo history whenever the active draft changes.
+    if (historyDebounceRef.current !== null) {
+      clearTimeout(historyDebounceRef.current);
+      historyDebounceRef.current = null;
+    }
+    historyRef.current = [];
+    historyIdxRef.current = -1;
+    historyDraftIdRef.current = activeDraftId;
+    setCanUndo(false);
+    setCanRedo(false);
+    setIsSaving(false);
+
     // Abort any in-flight stream for the previous draft
     toolStreamAbortRef.current?.abort();
     toolStreamAbortRef.current = null;
@@ -625,6 +667,62 @@ export function MyDraftsEditorView({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingHighlightRestore, activeDraftLoading, draftDocTab, activeDraft?.content]);
 
+  // Initialize the undo history with the first entry once the draft content is available.
+  // Runs when the draft finishes loading (or immediately if content is already present).
+  // The guard on historyRef length ensures we only seed it once per draft switch.
+  useEffect(() => {
+    if (!activeDraftId || activeDraftLoading) return;
+    if (historyDraftIdRef.current !== activeDraftId) return;
+    if (historyRef.current.length > 0) return; // already seeded
+    historyRef.current = [{ content: activeDraftContent ?? "" }];
+    historyIdxRef.current = 0;
+    setCanUndo(false);
+    setCanRedo(false);
+  // activeDraftContent triggers a retry when the draft DOM becomes available.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeDraftId, activeDraftLoading, activeDraftContent]);
+
+  // Global keyboard shortcuts for Undo/Redo/Save.
+  // Registered once with [] deps; reads live state via stable refs.
+  // We skip interception when focus is in any form control OTHER than the draft
+  // textarea — that way Ctrl+Z in the Ask AI textarea or word-count inputs works
+  // natively without triggering our history navigation.
+  useEffect(() => {
+    function handleUndoRedoKey(e: KeyboardEvent) {
+      const ctrl = e.ctrlKey || e.metaKey;
+      if (!ctrl) return;
+
+      const target = e.target as HTMLElement;
+      const tag = target.tagName.toLowerCase();
+      const isNonDraftFormControl =
+        (tag === "input" || tag === "textarea") &&
+        target !== textareaRef.current;
+      if (isNonDraftFormControl) return;
+
+      if (e.key === "z" || e.key === "Z") {
+        if (e.shiftKey) {
+          e.preventDefault();
+          redoFnRef.current();
+        } else {
+          e.preventDefault();
+          undoFnRef.current();
+        }
+        return;
+      }
+      if (e.key === "y" || e.key === "Y") {
+        e.preventDefault();
+        redoFnRef.current();
+        return;
+      }
+      if (e.key === "s" || e.key === "S") {
+        e.preventDefault();
+        saveDraftFnRef.current();
+      }
+    }
+    document.addEventListener("keydown", handleUndoRedoKey);
+    return () => document.removeEventListener("keydown", handleUndoRedoKey);
+  }, []);
+
   // Removes the CSS highlight, clears the locked-selection refs, and resets state.
   // Call this whenever the locked selection should no longer be active.
   function unlockSelection() {
@@ -642,11 +740,100 @@ export function MyDraftsEditorView({
     clearOutputState();
   }
 
-  function handleDraftContentChange(content: string) {
+  function syncHistoryButtons() {
+    setCanUndo(historyIdxRef.current > 0);
+    setCanRedo(historyIdxRef.current < historyRef.current.length - 1);
+  }
+
+  function pushHistory(entry: HistoryEntry) {
+    // Truncate any redo stack above the current position.
+    historyRef.current = historyRef.current.slice(0, historyIdxRef.current + 1);
+    // Skip duplicate consecutive entries (e.g., rapid re-renders with the same content).
+    const last = historyRef.current[historyRef.current.length - 1];
+    if (last && last.content === entry.content) return;
+    historyRef.current.push(entry);
+    historyIdxRef.current = historyRef.current.length - 1;
+    syncHistoryButtons();
+  }
+
+  function flushHistoryDebounce() {
+    if (historyDebounceRef.current !== null) {
+      clearTimeout(historyDebounceRef.current);
+      historyDebounceRef.current = null;
+    }
+  }
+
+  // Cancel any pending debounce and push the current draft content to history
+  // if it differs from the top entry. Call this before any navigation (undo/redo)
+  // or before an explicit content replacement (Apply/Append) so no typing is lost.
+  function snapshotCurrentContent() {
+    flushHistoryDebounce();
+    const currentContent = activeDraft?.content ?? "";
+    const top = historyRef.current[historyIdxRef.current];
+    if (!top || top.content === currentContent) return;
+    const ta = draftDocTab === "edit" ? textareaRef.current : null;
+    pushHistory({
+      content: currentContent,
+      cursorStart: ta?.selectionStart,
+      cursorEnd: ta?.selectionEnd,
+    });
+  }
+
+  function handleDraftContentChange(content: string, pushNow = false) {
     if (!activeDraftId) return;
     setDrafts((prev) =>
       prev.map((d) => (d.id === activeDraftId ? { ...d, content } : d))
     );
+    if (pushNow) {
+      // Snapshot pre-change content first (captures any in-progress typing that
+      // hasn't been committed by the debounce yet, so Apply/Append is undoable in
+      // two steps: undo the action, then undo the typing that preceded it).
+      snapshotCurrentContent();
+      const ta = textareaRef.current;
+      pushHistory({ content, cursorStart: ta?.selectionStart, cursorEnd: ta?.selectionEnd });
+    }
+  }
+
+  function undo() {
+    if (!activeDraftId) return;
+    // Flush the debounce and capture any in-progress typing as a history entry so
+    // the user can redo back to this exact state after undoing.
+    snapshotCurrentContent();
+    if (historyIdxRef.current <= 0) return;
+    historyIdxRef.current--;
+    const entry = historyRef.current[historyIdxRef.current];
+    if (!entry) return;
+    setDrafts((prev) =>
+      prev.map((d) => (d.id === activeDraftId ? { ...d, content: entry.content } : d))
+    );
+    syncHistoryButtons();
+    if (draftDocTab === "edit" && textareaRef.current) {
+      const ta = textareaRef.current;
+      requestAnimationFrame(() => {
+        ta.setSelectionRange(entry.cursorStart ?? 0, entry.cursorEnd ?? 0);
+      });
+    }
+  }
+
+  function redo() {
+    if (!activeDraftId) return;
+    // Cancel any pending debounce without snapshotting — we're going forward,
+    // so in-progress edits since the last checkpoint are intentionally discarded.
+    flushHistoryDebounce();
+    if (historyIdxRef.current >= historyRef.current.length - 1) return;
+    historyIdxRef.current++;
+    const entry = historyRef.current[historyIdxRef.current];
+    if (!entry) return;
+    setDrafts((prev) =>
+      prev.map((d) => (d.id === activeDraftId ? { ...d, content: entry.content } : d))
+    );
+    syncHistoryButtons();
+    if (draftDocTab === "edit" && textareaRef.current) {
+      const ta = textareaRef.current;
+      requestAnimationFrame(() => {
+        ta.setSelectionRange(entry.cursorStart ?? 0, entry.cursorEnd ?? 0);
+      });
+    }
   }
 
   function getToolInputText(): string {
@@ -883,25 +1070,17 @@ export function MyDraftsEditorView({
       newContent = toolOutput;
     }
 
-    handleDraftContentChange(newContent);
+    handleDraftContentChange(newContent, true);
     clearOutputState();
     toast.success(toolInputSelectedText ? "Applied to selection" : "Applied to draft");
   }
 
   function appendOutput() {
-    if (!toolOutput || !activeDraftId) return;
-    setDrafts((prev) =>
-      prev.map((d) =>
-        d.id === activeDraftId
-          ? {
-              ...d,
-              content: d.content
-                ? `${d.content.trimEnd()}\n\n${toolOutput}`
-                : toolOutput,
-            }
-          : d
-      )
-    );
+    if (!toolOutput || !activeDraftId || !activeDraft) return;
+    const newContent = activeDraft.content
+      ? `${activeDraft.content.trimEnd()}\n\n${toolOutput}`
+      : toolOutput;
+    handleDraftContentChange(newContent, true);
     clearOutputState();
     toast.success("Appended to draft");
   }
@@ -1015,6 +1194,43 @@ export function MyDraftsEditorView({
     }
   }
 
+  async function handleSaveDraft() {
+    if (!activeDraftId || !activeDraft) return;
+    if (!isPersistedDraftId(activeDraftId)) {
+      toast.error("This draft is not saved on the server yet. Upload or save from chat first.");
+      return;
+    }
+    if (isSaving) return;
+    setIsSaving(true);
+    try {
+      const updated = await updateBidDraft(activeDraftId, activeDraft.content);
+      setDrafts((prev) =>
+        prev.map((d) =>
+          d.id === activeDraftId
+            ? {
+                ...d,
+                title: updated.title,
+                content: updated.content,
+                createdAt: draftListDateLabel(updated.created_at, updated.updated_at),
+              }
+            : d
+        )
+      );
+      toast.success("Draft saved");
+    } catch (err) {
+      console.error("[MyDraftsEditor] Save draft failed:", err);
+      const msg = err instanceof Error && err.message.trim() ? err.message.trim() : "Could not save draft";
+      toast.error(msg);
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
+  // Update refs each render so the keyboard effect always calls the latest undo/redo/save.
+  undoFnRef.current = undo;
+  redoFnRef.current = redo;
+  saveDraftFnRef.current = () => { void handleSaveDraft(); };
+
   return (
     <div className="flex min-h-0 flex-1 overflow-hidden">
       {/* CSS Custom Highlight for locked selection — persists after browser focus moves */}
@@ -1035,7 +1251,7 @@ export function MyDraftsEditorView({
 
       <aside
         className={cn(
-          "flex shrink-0 flex-col border-r border-border bg-card",
+          "flex shrink-0 select-none flex-col border-r border-border bg-card",
           "fixed inset-y-0 left-0 z-50 w-60 shadow-xl",
           editorSidebarOpen ? "translate-x-0" : "-translate-x-full",
           "lg:relative lg:inset-auto lg:z-auto lg:shadow-none lg:translate-x-0",
@@ -1205,7 +1421,7 @@ export function MyDraftsEditorView({
       </aside>
 
       <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-        <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-border bg-card px-3 py-2.5">
+        <div className="flex shrink-0 select-none flex-wrap items-center justify-between gap-3 border-b border-border bg-card px-3 py-2.5">
           <div className="flex min-w-0 items-center gap-2">
             <button
               type="button"
@@ -1246,7 +1462,7 @@ export function MyDraftsEditorView({
 
         <div className="flex min-h-0 flex-1 items-stretch overflow-hidden">
           <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden border-r border-border">
-            <div className="shrink-0 overflow-visible border-b border-border bg-background">
+            <div className="shrink-0 select-none overflow-visible border-b border-border bg-background">
               <div className="min-w-0 overflow-visible px-4 py-3 sm:px-6">
                 <div className="flex flex-col gap-2.5">
                   {/* Row 1: label left, utilities right (reference) */}
@@ -1260,7 +1476,9 @@ export function MyDraftsEditorView({
                         <EditorToolbarTooltip label="Undo" shortcut="Ctrl+Z">
                           <button
                             type="button"
-                            className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-background hover:text-foreground"
+                            disabled={!canUndo}
+                            onClick={undo}
+                            className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-background hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
                             aria-label="Undo"
                           >
                             <Undo2 className="h-4 w-4" aria-hidden />
@@ -1269,7 +1487,9 @@ export function MyDraftsEditorView({
                         <EditorToolbarTooltip label="Redo" shortcut="Ctrl+Y">
                           <button
                             type="button"
-                            className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-background hover:text-foreground"
+                            disabled={!canRedo}
+                            onClick={redo}
+                            className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-background hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
                             aria-label="Redo"
                           >
                             <Redo2 className="h-4 w-4" aria-hidden />
@@ -1278,12 +1498,18 @@ export function MyDraftsEditorView({
                         <EditorToolbarTooltip label="Save draft" shortcut="Ctrl+S">
                           <button
                             type="button"
-                            className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-border/50 bg-background px-2.5 text-xs font-medium text-foreground shadow-sm transition-colors hover:bg-muted"
-                            onClick={() => toast.success("Saved (mock)")}
+                            disabled={isSaving}
+                            className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-border/50 bg-background px-2.5 text-xs font-medium text-foreground shadow-sm transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+                            onClick={() => void handleSaveDraft()}
                             aria-label="Save"
+                            aria-busy={isSaving}
                           >
-                            <Save className="h-3.5 w-3.5 shrink-0" aria-hidden />
-                            Save
+                            {isSaving ? (
+                              <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" aria-hidden />
+                            ) : (
+                              <Save className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                            )}
+                            {isSaving ? "Saving…" : "Save"}
                           </button>
                         </EditorToolbarTooltip>
                         <div className="relative shrink-0" ref={downloadRef}>
@@ -1597,7 +1823,7 @@ export function MyDraftsEditorView({
               ) : activeDraft ? (
                 <div className="flex h-full min-h-0 flex-1 flex-col">
                   <div
-                    className="flex shrink-0 gap-1 border-b border-border/80 bg-muted/30 px-4 py-2 sm:px-6"
+                    className="flex shrink-0 select-none gap-1 border-b border-border/80 bg-muted/30 px-4 py-2 sm:px-6"
                     role="tablist"
                     aria-label="Draft document view"
                   >
@@ -1692,11 +1918,42 @@ export function MyDraftsEditorView({
                     ) : (
                       <textarea
                         key={activeDraft.id}
+                        ref={textareaRef}
                         value={activeDraft.content}
                         onChange={(e) => {
                           handleDraftContentChange(e.target.value);
                           // Keep the selection indicator visible while a tool is locked.
                           if (!selectionLockedRef.current) setSelectedText("");
+                          // Debounce history push — flush any pending timer then start a new one.
+                          // The closure captures val so the correct content is pushed even if
+                          // the textarea value has changed by the time the timer fires.
+                          const val = e.target.value;
+                          flushHistoryDebounce();
+                          historyDebounceRef.current = setTimeout(() => {
+                            historyDebounceRef.current = null;
+                            const ta = textareaRef.current;
+                            pushHistory({
+                              content: val,
+                              cursorStart: ta?.selectionStart,
+                              cursorEnd: ta?.selectionEnd,
+                            });
+                          }, 500);
+                        }}
+                        onBlur={() => {
+                          // Flush pending debounce immediately on blur so Undo is available
+                          // after the user clicks away from the textarea.
+                          if (historyDebounceRef.current !== null) {
+                            clearTimeout(historyDebounceRef.current);
+                            historyDebounceRef.current = null;
+                            const ta = textareaRef.current;
+                            if (ta) {
+                              pushHistory({
+                                content: ta.value,
+                                cursorStart: ta.selectionStart,
+                                cursorEnd: ta.selectionEnd,
+                              });
+                            }
+                          }
                         }}
                         onFocus={(e) => {
                           // When the textarea regains focus while a selection is locked,
@@ -1775,7 +2032,7 @@ export function MyDraftsEditorView({
                 sourceLabelBySeq={toolOutputSourceLabelBySeq}
               />
             </div>
-            <div className="shrink-0 border-t border-border bg-card/50 px-3 py-2.5">
+            <div className="shrink-0 select-none border-t border-border bg-card/50 px-3 py-2.5">
               <div className="flex flex-wrap items-center justify-start gap-2">
                 <button
                   type="button"
@@ -1817,7 +2074,7 @@ export function MyDraftsEditorView({
             </div>
             {activeDraft && (selectedText.trim() || selectionLocked) && (
               <div className={cn(
-                "shrink-0 border-t border-border px-3 py-2",
+                "shrink-0 select-none border-t border-border px-3 py-2",
                 selectionLocked ? "bg-primary/10" : "bg-muted/30"
               )}>
                 <p className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
@@ -1849,7 +2106,7 @@ export function MyDraftsEditorView({
                 sourceLabelBySeq={toolOutputSourceLabelBySeq}
               />
             </div>
-            <div className="shrink-0 border-t border-border bg-card/50 px-3 py-2.5">
+            <div className="shrink-0 select-none border-t border-border bg-card/50 px-3 py-2.5">
               <div className="flex flex-wrap items-center gap-2">
                 <button
                   type="button"
