@@ -156,7 +156,10 @@ export async function fetchClientProjects(): Promise<ClientProjectOption[]> {
     skipGlobalLoader: true,
   } as object);
   const projects = response.data?.projects;
-  return Array.isArray(projects) ? projects : [];
+  if (!Array.isArray(projects)) return [];
+  return projects.filter(
+    (p) => typeof p.id === "string" && p.id.trim().length > 0
+  );
 }
 
 /**

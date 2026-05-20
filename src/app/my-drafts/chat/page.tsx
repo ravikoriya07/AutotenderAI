@@ -3,6 +3,7 @@
 import { Suspense, useCallback, useEffect, useState } from "react";
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
 import { MyDraftsChatView } from "@/components/bid-writing/MyDraftsChatView";
+import { ClientZipUploadProvider } from "@/contexts/ClientZipUploadContext";
 import { fetchBidDrafts } from "@/lib/bid-writing/bidWritingApi";
 
 function MyDraftsChatPageContent() {
@@ -25,7 +26,9 @@ function MyDraftsChatPageContent() {
   }
 
   return (
-    <MyDraftsChatView draftCount={draftCount} onDraftSaved={handleDraftSaved} />
+    <ClientZipUploadProvider>
+      <MyDraftsChatView draftCount={draftCount} onDraftSaved={handleDraftSaved} />
+    </ClientZipUploadProvider>
   );
 }
 

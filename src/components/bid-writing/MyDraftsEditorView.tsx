@@ -45,8 +45,23 @@ import {
   sourceLabelMapFromRecord,
   sourcesRecordFromUnknown,
 } from "@/lib/bid-writing/sourceReferences";
-import { MarkdownRenderer } from "@/components/bid-writing/MarkdownRenderer";
 import { EditorToolbarTooltip } from "@/components/bid-writing/EditorToolbarTooltip";
+import {
+  computeToolSelectionSnapshot,
+  editableDomToMarkdown,
+  findRangeFromPlainTextInElement,
+  findSelectionInMarkdown,
+  hashDraftContent,
+  insertToolOutputHtmlAtRange,
+  normalizeAppliedMarkdown,
+  prepareAppliedToolOutput,
+  renderEditableDraftHtml,
+  sanitizeCitationMarkdown,
+  resolveApplyRange,
+  selectionFragmentToMarkdown,
+  spliceMarkdownWithSelection,
+  type ToolSelectionSnapshot,
+} from "@/lib/bid-writing/draftEditableMarkdown";
 import {
   ToolOutputBody,
   ToolOutputHeader,
@@ -144,8 +159,9 @@ type PersistedToolState = {
   toolInputSelectedText: string;
   /** Edit-mode only: character offsets within the textarea value. */
   toolInputSelectionRange: [number, number] | null;
-  /** Preview-mode only: character offsets within the raw markdown string. */
+  /** Character offsets within markdown at tool-run time. */
   toolInputMarkdownRange: [number, number] | null;
+  toolInputContentHash: string | null;
   toolOutputSources?: Record<string, string> | null;
 };
 
@@ -242,42 +258,6 @@ function findTextRangeInElement(el: Element, searchText: string): Range | null {
   }
 }
 
-// Find the character range in `markdown` that corresponds to `selectedText`
-// (which comes from the rendered DOM and may have collapsed whitespace).
-// Returns [start, end] offsets in the original markdown string, or null if not found.
-function findSelectionInMarkdown(markdown: string, selectedText: string): [number, number] | null {
-  const trimmed = selectedText.trim();
-  if (!trimmed) return null;
-
-  // Strategy 1: exact substring match
-  const exactIdx = markdown.indexOf(trimmed);
-  if (exactIdx !== -1) return [exactIdx, exactIdx + trimmed.length];
-
-  // Strategy 2: whitespace-collapsed match.
-  // Build `norm` (whitespace collapsed to single space) and `map` (norm char index →
-  // original markdown index) so we can translate found offsets back to original.
-  const norm: string[] = [];
-  const map: number[] = [];
-  let prevWs = false;
-  for (let i = 0; i < markdown.length; i++) {
-    if (/\s/.test(markdown[i])) {
-      if (!prevWs) { norm.push(' '); map.push(i); prevWs = true; }
-    } else {
-      norm.push(markdown[i]); map.push(i); prevWs = false;
-    }
-  }
-  const normMd = norm.join('');
-  const normSel = trimmed.replace(/\s+/g, ' ');
-  const normStart = normMd.indexOf(normSel);
-  if (normStart === -1) return null;
-
-  const origStart = map[normStart];
-  const normEnd = normStart + normSel.length;
-  // map[normEnd] is the original index of the first character AFTER the match.
-  const origEnd = normEnd < map.length ? map[normEnd] : markdown.length;
-  return [origStart, origEnd];
-}
-
 // ---------------------------------------------------------------------------
 
 interface MyDraftsEditorViewProps {
@@ -350,15 +330,11 @@ export function MyDraftsEditorView({
   const [wcShortenPreset, setWcShortenPreset] = useState<number | null>(null);
   const [wcExpandError, setWcExpandError] = useState<string | null>(null);
   const [wcShortenError, setWcShortenError] = useState<string | null>(null);
-  const [draftDocTab, setDraftDocTab] = useState<"preview" | "edit">("preview");
   const [draftMenuOpenId, setDraftMenuOpenId] = useState<string | null>(null);
   const [selectedText, setSelectedText] = useState("");
   // DOM-sourced word count — kept in sync via useEffect; see comment on that effect.
   const [renderedWordCount, setRenderedWordCount] = useState(0);
 
-  // Tracks textarea selection range so Apply can do a precise splice in edit mode.
-  const textareaSelStartRef = useRef<number>(0);
-  const textareaSelEndRef = useRef<number>(0);
   // Snapshot of the selection captured when a tool is run, so Apply uses
   // the original selection even if the user changes it while streaming.
   const [toolInputSelectedText, setToolInputSelectedText] = useState<string>("");
@@ -373,7 +349,9 @@ export function MyDraftsEditorView({
   const historyIdxRef = useRef(-1);
   const historyDraftIdRef = useRef<string | null>(null);
   const historyDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const contentSyncSkipRef = useRef<string | null>(null);
+  const toolSelectionSnapshotRef = useRef<ToolSelectionSnapshot | null>(null);
+  const [toolInputContentHash, setToolInputContentHash] = useState<string | null>(null);
   const [canUndo, setCanUndo] = useState(false);
   const [canRedo, setCanRedo] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -384,7 +362,7 @@ export function MyDraftsEditorView({
   const saveDraftFnRef = useRef<() => void>(() => {});
 
   const uploadDraftRef = useRef<HTMLInputElement>(null);
-  const contentPreviewRef = useRef<HTMLDivElement>(null);
+  const contentEditorRef = useRef<HTMLDivElement>(null);
   const activeDraft = drafts.find((d) => d.id === activeDraftId) ?? null;
   const activeDraftContent = activeDraft?.content;
   const selectionWordCount = countWords(selectedText);
@@ -395,6 +373,17 @@ export function MyDraftsEditorView({
   const toolOutputSourceLabelBySeq = useMemo(
     () => sourceLabelMapFromRecord(toolOutputSources, sourceLabelBySeq),
     [toolOutputSources, sourceLabelBySeq]
+  );
+
+  const draftSourceLabelBySeq = useMemo(
+    () => sourceLabelMapFromRecord(activeDraft?.sources, sourceLabelBySeq),
+    [activeDraft?.sources, sourceLabelBySeq]
+  );
+
+  /** Draft + latest tool-output sources for citation badges in the editor. */
+  const editorSourceLabelBySeq = useMemo(
+    () => sourceLabelMapFromRecord(toolOutputSources, draftSourceLabelBySeq),
+    [toolOutputSources, draftSourceLabelBySeq]
   );
 
   useEffect(() => {
@@ -421,12 +410,13 @@ export function MyDraftsEditorView({
     setActiveTool(null);
     setToolOutputHeadingTarget(0);
     setToolOutputSources(null);
-    setDraftDocTab("preview");
     setSelectedText("");
     setRenderedWordCount(0);
     setToolInputSelectedText("");
     setToolInputSelectionRange(null);
     setToolInputMarkdownRange(null);
+    setToolInputContentHash(null);
+    toolSelectionSnapshotRef.current = null;
     clearLockedHighlight();
     lockedRangeRef.current = null;
     selectionLockedRef.current = false;
@@ -444,7 +434,21 @@ export function MyDraftsEditorView({
         setToolInputSelectedText(saved.toolInputSelectedText);
         setToolInputSelectionRange(saved.toolInputSelectionRange);
         setToolInputMarkdownRange(saved.toolInputMarkdownRange ?? null);
+        setToolInputContentHash(saved.toolInputContentHash ?? null);
         setToolOutputSources(saved.toolOutputSources ?? null);
+        if (
+          saved.toolInputSelectedText &&
+          saved.toolInputMarkdownRange &&
+          saved.toolInputContentHash
+        ) {
+          toolSelectionSnapshotRef.current = {
+            selectedText: saved.toolInputSelectedText,
+            start: saved.toolInputMarkdownRange[0],
+            end: saved.toolInputMarkdownRange[1],
+            baseContent: "",
+            contentHash: saved.toolInputContentHash,
+          };
+        }
         if (saved.toolInputSelectedText) {
           // The CSS highlight requires a live DOM Range and cannot survive a page
           // refresh. Signal the restore effect to re-apply it once the draft DOM
@@ -474,6 +478,7 @@ export function MyDraftsEditorView({
         toolInputSelectedText,
         toolInputSelectionRange,
         toolInputMarkdownRange,
+        toolInputContentHash,
         toolOutputSources,
       });
     } else {
@@ -482,19 +487,23 @@ export function MyDraftsEditorView({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [toolOutput, toolStreaming, activeDraftId]);
 
-  // activeDraft.content is raw markdown and excludes sources rendered separately, so it
-  // gives a lower word count than the visible text. Read from the committed DOM instead to
-  // match what the user sees (and what Ctrl+A selects). Edit-tab falls back to raw content.
+  // Sync rendered HTML when draft content changes externally (load, undo, apply, append).
   useEffect(() => {
-    if (draftDocTab === "preview") {
-      // If the preview DOM isn't mounted yet (loading spinner visible), skip — the effect
-      // will re-run once activeDraftLoading becomes false and the DOM is ready.
-      if (!contentPreviewRef.current) return;
-      setRenderedWordCount(countWords(contentPreviewRef.current.textContent ?? ""));
-    } else {
-      setRenderedWordCount(countWords(activeDraft?.content ?? ""));
+    const el = contentEditorRef.current;
+    if (!el || activeDraftLoading) return;
+    const content = activeDraftContent ?? "";
+    if (contentSyncSkipRef.current === content) {
+      contentSyncSkipRef.current = null;
+      return;
     }
-  }, [activeDraftId, activeDraft?.content, draftDocTab, activeDraftLoading]);
+    el.innerHTML = renderEditableDraftHtml(content, editorSourceLabelBySeq);
+    setRenderedWordCount(countWords(el.textContent ?? ""));
+
+    const snap = toolSelectionSnapshotRef.current;
+    if (snap && !snap.baseContent && content) {
+      toolSelectionSnapshotRef.current = { ...snap, baseContent: content };
+    }
+  }, [activeDraftId, activeDraftContent, activeDraftLoading, editorSourceLabelBySeq]);
 
   useEffect(() => {
     function onDocClick(e: MouseEvent) {
@@ -508,32 +517,22 @@ export function MyDraftsEditorView({
     return () => document.removeEventListener("mousedown", onDocClick);
   }, []);
 
-  // Clear selection and locked highlight when switching tabs
-  useEffect(() => {
-    clearLockedHighlight();
-    lockedRangeRef.current = null;
-    selectionLockedRef.current = false;
-    setSelectionLocked(false);
-    setSelectedText("");
-  }, [draftDocTab]);
-
-  // Track browser text selection within the preview content area.
+  // Track browser text selection within the editable draft content area.
   // While streaming OR while a selection is locked, accidental click-away events
   // are suppressed so the selection indicator and CSS highlight stay visible.
   useEffect(() => {
-    if (draftDocTab !== "preview") return;
     function handleSelChange() {
       const sel = window.getSelection();
       const isLocked = selectionLockedRef.current;
 
-      if (!sel || sel.isCollapsed || !contentPreviewRef.current) {
+      if (!sel || sel.isCollapsed || !contentEditorRef.current) {
         // Collapsed/empty selection: only clear state if nothing is locked
         if (!isLocked) setSelectedText("");
         return;
       }
       try {
         const range = sel.getRangeAt(0);
-        if (contentPreviewRef.current.contains(range.commonAncestorContainer)) {
+        if (contentEditorRef.current.contains(range.commonAncestorContainer)) {
           // Deliberate new selection inside the content area — always accept it.
           // If a locked selection existed, this new one replaces it.
           if (selectionLockedRef.current) {
@@ -542,7 +541,7 @@ export function MyDraftsEditorView({
             selectionLockedRef.current = false;
             setSelectionLocked(false);
           }
-          setSelectedText(sel.toString());
+          setSelectedText(selectionFragmentToMarkdown(range.cloneContents()));
         } else if (!isLocked) {
           setSelectedText("");
         }
@@ -552,11 +551,10 @@ export function MyDraftsEditorView({
     }
     document.addEventListener("selectionchange", handleSelChange);
     return () => document.removeEventListener("selectionchange", handleSelChange);
-  }, [draftDocTab]);
+  }, []);
 
-  // Keyboard shortcuts scoped to the preview content area
+  // Keyboard shortcuts scoped to the editable draft content area
   useEffect(() => {
-    if (draftDocTab !== "preview") return;
     function handleKeyDown(e: KeyboardEvent) {
       if (e.key === "Escape") {
         // During streaming Escape is a no-op; outside streaming it intentionally clears
@@ -570,7 +568,7 @@ export function MyDraftsEditorView({
         return;
       }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "a") {
-        const el = contentPreviewRef.current;
+        const el = contentEditorRef.current;
         if (!el) return;
         const sel = window.getSelection();
         const hasSelectionInContent =
@@ -589,7 +587,7 @@ export function MyDraftsEditorView({
     }
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [draftDocTab, selectedText]);
+  }, [selectedText]);
 
   // Auto-select default expand preset when popover opens or base word count changes
   useEffect(() => {
@@ -611,10 +609,8 @@ export function MyDraftsEditorView({
   // Re-apply the CSS locked-selection highlight after a page refresh.
   //
   // Sequence: activeDraftId effect restores state from sessionStorage and sets
-  // pendingHighlightRestore=true. The draftDocTab effect (declared before this one)
-  // runs in the same commit and clears selectionLocked. This effect fires in the
-  // NEXT render (because pendingHighlightRestore just changed to true) and
-  // re-applies the highlight + lock once the draft DOM is ready.
+  // pendingHighlightRestore=true. This effect re-applies the highlight + lock once
+  // the draft DOM is ready after a page refresh.
   useEffect(() => {
     if (!pendingHighlightRestore || activeDraftLoading) return;
 
@@ -623,49 +619,28 @@ export function MyDraftsEditorView({
       return;
     }
 
-    if (draftDocTab === "preview") {
-      const el = contentPreviewRef.current;
-      if (!el) return; // DOM not rendered yet — re-fires when activeDraft?.content arrives
+    const el = contentEditorRef.current;
+    if (!el) return; // DOM not rendered yet — re-fires when activeDraft?.content arrives
 
-      const range = findTextRangeInElement(el, toolInputSelectedText);
-      if (range) {
-        lockedRangeRef.current = range;
-        applyLockedHighlight(range);
-        selectionLockedRef.current = true;
-        setSelectionLocked(true);
-      } else {
-        // Draft content changed since the tool ran — the range is no longer valid.
-        // Keep tool output visible but clear the selection lock so Apply won't
-        // silently replace the wrong text.
-        lockedRangeRef.current = null;
-        selectionLockedRef.current = false;
-        setSelectionLocked(false);
-        setToolInputSelectedText("");
-        setToolInputSelectionRange(null);
-      }
+    const range = findTextRangeInElement(el, toolInputSelectedText);
+    if (range) {
+      lockedRangeRef.current = range;
+      applyLockedHighlight(range);
+      selectionLockedRef.current = true;
+      setSelectionLocked(true);
     } else {
-      // Edit mode: validate position-based range against current content.
-      if (toolInputSelectionRange) {
-        const [start, end] = toolInputSelectionRange;
-        const actual = activeDraft?.content.substring(start, end) ?? "";
-        if (actual === toolInputSelectedText) {
-          selectionLockedRef.current = true;
-          setSelectionLocked(true);
-        } else {
-          lockedRangeRef.current = null;
-          selectionLockedRef.current = false;
-          setSelectionLocked(false);
-          setToolInputSelectedText("");
-          setToolInputSelectionRange(null);
-        }
-      }
+      // Draft content changed since the tool ran — the range is no longer valid.
+      lockedRangeRef.current = null;
+      selectionLockedRef.current = false;
+      setSelectionLocked(false);
+      setToolInputSelectedText("");
+      setToolInputSelectionRange(null);
+      setToolInputMarkdownRange(null);
     }
 
     setPendingHighlightRestore(false);
-  // activeDraft?.content triggers a retry when the draft DOM becomes available;
-  // toolInputSelectedText/toolInputSelectionRange are the values being validated.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pendingHighlightRestore, activeDraftLoading, draftDocTab, activeDraft?.content]);
+  }, [pendingHighlightRestore, activeDraftLoading, activeDraft?.content]);
 
   // Initialize the undo history with the first entry once the draft content is available.
   // Runs when the draft finishes loading (or immediately if content is already present).
@@ -684,9 +659,7 @@ export function MyDraftsEditorView({
 
   // Global keyboard shortcuts for Undo/Redo/Save.
   // Registered once with [] deps; reads live state via stable refs.
-  // We skip interception when focus is in any form control OTHER than the draft
-  // textarea — that way Ctrl+Z in the Ask AI textarea or word-count inputs works
-  // natively without triggering our history navigation.
+  // Skip when focus is in other form controls (Ask AI, word-count inputs).
   useEffect(() => {
     function handleUndoRedoKey(e: KeyboardEvent) {
       const ctrl = e.ctrlKey || e.metaKey;
@@ -694,10 +667,7 @@ export function MyDraftsEditorView({
 
       const target = e.target as HTMLElement;
       const tag = target.tagName.toLowerCase();
-      const isNonDraftFormControl =
-        (tag === "input" || tag === "textarea") &&
-        target !== textareaRef.current;
-      if (isNonDraftFormControl) return;
+      if (tag === "input" || tag === "textarea") return;
 
       if (e.key === "z" || e.key === "Z") {
         if (e.shiftKey) {
@@ -763,35 +733,171 @@ export function MyDraftsEditorView({
     }
   }
 
+  /** Read the latest markdown from the contenteditable DOM (source of truth while editing). */
+  function getCurrentEditorMarkdown(): string {
+    const el = contentEditorRef.current;
+    return el ? editableDomToMarkdown(el) : (activeDraft?.content ?? "");
+  }
+
+  /** Sync editor DOM → draft state so Apply uses the same markdown string as the visible editor. */
+  function syncEditorMarkdownToDraftState(): string {
+    const md = getCurrentEditorMarkdown();
+    if (activeDraftId) {
+      contentSyncSkipRef.current = md;
+      setDrafts((prev) =>
+        prev.map((d) => (d.id === activeDraftId ? { ...d, content: md } : d))
+      );
+    }
+    return md;
+  }
+
+  function captureSelectionAtToolRun(selAtRun: string) {
+    const editor = contentEditorRef.current;
+    const domRange = lockedRangeRef.current;
+    // Keep original API markdown before DOM round-trip overwrites it.
+    const originalState = activeDraft?.content ?? "";
+    const fromDom = getCurrentEditorMarkdown();
+
+    const bases = [originalState, fromDom].filter(
+      (s, i, arr) => s.length > 0 && arr.indexOf(s) === i
+    );
+
+    let snap: ToolSelectionSnapshot | null = null;
+    for (const base of bases) {
+      const attempt = computeToolSelectionSnapshot(base, selAtRun, editor, domRange);
+      if (attempt && attempt.start >= 0 && attempt.end > attempt.start) {
+        snap = attempt;
+        break;
+      }
+      if (!snap) snap = attempt;
+    }
+
+    toolSelectionSnapshotRef.current = snap;
+    if (snap && snap.start >= 0 && snap.end > snap.start) {
+      setToolInputMarkdownRange([snap.start, snap.end]);
+      setToolInputContentHash(snap.contentHash);
+    } else {
+      setToolInputMarkdownRange(null);
+      setToolInputContentHash(snap?.contentHash ?? hashDraftContent(fromDom));
+    }
+  }
+
+  /** Last-resort Apply: replace locked/visible text directly in the editor DOM. */
+  function applyOutputViaDomRange(preparedOutput: string): boolean {
+    const el = contentEditorRef.current;
+    const sel = toolInputSelectedText.trim();
+    if (!el || !sel) return false;
+
+    let range: Range | null = null;
+    try {
+      if (
+        lockedRangeRef.current &&
+        el.contains(lockedRangeRef.current.commonAncestorContainer)
+      ) {
+        range = lockedRangeRef.current.cloneRange();
+      }
+    } catch {
+      range = null;
+    }
+
+    if (!range) {
+      range = findTextRangeInElement(el, sel);
+    }
+    if (!range) {
+      range = findRangeFromPlainTextInElement(el, sel);
+    }
+    if (!range) return false;
+
+    try {
+      const html = renderEditableDraftHtml(
+        sanitizeCitationMarkdown(preparedOutput, editorSourceLabelBySeq),
+        editorSourceLabelBySeq
+      );
+      insertToolOutputHtmlAtRange(range, html);
+      commitDraftContent(getCurrentEditorMarkdown(), true);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /** Push draft state + refresh the visible editor immediately (Apply/Append/undo). */
+  function commitDraftContent(newContent: string, pushNow = false) {
+    if (!activeDraftId) return;
+    contentSyncSkipRef.current = null;
+
+    if (pushNow) {
+      flushHistoryDebounce();
+      const currentFromDom = getCurrentEditorMarkdown();
+      const top = historyRef.current[historyIdxRef.current];
+      if (!top || top.content !== currentFromDom) {
+        pushHistory({ content: currentFromDom });
+      }
+      const last = historyRef.current[historyRef.current.length - 1];
+      if (!last || last.content !== newContent) {
+        pushHistory({ content: newContent });
+      }
+      syncHistoryButtons();
+    }
+
+    setDrafts((prev) =>
+      prev.map((d) => (d.id === activeDraftId ? { ...d, content: newContent } : d))
+    );
+
+    const el = contentEditorRef.current;
+    if (el) {
+      el.innerHTML = renderEditableDraftHtml(newContent, editorSourceLabelBySeq);
+      setRenderedWordCount(countWords(el.textContent ?? ""));
+    }
+  }
+
   // Cancel any pending debounce and push the current draft content to history
   // if it differs from the top entry. Call this before any navigation (undo/redo)
   // or before an explicit content replacement (Apply/Append) so no typing is lost.
   function snapshotCurrentContent() {
     flushHistoryDebounce();
-    const currentContent = activeDraft?.content ?? "";
+    const currentContent = getCurrentEditorMarkdown();
     const top = historyRef.current[historyIdxRef.current];
     if (!top || top.content === currentContent) return;
-    const ta = draftDocTab === "edit" ? textareaRef.current : null;
-    pushHistory({
-      content: currentContent,
-      cursorStart: ta?.selectionStart,
-      cursorEnd: ta?.selectionEnd,
-    });
+    pushHistory({ content: currentContent });
+  }
+
+  function handleEditorInput() {
+    const el = contentEditorRef.current;
+    if (!el || !activeDraftId) return;
+    const markdown = editableDomToMarkdown(el);
+    contentSyncSkipRef.current = markdown;
+    handleDraftContentChange(markdown);
+    if (!selectionLockedRef.current) setSelectedText("");
+    setRenderedWordCount(countWords(el.textContent ?? ""));
+    const val = markdown;
+    flushHistoryDebounce();
+    historyDebounceRef.current = setTimeout(() => {
+      historyDebounceRef.current = null;
+      pushHistory({ content: val });
+    }, 500);
+  }
+
+  function handleEditorBlur() {
+    if (historyDebounceRef.current !== null) {
+      clearTimeout(historyDebounceRef.current);
+      historyDebounceRef.current = null;
+      const el = contentEditorRef.current;
+      if (el) {
+        pushHistory({ content: editableDomToMarkdown(el) });
+      }
+    }
   }
 
   function handleDraftContentChange(content: string, pushNow = false) {
     if (!activeDraftId) return;
+    if (pushNow) {
+      commitDraftContent(content, true);
+      return;
+    }
     setDrafts((prev) =>
       prev.map((d) => (d.id === activeDraftId ? { ...d, content } : d))
     );
-    if (pushNow) {
-      // Snapshot pre-change content first (captures any in-progress typing that
-      // hasn't been committed by the debounce yet, so Apply/Append is undoable in
-      // two steps: undo the action, then undo the typing that preceded it).
-      snapshotCurrentContent();
-      const ta = textareaRef.current;
-      pushHistory({ content, cursorStart: ta?.selectionStart, cursorEnd: ta?.selectionEnd });
-    }
   }
 
   function undo() {
@@ -807,12 +913,6 @@ export function MyDraftsEditorView({
       prev.map((d) => (d.id === activeDraftId ? { ...d, content: entry.content } : d))
     );
     syncHistoryButtons();
-    if (draftDocTab === "edit" && textareaRef.current) {
-      const ta = textareaRef.current;
-      requestAnimationFrame(() => {
-        ta.setSelectionRange(entry.cursorStart ?? 0, entry.cursorEnd ?? 0);
-      });
-    }
   }
 
   function redo() {
@@ -828,12 +928,6 @@ export function MyDraftsEditorView({
       prev.map((d) => (d.id === activeDraftId ? { ...d, content: entry.content } : d))
     );
     syncHistoryButtons();
-    if (draftDocTab === "edit" && textareaRef.current) {
-      const ta = textareaRef.current;
-      requestAnimationFrame(() => {
-        ta.setSelectionRange(entry.cursorStart ?? 0, entry.cursorEnd ?? 0);
-      });
-    }
   }
 
   function getToolInputText(): string {
@@ -861,44 +955,37 @@ export function MyDraftsEditorView({
       return;
     }
 
-    // Snapshot selection at tool-run time so Apply can reference it after streaming.
     const selAtRun = selectedText.trim();
     setToolInputSelectedText(selAtRun);
-    if (selAtRun && draftDocTab === "edit") {
-      // Edit mode: store exact textarea character offsets.
-      setToolInputSelectionRange([textareaSelStartRef.current, textareaSelEndRef.current]);
-      setToolInputMarkdownRange(null);
-    } else if (selAtRun && draftDocTab === "preview") {
-      // Preview mode: find the selection in the raw markdown NOW (before content changes).
-      // The DOM text and raw markdown differ (bold markers, bullet prefixes, whitespace),
-      // so we use findSelectionInMarkdown which tries exact then whitespace-collapsed match.
-      setToolInputSelectionRange(null);
-      setToolInputMarkdownRange(findSelectionInMarkdown(activeDraft.content, selAtRun));
-    } else {
-      setToolInputSelectionRange(null);
-      setToolInputMarkdownRange(null);
-    }
 
-    // Lock the selection visually for the entire tool lifecycle.
-    // In preview mode: apply a CSS Custom Highlight so the highlight persists even
-    // after the browser's native selection is removed by clicks elsewhere.
-    // In edit mode: preserve state refs so the selection can be restored on focus.
+    // Lock selection visually first, then capture stable markdown offsets (not live DOM).
     if (selAtRun) {
-      clearLockedHighlight(); // clear any previous lock first
-      if (draftDocTab === "preview") {
-        const sel = window.getSelection();
-        if (sel && !sel.isCollapsed && contentPreviewRef.current) {
-          try {
-            const range = sel.getRangeAt(0);
-            if (contentPreviewRef.current.contains(range.commonAncestorContainer)) {
-              lockedRangeRef.current = range.cloneRange();
-              applyLockedHighlight(lockedRangeRef.current);
-            }
-          } catch { /* ignore */ }
+      clearLockedHighlight();
+      const sel = window.getSelection();
+      if (sel && !sel.isCollapsed && contentEditorRef.current) {
+        try {
+          const range = sel.getRangeAt(0);
+          if (contentEditorRef.current.contains(range.commonAncestorContainer)) {
+            lockedRangeRef.current = range.cloneRange();
+            applyLockedHighlight(lockedRangeRef.current);
+          }
+        } catch { /* ignore */ }
+      }
+      if (!lockedRangeRef.current && contentEditorRef.current) {
+        const domRange = findTextRangeInElement(contentEditorRef.current, selAtRun);
+        if (domRange) {
+          lockedRangeRef.current = domRange;
+          applyLockedHighlight(domRange);
         }
       }
       selectionLockedRef.current = true;
       setSelectionLocked(true);
+      captureSelectionAtToolRun(selAtRun);
+    } else {
+      setToolInputSelectionRange(null);
+      setToolInputMarkdownRange(null);
+      setToolInputContentHash(null);
+      toolSelectionSnapshotRef.current = null;
     }
 
     toolStreamAbortRef.current?.abort();
@@ -1038,51 +1125,135 @@ export function MyDraftsEditorView({
     setToolInputSelectedText("");
     setToolInputSelectionRange(null);
     setToolInputMarkdownRange(null);
+    setToolInputContentHash(null);
+    toolSelectionSnapshotRef.current = null;
     setSelectedText("");
     window.getSelection()?.removeAllRanges();
   }
 
   function applyOutput() {
     if (!toolOutput || !activeDraftId || !activeDraft) return;
-    const currentContent = activeDraft.content;
-    let newContent: string;
+    flushHistoryDebounce();
 
-    if (toolInputSelectedText) {
-      if (toolInputSelectionRange) {
-        // Edit mode: splice using exact textarea character offsets.
-        const [start, end] = toolInputSelectionRange;
-        newContent = currentContent.slice(0, start) + toolOutput + currentContent.slice(end);
-      } else if (toolInputMarkdownRange) {
-        // Preview mode: splice using the markdown character range computed at tool-run time.
-        const [start, end] = toolInputMarkdownRange;
-        newContent = currentContent.slice(0, start) + toolOutput + currentContent.slice(end);
-      } else {
-        // Selection existed but couldn't be mapped to a markdown range (e.g. selection
-        // crossed heavily-formatted elements). Refuse to silently replace the full draft.
-        toast.error(
-          "Could not locate the selected range in the raw markdown. " +
-          "Switch to the Edit tab, re-select the text there, and run the tool again."
+    const preparedOutput = prepareAppliedToolOutput(
+      toolOutput,
+      toolOutputHeadingTarget,
+      editorSourceLabelBySeq
+    );
+    const sel = toolInputSelectedText.trim();
+
+    if (sel) {
+      const snap = toolSelectionSnapshotRef.current;
+      const fromDom = getCurrentEditorMarkdown();
+      const bases = [
+        snap?.baseContent,
+        fromDom,
+        activeDraft.content,
+      ].filter((s): s is string => Boolean(s && s.length > 0));
+      const uniqueBases = bases.filter((s, i, arr) => arr.indexOf(s) === i);
+
+      let range: [number, number] | null = null;
+      let markdownForSplice = fromDom;
+
+      for (const base of uniqueBases) {
+        const found = resolveApplyRange(base, snap, sel);
+        if (found) {
+          range = found;
+          markdownForSplice =
+            base === fromDom || hashDraftContent(base) === hashDraftContent(fromDom)
+              ? fromDom
+              : base;
+          break;
+        }
+      }
+
+      if (
+        !range &&
+        snap &&
+        snap.start >= 0 &&
+        snap.end > snap.start &&
+        snap.end <= snap.baseContent.length
+      ) {
+        range = [snap.start, snap.end];
+        markdownForSplice = snap.baseContent;
+        if (markdownForSplice !== fromDom) {
+          const mapped = findSelectionInMarkdown(fromDom, sel, snap.start);
+          if (mapped) {
+            range = mapped;
+            markdownForSplice = fromDom;
+          }
+        }
+      }
+
+      if (range && range[0] >= 0 && range[1] > range[0]) {
+        const contentToSplice =
+          markdownForSplice === fromDom ? fromDom : getCurrentEditorMarkdown();
+        const end = Math.min(range[1], contentToSplice.length);
+        const start = Math.min(range[0], end);
+        commitDraftContent(
+          spliceMarkdownWithSelection(contentToSplice, start, end, preparedOutput),
+          true
         );
+        clearOutputState();
+        toast.success("Applied to selection");
         return;
       }
-    } else {
-      // No selection — replace the full draft content.
-      newContent = toolOutput;
+
+      if (applyOutputViaDomRange(preparedOutput)) {
+        clearOutputState();
+        toast.success("Applied to selection");
+        return;
+      }
+
+      toast.error(
+        "Could not locate the selected range in the draft. Re-select the text and run the tool again."
+      );
+      return;
     }
 
-    handleDraftContentChange(newContent, true);
+    commitDraftContent(preparedOutput, true);
     clearOutputState();
-    toast.success(toolInputSelectedText ? "Applied to selection" : "Applied to draft");
+    toast.success("Applied to draft");
   }
 
   function appendOutput() {
     if (!toolOutput || !activeDraftId || !activeDraft) return;
-    const newContent = activeDraft.content
-      ? `${activeDraft.content.trimEnd()}\n\n${toolOutput}`
-      : toolOutput;
-    handleDraftContentChange(newContent, true);
+    flushHistoryDebounce();
+
+    const labelMap = editorSourceLabelBySeq;
+    const base = sanitizeCitationMarkdown(getCurrentEditorMarkdown(), labelMap).trimEnd();
+    const appended = prepareAppliedToolOutput(
+      toolOutput,
+      toolOutputHeadingTarget,
+      labelMap
+    );
+    const newContent = normalizeAppliedMarkdown(
+      sanitizeCitationMarkdown(
+        base ? `${base}\n\n${appended}` : appended,
+        labelMap
+      )
+    );
+
+    commitDraftContent(newContent, true);
+
+    if (toolOutputSources && Object.keys(toolOutputSources).length > 0) {
+      setDrafts((prev) =>
+        prev.map((d) =>
+          d.id === activeDraftId
+            ? { ...d, sources: { ...(d.sources ?? {}), ...toolOutputSources } }
+            : d
+        )
+      );
+    }
+
     clearOutputState();
     toast.success("Appended to draft");
+
+    requestAnimationFrame(() => {
+      const el = contentEditorRef.current;
+      if (!el) return;
+      el.lastElementChild?.scrollIntoView({ behavior: "smooth", block: "end" });
+    });
   }
 
   async function sendAskAi() {
@@ -1099,15 +1270,33 @@ export function MyDraftsEditorView({
 
     const selAtRun = selectedText.trim();
     setToolInputSelectedText(selAtRun);
-    if (selAtRun && draftDocTab === "edit") {
-      setToolInputSelectionRange([textareaSelStartRef.current, textareaSelEndRef.current]);
-      setToolInputMarkdownRange(null);
-    } else if (selAtRun && draftDocTab === "preview") {
-      setToolInputSelectionRange(null);
-      setToolInputMarkdownRange(findSelectionInMarkdown(activeDraft.content, selAtRun));
+    if (selAtRun) {
+      clearLockedHighlight();
+      const sel = window.getSelection();
+      if (sel && !sel.isCollapsed && contentEditorRef.current) {
+        try {
+          const range = sel.getRangeAt(0);
+          if (contentEditorRef.current.contains(range.commonAncestorContainer)) {
+            lockedRangeRef.current = range.cloneRange();
+            applyLockedHighlight(lockedRangeRef.current);
+          }
+        } catch { /* ignore */ }
+      }
+      if (!lockedRangeRef.current && contentEditorRef.current) {
+        const domRange = findTextRangeInElement(contentEditorRef.current, selAtRun);
+        if (domRange) {
+          lockedRangeRef.current = domRange;
+          applyLockedHighlight(domRange);
+        }
+      }
+      selectionLockedRef.current = true;
+      setSelectionLocked(true);
+      captureSelectionAtToolRun(selAtRun);
     } else {
       setToolInputSelectionRange(null);
       setToolInputMarkdownRange(null);
+      setToolInputContentHash(null);
+      toolSelectionSnapshotRef.current = null;
     }
 
     toolStreamAbortRef.current?.abort();
@@ -1238,6 +1427,69 @@ export function MyDraftsEditorView({
         ::highlight(atai-locked-selection) {
           background-color: rgb(139 92 246 / 0.22);
           color: inherit;
+        }
+        .atai-citation-ref {
+          position: relative;
+          display: inline;
+          vertical-align: baseline;
+          margin: 0 0.125em;
+        }
+        .atai-citation-badge {
+          display: inline-flex;
+          cursor: help;
+          align-items: center;
+          border-radius: 0.375rem;
+          padding: 0.125rem 0.375rem;
+          font-size: 0.78em;
+          font-weight: 600;
+          line-height: 1;
+          background-color: rgb(139 92 246 / 0.1);
+          color: rgb(124 58 237);
+          box-shadow: 0 0 0 1px rgb(139 92 246 / 0.2);
+          transition: background-color 150ms, box-shadow 150ms;
+        }
+        .atai-citation-ref:hover .atai-citation-badge,
+        .atai-citation-ref:focus-within .atai-citation-badge {
+          background-color: rgb(139 92 246 / 0.2);
+          box-shadow: 0 0 0 1px rgb(139 92 246 / 0.4);
+        }
+        .atai-citation-tooltip {
+          pointer-events: none;
+          position: absolute;
+          visibility: hidden;
+          top: calc(100% + 6px);
+          left: 50%;
+          transform: translateX(-50%);
+          z-index: 50;
+          width: max-content;
+          max-width: min(20rem, calc(100vw - 2rem));
+          border-radius: 0.5rem;
+          border: 1px solid rgb(139 92 246 / 0.2);
+          background: hsl(var(--popover, 0 0% 100%));
+          color: hsl(var(--popover-foreground, 0 0% 9%));
+          padding: 0.5rem 0.75rem;
+          font-size: 11px;
+          font-weight: 500;
+          line-height: 1.375;
+          box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.1);
+          opacity: 0;
+          transition: opacity 150ms;
+          white-space: pre-line;
+          text-align: left;
+        }
+        .atai-citation-ref:hover .atai-citation-tooltip,
+        .atai-citation-ref:focus-within .atai-citation-tooltip {
+          visibility: visible;
+          opacity: 1;
+        }
+        .atai-citation-tooltip-label {
+          display: block;
+          font-size: 10px;
+          font-weight: 600;
+          text-transform: uppercase;
+          letter-spacing: 0.05em;
+          color: rgb(124 58 237);
+          margin-bottom: 0.125rem;
         }
       `}</style>
       <div
@@ -1757,7 +2009,7 @@ export function MyDraftsEditorView({
                     >
                       {selectedText.trim() || selectionLocked
                         ? `${selectionWordCount || countWords(toolInputSelectedText)} word${(selectionWordCount || countWords(toolInputSelectedText)) !== 1 ? "s" : ""} selected — tool will process selection only`
-                        : "Select text then pick a tool · click to edit"}
+                        : "Select text then pick a tool"}
                     </p>
                     {selectionLocked && (
                       <span className="inline-flex shrink-0 items-center rounded-full bg-primary/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-primary">
@@ -1821,183 +2073,82 @@ export function MyDraftsEditorView({
                   )}
                 </div>
               ) : activeDraft ? (
-                <div className="flex h-full min-h-0 flex-1 flex-col">
-                  <div
-                    className="flex shrink-0 select-none gap-1 border-b border-border/80 bg-muted/30 px-4 py-2 sm:px-6"
-                    role="tablist"
-                    aria-label="Draft document view"
-                  >
-                    {(
-                      [
-                        ["preview", "Preview"] as const,
-                        ["edit", "Edit markdown"] as const,
-                      ] as const
-                    ).map(([id, label]) => (
-                      <button
-                        key={id}
-                        type="button"
-                        role="tab"
-                        aria-selected={draftDocTab === id}
-                        onClick={() => setDraftDocTab(id)}
-                        className={cn(
-                          "rounded-lg px-3 py-1.5 text-xs font-medium transition-colors",
-                          draftDocTab === id
-                            ? "bg-background text-foreground shadow-sm ring-1 ring-border/70"
-                            : "text-muted-foreground hover:bg-background/80 hover:text-foreground"
-                        )}
-                      >
-                        {label}
-                      </button>
-                    ))}
-                  </div>
-                  <div className="min-h-0 flex-1 overflow-y-auto" role="tabpanel">
-                    {draftDocTab === "preview" ? (
-                      <div
-                        ref={contentPreviewRef}
-                        tabIndex={0}
-                        className="px-4 py-4 focus:outline-none sm:px-6 sm:py-6"
-                        onMouseDown={() => contentPreviewRef.current?.focus()}
-                      >
-                        {activeDraft.content.trim() ? (
-                          <MarkdownRenderer
-                            content={activeDraft.content}
-                            className="text-sm leading-relaxed text-foreground"
-                            sourceLabelBySeq={toolOutputSourceLabelBySeq}
-                          />
-                        ) : (
-                          <p className="text-sm text-muted-foreground">
-                            No content yet. Switch to <strong>Edit markdown</strong> to add text.
-                          </p>
-                        )}
-                        {activeDraft.sources && Object.keys(activeDraft.sources).length > 0 && (
-                          <div className="mt-8 border-t border-border pt-6">
-                            <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
-                              Sources
-                            </p>
-                            <ul className="mt-3 space-y-2 text-sm text-foreground">
-                              {sortDraftSourceKeys(Object.keys(activeDraft.sources)).map((key) => (
-                                <li key={key} className="flex items-start gap-2.5">
-                                  <span className="mt-0.5 inline-flex shrink-0 items-center rounded-md bg-primary/10 px-1.5 py-0.5 text-[0.78em] font-semibold leading-none text-primary ring-1 ring-primary/20">
-                                    [{key}]
-                                  </span>
-                                  <span className="min-w-0 leading-snug text-foreground">{activeDraft.sources![key]}</span>
-                                </li>
-                              ))}
-                            </ul>
-                          </div>
-                        )}
-                        {activeDraft.web_sources && activeDraft.web_sources.length > 0 && (
-                          <div className="mt-8 border-t border-border pt-6">
-                            <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
-                              Web sources
-                            </p>
-                            <ul className="mt-3 list-disc space-y-2 pl-5 text-sm">
-                              {activeDraft.web_sources.map((item, idx) => {
-                                const { label, href } = formatWebSourceLine(item);
-                                return (
-                                  <li key={idx} className="break-words pl-1">
-                                    {href ? (
-                                      <a
-                                        href={href}
-                                        target="_blank"
-                                        rel="noopener noreferrer"
-                                        className="text-primary underline-offset-4 hover:underline"
-                                      >
-                                        {label}
-                                      </a>
-                                    ) : (
-                                      <span className="text-foreground">{label}</span>
-                                    )}
-                                  </li>
-                                );
-                              })}
-                            </ul>
-                          </div>
-                        )}
+                <div className="min-h-0 flex-1 overflow-y-auto">
+                  <div className="px-4 py-4 sm:px-6 sm:py-6">
+                    <div
+                      ref={contentEditorRef}
+                      contentEditable
+                      suppressContentEditableWarning
+                      spellCheck
+                      role="textbox"
+                      aria-label="Draft content"
+                      aria-multiline
+                      tabIndex={0}
+                      data-placeholder="Start typing your draft here…"
+                      className={cn(
+                        "markdown-tool-output min-h-[50vh] min-w-0 max-w-full text-sm leading-relaxed text-foreground",
+                        "focus:outline-none",
+                        "empty:before:pointer-events-none empty:before:block empty:before:text-muted-foreground empty:before:content-[attr(data-placeholder)]"
+                      )}
+                      onInput={handleEditorInput}
+                      onBlur={handleEditorBlur}
+                      onMouseDown={() => contentEditorRef.current?.focus()}
+                      onKeyDown={(e) => {
+                        if (e.key === "Escape") {
+                          if (toolStreamingRef.current) return;
+                          clearLockedHighlight();
+                          lockedRangeRef.current = null;
+                          selectionLockedRef.current = false;
+                          setSelectionLocked(false);
+                          window.getSelection()?.removeAllRanges();
+                          setSelectedText("");
+                        }
+                      }}
+                    />
+                    {activeDraft.sources && Object.keys(activeDraft.sources).length > 0 && (
+                      <div className="mt-8 border-t border-border pt-6">
+                        <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+                          Sources
+                        </p>
+                        <ul className="mt-3 space-y-2 text-sm text-foreground">
+                          {sortDraftSourceKeys(Object.keys(activeDraft.sources)).map((key) => (
+                            <li key={key} className="flex items-start gap-2.5">
+                              <span className="mt-0.5 inline-flex shrink-0 items-center rounded-md bg-primary/10 px-1.5 py-0.5 text-[0.78em] font-semibold leading-none text-primary ring-1 ring-primary/20">
+                                [{key}]
+                              </span>
+                              <span className="min-w-0 leading-snug text-foreground">{activeDraft.sources![key]}</span>
+                            </li>
+                          ))}
+                        </ul>
                       </div>
-                    ) : (
-                      <textarea
-                        key={activeDraft.id}
-                        ref={textareaRef}
-                        value={activeDraft.content}
-                        onChange={(e) => {
-                          handleDraftContentChange(e.target.value);
-                          // Keep the selection indicator visible while a tool is locked.
-                          if (!selectionLockedRef.current) setSelectedText("");
-                          // Debounce history push — flush any pending timer then start a new one.
-                          // The closure captures val so the correct content is pushed even if
-                          // the textarea value has changed by the time the timer fires.
-                          const val = e.target.value;
-                          flushHistoryDebounce();
-                          historyDebounceRef.current = setTimeout(() => {
-                            historyDebounceRef.current = null;
-                            const ta = textareaRef.current;
-                            pushHistory({
-                              content: val,
-                              cursorStart: ta?.selectionStart,
-                              cursorEnd: ta?.selectionEnd,
-                            });
-                          }, 500);
-                        }}
-                        onBlur={() => {
-                          // Flush pending debounce immediately on blur so Undo is available
-                          // after the user clicks away from the textarea.
-                          if (historyDebounceRef.current !== null) {
-                            clearTimeout(historyDebounceRef.current);
-                            historyDebounceRef.current = null;
-                            const ta = textareaRef.current;
-                            if (ta) {
-                              pushHistory({
-                                content: ta.value,
-                                cursorStart: ta.selectionStart,
-                                cursorEnd: ta.selectionEnd,
-                              });
-                            }
-                          }
-                        }}
-                        onFocus={(e) => {
-                          // When the textarea regains focus while a selection is locked,
-                          // restore the native selection highlight so it's visible again.
-                          if (selectionLockedRef.current && toolInputSelectionRange) {
-                            e.currentTarget.setSelectionRange(
-                              toolInputSelectionRange[0],
-                              toolInputSelectionRange[1]
+                    )}
+                    {activeDraft.web_sources && activeDraft.web_sources.length > 0 && (
+                      <div className="mt-8 border-t border-border pt-6">
+                        <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+                          Web sources
+                        </p>
+                        <ul className="mt-3 list-disc space-y-2 pl-5 text-sm">
+                          {activeDraft.web_sources.map((item, idx) => {
+                            const { label, href } = formatWebSourceLine(item);
+                            return (
+                              <li key={idx} className="break-words pl-1">
+                                {href ? (
+                                  <a
+                                    href={href}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="text-primary underline-offset-4 hover:underline"
+                                  >
+                                    {label}
+                                  </a>
+                                ) : (
+                                  <span className="text-foreground">{label}</span>
+                                )}
+                              </li>
                             );
-                          }
-                        }}
-                        onSelect={(e) => {
-                          const ta = e.currentTarget;
-                          const sel = ta.value.substring(ta.selectionStart, ta.selectionEnd);
-                          // Ignore cursor-movement (empty-sel) events while locked — only
-                          // accept a deliberate new selection, which also clears the lock.
-                          if (selectionLockedRef.current && !sel) return;
-                          if (sel && selectionLockedRef.current) {
-                            clearLockedHighlight();
-                            lockedRangeRef.current = null;
-                            selectionLockedRef.current = false;
-                            setSelectionLocked(false);
-                          }
-                          textareaSelStartRef.current = ta.selectionStart;
-                          textareaSelEndRef.current = ta.selectionEnd;
-                          setSelectedText(sel);
-                        }}
-                        onKeyDown={(e) => {
-                          if (e.key === "Escape") {
-                            if (toolStreamingRef.current) return;
-                            // Escape intentionally clears any locked selection
-                            clearLockedHighlight();
-                            lockedRangeRef.current = null;
-                            selectionLockedRef.current = false;
-                            setSelectionLocked(false);
-                            const ta = e.currentTarget;
-                            ta.setSelectionRange(ta.selectionStart, ta.selectionStart);
-                            setSelectedText("");
-                          }
-                        }}
-                        placeholder="Start typing your draft here..."
-                        className="h-full min-h-[50vh] w-full resize-none bg-transparent px-4 py-4 text-sm leading-relaxed text-foreground placeholder:text-muted-foreground focus:outline-none sm:px-6 sm:py-6"
-                        aria-label="Draft content"
-                      />
+                          })}
+                        </ul>
+                      </div>
                     )}
                   </div>
                 </div>

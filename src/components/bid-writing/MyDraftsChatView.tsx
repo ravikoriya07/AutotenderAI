@@ -46,8 +46,9 @@ import type {
   PastBid,
   ClientProjectOption,
   BidSessionSummary,
-  ClientZipUploadProgress,
 } from "@/lib/bid-writing/types";
+import { useClientZipUpload } from "@/contexts/ClientZipUploadContext";
+import { isClientZipFile } from "@/lib/bid-writing/clientZipUploadUtils";
 import { loadChatHistory, saveChatHistory } from "@/lib/bid-writing/chatHistoryStorage";
 import { draftListDateLabel, DRAFTS_UPDATED_EVENT } from "@/lib/bid-writing/draftUtils";
 import {
@@ -60,8 +61,6 @@ import {
   exportBidMessage,
   triggerBidExportDownload,
   streamBidChat,
-  uploadClientProjectZip,
-  fetchClientUploadProgress,
   deleteClientProject,
 } from "@/lib/bid-writing/bidWritingApi";
 
@@ -88,52 +87,6 @@ function seqsForPreset(preset: FilterPresetId, bids: PastBid[]): Set<number> {
 
 function clientProjectRowKey(p: ClientProjectOption, index: number): string {
   return p.id ?? `row-${index}-${p.name}`;
-}
-
-function isClientZipFile(file: File): boolean {
-  return (
-    file.name.toLowerCase().endsWith(".zip") ||
-    file.type === "application/zip" ||
-    file.type === "application/x-zip-compressed"
-  );
-}
-
-function clientZipBarPercent(prog: ClientZipUploadProgress | null): number {
-  if (!prog) return 8;
-  const phase = String(prog.phase ?? "").toLowerCase();
-  if (phase === "done") return 100;
-  if (phase === "error") return 0;
-  const done = prog.done ?? prog.chunks_uploaded;
-  const total = prog.total;
-  if (typeof done === "number" && typeof total === "number" && total > 0) {
-    return Math.min(98, Math.max(12, Math.round((done / total) * 100)));
-  }
-  if (phase === "ingesting") return 72;
-  if (phase === "extracting") return 42;
-  if (phase === "queued") return 18;
-  return 12;
-}
-
-function clientZipProgressCaption(prog: ClientZipUploadProgress): string {
-  const phase = String(prog.phase ?? "").toLowerCase();
-  const parts: string[] = [];
-  if (phase === "queued") parts.push("Waiting in queue…");
-  else if (phase === "extracting") parts.push("Extracting files…");
-  else if (phase === "ingesting") parts.push("Processing and uploading chunks…");
-  else if (phase === "done") parts.push("Complete");
-  else if (phase === "error") parts.push("Error");
-  else parts.push(`Status: ${prog.phase}`);
-
-  const done = prog.done ?? prog.chunks_uploaded;
-  const total = prog.total;
-  if (typeof done === "number" && typeof total === "number" && total > 0) {
-    parts.push(`${done} / ${total}`);
-  } else if (typeof prog.chunks_uploaded === "number" && typeof total === "number" && total > 0) {
-    parts.push(`${prog.chunks_uploaded} / ${total} chunks`);
-  } else if (typeof prog.chunks_uploaded === "number") {
-    parts.push(`${prog.chunks_uploaded} chunks uploaded`);
-  }
-  return parts.filter(Boolean).join(" · ");
 }
 
 const SUGGESTION_CARDS = [
@@ -268,14 +221,8 @@ export function MyDraftsChatView({
   const [clientProjectsLoading, setClientProjectsLoading] = useState(false);
   const [clientProjectsError, setClientProjectsError] = useState(false);
   const [clientProjectSearch, setClientProjectSearch] = useState("");
-  const [selectedClientZip, setSelectedClientZip] = useState<File | null>(null);
-  const [clientZipDragActive, setClientZipDragActive] = useState(false);
-  const [clientZipIngesting, setClientZipIngesting] = useState(false);
-  const [clientZipProgress, setClientZipProgress] = useState<ClientZipUploadProgress | null>(null);
-  const [clientZipUploadError, setClientZipUploadError] = useState<string | null>(null);
   const clientZipInputRef = useRef<HTMLInputElement>(null);
-  const clientZipUploadCancelRef = useRef(false);
-  const clientZipUploadAbortRef = useRef<AbortController | null>(null);
+  const clientZip = useClientZipUpload();
 
   const [draftToast, setDraftToast] = useState(false);
   const [toastDraftId, setToastDraftId] = useState<string | null>(null);
@@ -445,21 +392,16 @@ export function MyDraftsChatView({
 
   useEffect(() => {
     if (!clientModalOpen) {
-      clientZipUploadCancelRef.current = true;
-      clientZipUploadAbortRef.current?.abort();
-      clientZipUploadAbortRef.current = null;
       setClientProjectSearch("");
-      setSelectedClientZip(null);
-      setClientZipDragActive(false);
-      setClientZipProgress(null);
-      setClientZipUploadError(null);
-      setClientZipIngesting(false);
       setClientProjectMenuOpenId(null);
       setClientProjectDeletingId(null);
-      if (clientZipInputRef.current) clientZipInputRef.current.value = "";
+      if (!clientZip.isIngesting) {
+        clientZip.clearSelectedFile();
+        clientZip.setDragActive(false);
+        if (clientZipInputRef.current) clientZipInputRef.current.value = "";
+      }
       return;
     }
-    clientZipUploadCancelRef.current = false;
     let cancelled = false;
     setClientProjectsLoading(true);
     setClientProjectsError(false);
@@ -481,7 +423,40 @@ export function MyDraftsChatView({
     return () => {
       cancelled = true;
     };
-  }, [clientModalOpen]);
+  }, [clientModalOpen, clientZip.isIngesting, clientZip.clearSelectedFile, clientZip.setDragActive]);
+
+  useEffect(() => {
+    if (clientZip.uploadFinishedGeneration === 0) return;
+    let cancelled = false;
+    setClientProjectsLoading(true);
+    setClientProjectsError(false);
+    void fetchClientProjects()
+      .then((list) => {
+        if (cancelled) return;
+        setClientProjects(list);
+        const completed = clientZip.lastCompletedProject;
+        if (completed?.id) {
+          const match = list.find((p) => p.id === completed.id);
+          if (match?.id) {
+            setSelectedClientProject({ id: match.id, name: match.name });
+            setShowClientProjectError(false);
+          }
+        }
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        console.error("[MyDraftsChat] Failed to refresh client projects after upload:", err);
+        toast.error("Upload finished but the project list could not be refreshed.");
+        setClientProjectsError(true);
+      })
+      .finally(() => {
+        if (cancelled) return;
+        setClientProjectsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [clientZip.uploadFinishedGeneration, clientZip.lastCompletedProject]);
 
   useEffect(() => {
     if (clientModalOpen) {
@@ -1158,141 +1133,29 @@ export function MyDraftsChatView({
 
   const filteredClientProjects = useMemo(() => {
     const q = clientProjectSearch.trim().toLowerCase();
-    if (!q) return clientProjects;
-    return clientProjects.filter((p) => p.name.toLowerCase().includes(q));
+    const withId = clientProjects.filter((p) => typeof p.id === "string" && p.id.trim().length > 0);
+    if (!q) return withId;
+    return withId.filter((p) => p.name.toLowerCase().includes(q));
   }, [clientProjects, clientProjectSearch]);
 
-  const clientZipUploadLocked = clientZipIngesting || clientProjectsLoading;
+  const clientZipUploadLocked = clientZip.uploadLocked || clientProjectsLoading;
 
-  const clientZipBarPct = useMemo(
-    () => clientZipBarPercent(clientZipProgress),
-    [clientZipProgress]
-  );
-
-  const clientZipStatusLine = useMemo(() => {
-    if (!clientZipIngesting) return "";
-    if (!clientZipProgress) return "Uploading archive…";
-    return clientZipProgressCaption(clientZipProgress);
-  }, [clientZipIngesting, clientZipProgress]);
-
-  async function handleSubmitClientZip() {
-    if (!selectedClientZip) {
-      toast.error("Please select a ZIP file before submitting.");
-      return;
-    }
-    if (clientZipIngesting) return;
-    if (!isClientZipFile(selectedClientZip)) {
-      toast.error("Please choose a ZIP file.");
-      return;
-    }
-
-    const file = selectedClientZip;
-    clientZipUploadCancelRef.current = false;
-    clientZipUploadAbortRef.current?.abort();
-    const ac = new AbortController();
-    clientZipUploadAbortRef.current = ac;
-
-    setClientZipUploadError(null);
-    setClientZipProgress(null);
-    setClientZipIngesting(true);
-
-    const sleep = (ms: number) => new Promise<void>((resolve) => {
-      window.setTimeout(resolve, ms);
-    });
-
-    try {
-      const uploadRes = await uploadClientProjectZip(file, { signal: ac.signal });
-      if (clientZipUploadCancelRef.current) return;
-
-      let pollDelayMs = 0;
-      /** When set, polling stopped because ingest finished — refresh list after the loop. */
-      let uploadDoneContext: {
-        prog: ClientZipUploadProgress;
-        uploadRes: Awaited<ReturnType<typeof uploadClientProjectZip>>;
-        file: File;
-      } | null = null;
-
-      for (;;) {
-        if (clientZipUploadCancelRef.current) break;
-        if (pollDelayMs > 0) await sleep(pollDelayMs);
-        if (clientZipUploadCancelRef.current) break;
-
-        const prog = await fetchClientUploadProgress(uploadRes.job_id);
-        if (clientZipUploadCancelRef.current) break;
-
-        setClientZipProgress(prog);
-        const phase = String(prog.phase ?? "").toLowerCase();
-
-        if (phase === "error") {
-          const errMsg =
-            (typeof prog.error === "string" && prog.error) ||
-            (typeof prog.ingest_error === "string" && prog.ingest_error) ||
-            "Upload processing failed";
-          setClientZipUploadError(errMsg);
-          toast.error(errMsg);
-          break;
-        }
-
-        if (phase === "done") {
-          uploadDoneContext = { prog, uploadRes, file };
-          break;
-        }
-
-        pollDelayMs = 1500;
-      }
-
-      if (uploadDoneContext && !clientZipUploadCancelRef.current) {
-        const { prog, uploadRes, file } = uploadDoneContext;
-        const label =
-          (typeof prog.project_name === "string" && prog.project_name) ||
-          uploadRes.project_name ||
-          file.name.replace(/\.zip$/i, "");
-        toast.success(`Uploaded: ${label}`);
-        setSelectedClientZip(null);
-        if (clientZipInputRef.current) clientZipInputRef.current.value = "";
-        setClientZipProgress(null);
-
-        try {
-          const list = await fetchClientProjects();
-          if (clientZipUploadCancelRef.current) return;
-          setClientProjects(list);
-          setClientProjectsError(false);
-
-          const targetId =
-            (typeof prog.project_id === "string" && prog.project_id) || uploadRes.project_id || "";
-          const targetName =
-            (typeof prog.project_name === "string" && prog.project_name) || uploadRes.project_name || "";
-          const match = list.find(
-            (p) => (targetId.length > 0 && p.id === targetId) || (targetName.length > 0 && p.name === targetName)
-          );
-          if (match?.id) {
-            setSelectedClientProject({ id: match.id, name: match.name });
-            setShowClientProjectError(false);
-          }
-        } catch (refreshErr) {
-          console.error("[MyDraftsChat] Failed to refresh client projects after upload:", refreshErr);
-          toast.error("Upload finished but the project list could not be refreshed.");
-          setClientProjectsError(true);
-        }
-      }
-    } catch (err) {
-      if (
-        (err instanceof DOMException && err.name === "AbortError") ||
-        (err instanceof Error && err.name === "AbortError")
-      ) {
-        return;
-      }
-      const msg = err instanceof Error ? err.message : "Upload failed";
-      console.error("[MyDraftsChat] Client ZIP upload:", err);
-      setClientZipUploadError(msg);
-      toast.error(msg);
-    } finally {
-      if (clientZipUploadAbortRef.current === ac) {
-        clientZipUploadAbortRef.current = null;
-      }
-      setClientZipIngesting(false);
-    }
-  }
+  const showPendingProjectRow = useMemo(() => {
+    if (!clientZip.isIngesting || !clientZip.pendingProject) return false;
+    const alreadyListed = filteredClientProjects.some((p) =>
+      clientZip.isPendingProjectRow(p.id ?? null, p.name)
+    );
+    if (alreadyListed) return false;
+    const q = clientProjectSearch.trim().toLowerCase();
+    if (!q) return true;
+    return clientZip.pendingProject.name.toLowerCase().includes(q);
+  }, [
+    clientZip.isIngesting,
+    clientZip.pendingProject,
+    clientZip.isPendingProjectRow,
+    clientProjectSearch,
+    filteredClientProjects,
+  ]);
 
   function handleClientZipInputChange(e: ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -1302,26 +1165,23 @@ export function MyDraftsChatView({
       e.target.value = "";
       return;
     }
-    setClientZipUploadError(null);
-    setSelectedClientZip(file);
+    clientZip.setSelectedFile(file);
   }
 
   function handleClientZipDrop(e: DragEvent<HTMLDivElement>) {
     e.preventDefault();
-    setClientZipDragActive(false);
+    clientZip.setDragActive(false);
     const file = e.dataTransfer.files?.[0];
     if (!file) return;
     if (!isClientZipFile(file)) {
       toast.error("Please drop a ZIP file.");
       return;
     }
-    setClientZipUploadError(null);
-    setSelectedClientZip(file);
+    clientZip.setSelectedFile(file);
   }
 
   function clearSelectedClientZip() {
-    setSelectedClientZip(null);
-    setClientZipUploadError(null);
+    clientZip.clearSelectedFile();
     if (clientZipInputRef.current) clientZipInputRef.current.value = "";
   }
 
@@ -2217,7 +2077,7 @@ export function MyDraftsChatView({
                 <div
                   onDragEnter={(e) => {
                     e.preventDefault();
-                    if (!clientZipUploadLocked) setClientZipDragActive(true);
+                    if (!clientZipUploadLocked) clientZip.setDragActive(true);
                   }}
                   onDragOver={(e) => {
                     e.preventDefault();
@@ -2225,12 +2085,12 @@ export function MyDraftsChatView({
                   }}
                   onDragLeave={(e) => {
                     e.preventDefault();
-                    if (!e.currentTarget.contains(e.relatedTarget as Node)) setClientZipDragActive(false);
+                    if (!e.currentTarget.contains(e.relatedTarget as Node)) clientZip.setDragActive(false);
                   }}
                   onDrop={handleClientZipDrop}
                   className={cn(
                     "flex cursor-pointer items-center gap-2 rounded-md border border-dashed px-2 py-2 transition-colors sm:gap-2.5 sm:px-2.5",
-                    clientZipDragActive
+                    clientZip.dragActive
                       ? "border-primary/45 bg-primary/5"
                       : "border-muted-foreground/30 bg-background",
                     clientZipUploadLocked && "pointer-events-none cursor-not-allowed opacity-50"
@@ -2257,18 +2117,18 @@ export function MyDraftsChatView({
                   </Button>
                 </div>
 
-                {selectedClientZip && (
+                {clientZip.selectedFile && (
                   <div className="mt-2 flex items-center gap-2 rounded-md border border-border bg-background px-2 py-1.5">
                     <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden />
                     <div className="min-w-0 flex-1">
-                      <p className="truncate text-xs font-medium text-foreground">{selectedClientZip.name}</p>
+                      <p className="truncate text-xs font-medium text-foreground">{clientZip.selectedFile.name}</p>
                       <p className="text-[10px] text-muted-foreground">
-                        {Math.max(1, Math.round(selectedClientZip.size / 1024))} KB
+                        {Math.max(1, Math.round(clientZip.selectedFile.size / 1024))} KB
                       </p>
                     </div>
                     <span className="flex shrink-0 items-center gap-0.5 text-[10px] text-green-600 dark:text-green-500">
                       <Check className="h-3 w-3" aria-hidden />
-                      {clientZipIngesting ? "…" : "OK"}
+                      {clientZip.isIngesting ? "…" : "OK"}
                     </span>
                     <button
                       type="button"
@@ -2288,34 +2148,34 @@ export function MyDraftsChatView({
                   </div>
                 )}
 
-                {clientZipIngesting && (
+                {clientZip.isIngesting && (
                   <div className="mt-2 rounded-md border border-border bg-muted/40 px-2 py-1.5">
                     <div className="mb-1 flex justify-between gap-2 text-[10px] text-muted-foreground">
-                      <span className="min-w-0 flex-1 leading-snug">{clientZipStatusLine}</span>
-                      <span className="shrink-0 tabular-nums">{clientZipBarPct}%</span>
+                      <span className="min-w-0 flex-1 leading-snug">{clientZip.statusLine}</span>
+                      <span className="shrink-0 tabular-nums">{clientZip.barPercent}%</span>
                     </div>
                     <div className="h-1 overflow-hidden rounded-full bg-muted">
                       <div
                         className="h-full rounded-full bg-primary transition-[width] duration-300"
-                        style={{ width: `${clientZipBarPct}%` }}
+                        style={{ width: `${clientZip.barPercent}%` }}
                       />
                     </div>
                   </div>
                 )}
 
-                {clientZipUploadError && !clientZipIngesting && (
-                  <p className="mt-2 text-[11px] leading-snug text-destructive">{clientZipUploadError}</p>
+                {clientZip.error && !clientZip.isIngesting && (
+                  <p className="mt-2 text-[11px] leading-snug text-destructive">{clientZip.error}</p>
                 )}
 
                 <div className="mt-2 flex justify-end">
                   <Button
                     type="button"
                     size="sm"
-                    onClick={() => void handleSubmitClientZip()}
-                    disabled={clientZipUploadLocked || !selectedClientZip}
+                    onClick={() => void clientZip.submitUpload()}
+                    disabled={clientZipUploadLocked || !clientZip.selectedFile}
                   >
-                    {clientZipIngesting
-                      ? clientZipProgress
+                    {clientZip.isIngesting
+                      ? clientZip.progress
                         ? "Processing…"
                         : "Uploading…"
                       : "Submit"}
@@ -2361,21 +2221,49 @@ export function MyDraftsChatView({
                     <p className="px-1 py-4 text-center text-xs text-muted-foreground">
                       Could not load client projects. Check your connection and try again.
                     </p>
-                  ) : clientProjects.length === 0 ? (
+                  ) : clientProjects.length === 0 && !showPendingProjectRow ? (
                     <p className="px-1 py-4 text-center text-xs text-muted-foreground">
                       No client projects uploaded yet.
                     </p>
-                  ) : filteredClientProjects.length === 0 ? (
+                  ) : filteredClientProjects.length === 0 && !showPendingProjectRow ? (
                     <p className="px-1 py-4 text-center text-xs text-muted-foreground">
                       No projects match your search.
                     </p>
                   ) : (
                     <ul className="flex flex-col gap-2">
+                      {showPendingProjectRow && clientZip.pendingProject && (
+                        <li key="client-project-pending-upload">
+                          <div className="flex min-h-0 items-stretch rounded-lg bg-muted/40 ring-1 ring-border">
+                            <div
+                              className="min-w-0 flex-1 cursor-not-allowed rounded-lg px-2.5 py-2 text-left text-sm opacity-80 sm:px-3 sm:py-2.5"
+                              title={clientZip.pendingProject.name}
+                              aria-disabled
+                            >
+                              <span className="flex min-w-0 items-start gap-2">
+                                <Loader2
+                                  className="mt-0.5 h-3.5 w-3.5 shrink-0 animate-spin text-primary"
+                                  aria-hidden
+                                />
+                                <span className="min-w-0 flex-1">
+                                  <span className="block truncate font-medium leading-snug text-foreground">
+                                    {clientZip.pendingProject.name}
+                                  </span>
+                                  <span className="mt-0.5 block text-[10px] text-muted-foreground">
+                                    Processing…
+                                  </span>
+                                </span>
+                              </span>
+                            </div>
+                          </div>
+                        </li>
+                      )}
                       {filteredClientProjects.map((p, index) => {
+                        const projectId = p.id as string;
+                        const isPendingRow = clientZip.isPendingProjectRow(projectId, p.name);
+                        const rowDisabled = clientZip.isIngesting || isPendingRow;
                         const isSelected = Boolean(
-                          p.id &&
                           selectedClientProject?.id &&
-                          selectedClientProject.id === p.id
+                          selectedClientProject.id === projectId
                         );
                         return (
                           <li key={clientProjectRowKey(p, index)}>
@@ -2385,21 +2273,24 @@ export function MyDraftsChatView({
                                 "group flex min-h-0 items-stretch rounded-lg transition-colors",
                                 isSelected
                                   ? "bg-primary/15 ring-1 ring-primary/30"
-                                  : "hover:bg-muted/60"
+                                  : rowDisabled
+                                    ? "bg-muted/30"
+                                    : "hover:bg-muted/60"
                               )}
                             >
                               <button
                                 type="button"
+                                disabled={rowDisabled}
                                 onClick={() => {
-                                  if (!p.id) {
-                                    toast.error("This project cannot be used (missing id).");
-                                    return;
-                                  }
-                                  setSelectedClientProject({ id: p.id, name: p.name });
+                                  if (rowDisabled) return;
+                                  setSelectedClientProject({ id: projectId, name: p.name });
                                   setShowClientProjectError(false);
                                   setClientModalOpen(false);
                                 }}
-                                className="min-w-0 flex-1 rounded-l-lg px-2.5 py-2 text-left text-sm transition-colors sm:px-3 sm:py-2.5"
+                                className={cn(
+                                  "min-w-0 flex-1 rounded-l-lg px-2.5 py-2 text-left text-sm transition-colors sm:px-3 sm:py-2.5",
+                                  rowDisabled && "cursor-not-allowed opacity-60"
+                                )}
                                 title={p.name}
                               >
                                 <span className="flex min-w-0 items-start gap-2">
@@ -2425,35 +2316,34 @@ export function MyDraftsChatView({
                                         isSelected ? "text-primary/70" : "text-muted-foreground"
                                       )}
                                     >
-                                      {p.chunks} chunks
+                                      {isPendingRow ? "Processing…" : `${p.chunks} chunks`}
                                     </span>
                                   </span>
                                 </span>
                               </button>
-                              {p.id ? (
-                                <div className="relative flex shrink-0 items-start py-1 pr-1">
+                              <div className="relative flex shrink-0 items-start py-1 pr-1">
                                   <button
                                     type="button"
                                     aria-label="Project actions"
-                                    aria-expanded={clientProjectMenuOpenId === p.id}
+                                    aria-expanded={clientProjectMenuOpenId === projectId}
                                     aria-haspopup="menu"
-                                    disabled={clientProjectDeletingId !== null}
+                                    disabled={rowDisabled || clientProjectDeletingId !== null}
                                     onClick={(e) => {
                                       e.stopPropagation();
-                                      setClientProjectMenuOpenId((v) => (v === p.id ? null : p.id));
+                                      setClientProjectMenuOpenId((v) => (v === projectId ? null : projectId));
                                     }}
                                     className={cn(
                                       "rounded-md p-1.5 transition-opacity hover:bg-muted hover:text-foreground",
                                       isSelected ? "text-primary/70" : "text-muted-foreground",
                                       "opacity-100 sm:opacity-0 sm:group-hover:opacity-100",
-                                      clientProjectMenuOpenId === p.id && "opacity-100",
-                                      clientProjectDeletingId !== null &&
+                                      clientProjectMenuOpenId === projectId && "opacity-100",
+                                      (rowDisabled || clientProjectDeletingId !== null) &&
                                         "pointer-events-none cursor-not-allowed opacity-40"
                                     )}
                                   >
                                     <MoreHorizontal className="h-4 w-4" aria-hidden />
                                   </button>
-                                  {clientProjectMenuOpenId === p.id && (
+                                  {clientProjectMenuOpenId === projectId && (
                                     <div
                                       className="absolute right-0 top-full z-30 mt-0.5 min-w-[9.5rem] rounded-lg border border-border bg-popover py-1 shadow-md"
                                       role="menu"
@@ -2471,7 +2361,6 @@ export function MyDraftsChatView({
                                     </div>
                                   )}
                                 </div>
-                              ) : null}
                             </div>
                           </li>
                         );
