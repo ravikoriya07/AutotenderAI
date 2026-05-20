@@ -2073,8 +2073,7 @@ export function MyDraftsEditorView({
                   )}
                 </div>
               ) : activeDraft ? (
-                <div className="min-h-0 flex-1 overflow-y-auto">
-                  <div className="px-4 py-4 sm:px-6 sm:py-6">
+                <div className="px-4 py-4 sm:px-6 sm:py-6">
                     <div
                       ref={contentEditorRef}
                       contentEditable
@@ -2150,7 +2149,6 @@ export function MyDraftsEditorView({
                         </ul>
                       </div>
                     )}
-                  </div>
                 </div>
               ) : (
                 <div className="flex h-full flex-col items-center justify-center gap-4 px-6 py-12 text-center">
