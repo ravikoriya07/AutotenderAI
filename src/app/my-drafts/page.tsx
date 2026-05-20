@@ -6,6 +6,7 @@ import Swal from "sweetalert2";
 import { toast } from "react-toastify";
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
 import { MyDraftsEditorView } from "@/components/bid-writing/MyDraftsEditorView";
+import { isUnauthorizedApiError } from "@/lib/apiErrorMessage";
 import {
   deleteBidDraft,
   fetchBidDraft,
@@ -109,6 +110,7 @@ function MyDraftsPageContent() {
       })
       .catch((err) => {
         if (cancelled) return;
+        if (isUnauthorizedApiError(err)) return;
         console.error("[MyDrafts] Failed to load drafts list:", err);
         setDrafts([]);
         setDraftsTotal(0);
@@ -131,6 +133,7 @@ function MyDraftsPageContent() {
           setDraftsError(false);
         })
         .catch((err) => {
+          if (isUnauthorizedApiError(err)) return;
           console.error("[MyDrafts] Failed to refresh drafts after save:", err);
         });
     }

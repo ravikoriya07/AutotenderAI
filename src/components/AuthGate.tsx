@@ -47,7 +47,7 @@ export function AuthGate({ children }: AuthGateProps) {
       if (!token) {
         clearAuthSession();
         router.replace("/login");
-        if (!cancelled) setChecking(false);
+        // Keep loader until navigation — avoid mounting protected pages without auth.
         return;
       }
 
@@ -57,7 +57,7 @@ export function AuthGate({ children }: AuthGateProps) {
       } catch {
         clearAuthSession();
         router.replace("/login");
-        if (!cancelled) setChecking(false);
+        return;
       }
     }
 

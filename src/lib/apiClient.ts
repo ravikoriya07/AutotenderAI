@@ -43,10 +43,9 @@ apiClient.interceptors.response.use(
 
     const status = error?.response?.status;
     if (status === 401 && typeof window !== "undefined") {
-      const token = getAuthToken();
       const pathname = window.location.pathname;
       const isPublicAuthPage = pathname === "/login" || pathname === "/register";
-      if (token && !isPublicAuthPage) {
+      if (!isPublicAuthPage) {
         clearAuthSession();
         window.location.replace("/login");
       }

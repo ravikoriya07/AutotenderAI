@@ -30,7 +30,7 @@ function citationBadgeHtml(
   return (
     `<span class="atai-citation-ref"${ce}>` +
     `<span class="atai-citation-badge" tabindex="0">${escapeHtml(displayText)}</span>` +
-    `<span class="atai-citation-tooltip" role="tooltip" aria-hidden="true">` +
+    `<span class="atai-citation-tooltip" role="tooltip" aria-hidden="true" contenteditable="false">` +
     `<span class="atai-citation-tooltip-label">${titleLabel}</span>${tooltipBody}` +
     `</span></span>`
   );
@@ -220,7 +220,7 @@ export function renderEditableDraftHtml(
   return html;
 }
 
-/** Extract display text from a citation-ref HTML widget (badge only, never tooltip body). */
+/** Extract badge display text from citation-ref inner HTML (no tooltip). */
 function citationRefHtmlToMarkdown(citationRefHtml: string): string {
   const badgeMatch = citationRefHtml.match(
     /\batai-citation-badge\b[^>]*>([\s\S]*?)<\/span>/i
@@ -232,6 +232,53 @@ function citationRefHtmlToMarkdown(citationRefHtml: string): string {
 }
 
 /**
+ * Strip UI-only citation tooltips before HTML→markdown conversion.
+ * Tooltips must never become part of saved draft text.
+ */
+function stripCitationUiFromElement(root: HTMLElement): void {
+  root.querySelectorAll(".atai-citation-tooltip").forEach((el) => el.remove());
+  root.querySelectorAll(".atai-citation-ref").forEach((ref) => {
+    const badge = ref.querySelector(".atai-citation-badge");
+    const display = badge?.textContent?.trim() ?? "";
+    ref.replaceWith(document.createTextNode(display));
+  });
+}
+
+/** SSR-safe: remove tooltip spans, then collapse citation-ref to badge text. */
+function stripCitationWidgetsHtml(html: string): string {
+  if (typeof document !== "undefined") {
+    const tmp = document.createElement("div");
+    tmp.innerHTML = html;
+    stripCitationUiFromElement(tmp);
+    return tmp.innerHTML;
+  }
+  let out = html;
+  let prev: string;
+  do {
+    prev = out;
+    out = out.replace(
+      /<span[^>]*\batai-citation-tooltip-label\b[^>]*>[\s\S]*?<\/span>/gi,
+      ""
+    );
+    out = out.replace(
+      /<span[^>]*\batai-citation-tooltip\b[^>]*>[\s\S]*?<\/span>/gi,
+      ""
+    );
+  } while (out !== prev);
+  out = out.replace(
+    /<span[^>]*\batai-citation-ref\b[^>]*>([\s\S]*?)<\/span>/gi,
+    (_, inner: string) => citationRefHtmlToMarkdown(inner)
+  );
+  return out;
+}
+
+function isNodeInsideCitationTooltip(node: Node): boolean {
+  if (node.nodeType !== Node.TEXT_NODE) return false;
+  const parent = node.parentElement;
+  return Boolean(parent?.closest(".atai-citation-tooltip"));
+}
+
+/**
  * Remove duplicate source labels after citations in markdown.
  * e.g. `[39] 39. LB HARINGEY...` → `[39]` (tooltip text leaked or returned by API).
  */
@@ -240,6 +287,16 @@ export function sanitizeCitationMarkdown(
   sourceLabelBySeq?: ReadonlyMap<number, string>
 ): string {
   let s = markdown;
+
+  // Tooltip text leaked as `]SourceProject name...` (repeat until stable).
+  let prev: string;
+  do {
+    prev = s;
+    s = s.replace(
+      /(\[\d+(?:\s*,\s*\d+)*\])(?:Sources?)(?:(?!\[)[^\n\[])+/gi,
+      "$1"
+    );
+  } while (s !== prev);
 
   if (sourceLabelBySeq?.size) {
     for (const [key, label] of sourceLabelBySeq) {
@@ -253,6 +310,13 @@ export function sanitizeCitationMarkdown(
         new RegExp(`\\[${seq}\\]\\s*${seq}\\.\\s*${esc}`, "gi"),
         `[${seq}]`
       );
+      s = s.replace(
+        new RegExp(`\\[${seq}\\]\\s*(?:Sources?)${esc}`, "gi"),
+        `[${seq}]`
+      );
+      // Collapse repeated leaked labels after a citation.
+      const repeat = new RegExp(`(\\[${seq}\\])(${esc})+`, "gi");
+      s = s.replace(repeat, "$1");
     }
   }
 
@@ -264,18 +328,10 @@ export function sanitizeCitationMarkdown(
 
 /** Restore `[N]` / citation badges and strip inline formatting tags from an HTML fragment. */
 export function badgeHtmlToMarkdown(html: string): string {
-  let out = html;
-  out = out.replace(
-    /<span[^>]*\batai-citation-ref\b[^>]*>([\s\S]*?)<\/span>/gi,
-    (_, inner: string) => citationRefHtmlToMarkdown(inner)
-  );
+  let out = stripCitationWidgetsHtml(html);
   out = out.replace(
     /<span[^>]*\batai-citation-badge\b[^>]*>([\s\S]*?)<\/span>/gi,
     (_, badge: string) => badge.replace(/<[^>]+>/g, "").trim()
-  );
-  out = out.replace(
-    /<span[^>]*class="[^"]*atai-citation[^"]*"[^>]*>([\s\S]*?)<\/span>/gi,
-    (_, inner: string) => citationRefHtmlToMarkdown(inner)
   );
   out = out.replace(/<span[^>]*class="source-badge"[^>]*>([^<]+)<\/span>/gi, (_, n: string) => `[${n.trim()}]`);
   out = out.replace(/<span[^>]*class="web-badge"[^>]*>[^<]*<\/span>/gi, "[WEB]");
@@ -293,15 +349,50 @@ export function badgeHtmlToMarkdown(html: string): string {
   return out.replace(/\s+\n/g, "\n").replace(/\n\s+/g, "\n").trim();
 }
 
+/** Inline HTML → markdown (bold, italic, links); citation UI stripped first. */
+function inlineHtmlToMarkdown(html: string): string {
+  if (typeof document === "undefined") {
+    return badgeHtmlToMarkdown(html);
+  }
+  const tmp = document.createElement("div");
+  tmp.innerHTML = stripCitationWidgetsHtml(html);
+  function walk(node: Node): string {
+    if (node.nodeType === Node.TEXT_NODE) return node.textContent ?? "";
+    if (node.nodeType !== Node.ELEMENT_NODE) return "";
+    const el = node as Element;
+    const tag = el.tagName.toUpperCase();
+    const inner = () => Array.from(el.childNodes).map(walk).join("");
+    if (tag === "STRONG" || tag === "B") return `**${inner()}**`;
+    if (tag === "EM" || tag === "I") return `*${inner()}*`;
+    if (tag === "CODE") return `\`${inner()}\``;
+    if (tag === "A") {
+      const href = el.getAttribute("href")?.trim();
+      const text = inner().trim() || href || "";
+      if (href && !/^javascript:/i.test(href)) return `[${text}](${href})`;
+      return text;
+    }
+    if (tag === "BR") return "\n";
+    if (tag === "SPAN" && el.classList.contains("atai-citation-badge")) {
+      return inner();
+    }
+    return inner();
+  }
+  return walk(tmp)
+    .replace(/\u00a0/g, " ")
+    .replace(/\n{3,}/g, "\n\n");
+}
+
 function nodeToMarkdownText(node: Element): string {
-  return badgeHtmlToMarkdown(node.innerHTML || "");
+  return inlineHtmlToMarkdown(node.innerHTML || "");
 }
 
 /** Convert the contenteditable draft body DOM back to raw markdown. */
 export function editableDomToMarkdown(root: HTMLElement): string {
+  const clone = root.cloneNode(true) as HTMLElement;
+  stripCitationUiFromElement(clone);
   const parts: string[] = [];
 
-  for (const node of root.childNodes) {
+  for (const node of clone.childNodes) {
     if (node.nodeType === Node.TEXT_NODE) {
       const t = (node.textContent ?? "").trim();
       if (t) parts.push(t);
@@ -320,9 +411,17 @@ export function editableDomToMarkdown(root: HTMLElement): string {
       parts.push("---");
       continue;
     }
-    if (tag === "UL" || tag === "OL") {
+    if (tag === "UL") {
       for (const li of el.querySelectorAll(":scope > li")) {
         parts.push(`- ${nodeToMarkdownText(li)}`);
+      }
+      continue;
+    }
+    if (tag === "OL") {
+      let n = 1;
+      for (const li of el.querySelectorAll(":scope > li")) {
+        parts.push(`${n}. ${nodeToMarkdownText(li)}`);
+        n += 1;
       }
       continue;
     }
@@ -636,6 +735,8 @@ export type ToolSelectionSnapshot = {
   end: number;
   baseContent: string;
   contentHash: string;
+  /** Exact markdown substring at tool-run time (for reliable Apply). */
+  replacementSlice?: string;
 };
 
 export function sliceMatchesSelectionLoose(slice: string, selectedText: string): boolean {
@@ -654,7 +755,9 @@ function getTextNodeCharOffsets(root: HTMLElement, range: Range): [number, numbe
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
     const nodes: Text[] = [];
     let n: Node | null;
-    while ((n = walker.nextNode())) nodes.push(n as Text);
+    while ((n = walker.nextNode())) {
+      if (!isNodeInsideCitationTooltip(n)) nodes.push(n as Text);
+    }
 
     let pos = 0;
     let start = -1;
@@ -673,11 +776,141 @@ function getTextNodeCharOffsets(root: HTMLElement, range: Range): [number, numbe
       }
       pos += len;
     }
-    if (start < 0 || end < 0 || end <= start) return null;
+    if (start >= 0 && end < 0 && range.collapsed) end = start;
+    if (start < 0 || end < 0 || end < start) return null;
     return [start, end];
   } catch {
     return null;
   }
+}
+
+/** Plain-text stream of markdown (formatting tokens skipped) mapped to source indexes. */
+export function buildMarkdownPlainIndex(markdown: string): {
+  text: string;
+  toMarkdown: number[];
+} {
+  const chars: string[] = [];
+  const toMarkdown: number[] = [];
+  let i = 0;
+  let prevWs = false;
+
+  while (i < markdown.length) {
+    if (i === 0 || markdown[i - 1] === "\n") {
+      const heading = markdown.slice(i).match(/^(#{1,6})\s+/);
+      if (heading) {
+        i += heading[0].length;
+        continue;
+      }
+      const list = markdown.slice(i).match(/^[-*+]\s+/);
+      if (list) {
+        i += list[0].length;
+        continue;
+      }
+      const ordered = markdown.slice(i).match(/^\d+\.\s+/);
+      if (ordered) {
+        i += ordered[0].length;
+        continue;
+      }
+    }
+    if (markdown.startsWith("***", i)) {
+      i += 3;
+      continue;
+    }
+    if (markdown.startsWith("**", i)) {
+      i += 2;
+      continue;
+    }
+    if (markdown[i] === "*" || markdown[i] === "_") {
+      i += 1;
+      continue;
+    }
+    if (markdown[i] === "`") {
+      i += 1;
+      while (i < markdown.length && markdown[i] !== "`") i += 1;
+      if (i < markdown.length) i += 1;
+      continue;
+    }
+    const ch = markdown[i];
+    if (/\s/.test(ch)) {
+      if (!prevWs && chars.length > 0) {
+        chars.push(" ");
+        toMarkdown.push(i);
+        prevWs = true;
+      }
+    } else {
+      chars.push(ch);
+      toMarkdown.push(i);
+      prevWs = false;
+    }
+    i += 1;
+  }
+
+  return { text: chars.join(""), toMarkdown };
+}
+
+function mapVisibleOffsetToMarkdownOffset(
+  root: HTMLElement,
+  markdown: string,
+  visOffset: number
+): number {
+  const vis = buildVisiblePlainIndex(root);
+  const md = buildMarkdownPlainIndex(markdown);
+  const target = Math.max(0, Math.min(visOffset, vis.text.length));
+
+  if (target === 0) return 0;
+  if (target >= vis.text.length) return markdown.length;
+
+  const visPrefix = vis.text.slice(0, target);
+  let mdPlainIdx = md.text.indexOf(visPrefix);
+  if (mdPlainIdx === -1) {
+    let matchLen = 0;
+    for (let i = 0; i < Math.min(visPrefix.length, md.text.length); i++) {
+      if (visPrefix[i] === md.text[i]) matchLen = i + 1;
+      else break;
+    }
+    mdPlainIdx = matchLen;
+  } else {
+    mdPlainIdx += visPrefix.length;
+  }
+
+  if (mdPlainIdx <= 0) return 0;
+  if (mdPlainIdx >= md.toMarkdown.length) return markdown.length;
+  return md.toMarkdown[mdPlainIdx - 1] + 1;
+}
+
+/**
+ * Map the current editor selection (or caret) to [start, end) in markdown.
+ */
+export function getMarkdownRangeForEditorSelection(
+  root: HTMLElement,
+  markdown: string
+): [number, number] {
+  const sel = typeof window !== "undefined" ? window.getSelection() : null;
+  if (!sel || sel.rangeCount === 0) return [markdown.length, markdown.length];
+
+  const range = sel.getRangeAt(0);
+  if (!root.contains(range.commonAncestorContainer)) {
+    return [markdown.length, markdown.length];
+  }
+
+  const selectedText = range.toString();
+  if (selectedText.trim()) {
+    const found = findRangeFromDomSelection(root, markdown, selectedText, range);
+    if (found) return found;
+  }
+
+  const offsets = getTextNodeCharOffsets(root, range);
+  if (!offsets) return [markdown.length, markdown.length];
+
+  const [visStart, visEnd] = offsets;
+  if (visEnd > visStart) {
+    const slice = (root.textContent ?? "").slice(visStart, visEnd);
+    const found = findRangeFromDomSelection(root, markdown, slice, range);
+    if (found) return found;
+  }
+
+  const caret = mapVisibleOffsetToMarkdownOffset(root, markdown, visStart);
+  return [caret, caret];
 }
 
 function buildVisiblePlainIndex(root: HTMLElement): { text: string; map: number[] } {
@@ -687,6 +920,7 @@ function buildVisiblePlainIndex(root: HTMLElement): { text: string; map: number[
   let n: Node | null;
   let prevWs = false;
   while ((n = walker.nextNode())) {
+    if (isNodeInsideCitationTooltip(n)) continue;
     const raw = n.textContent ?? "";
     for (let i = 0; i < raw.length; i++) {
       const ch = raw[i];
@@ -722,23 +956,23 @@ export function findRangeFromDomSelection(
   const visibleFull = root.textContent ?? "";
   const visSlice = visibleFull.slice(visStart, visEnd);
   const sel = selectedText.trim();
-  if (
-    collapseWhitespace(visSlice) !== collapseWhitespace(sel) &&
-    !collapseWhitespace(visSlice).includes(collapseWhitespace(sel))
-  ) {
-    return null;
-  }
-
-  const { text: visPlain, map: visMap } = buildVisiblePlainIndex(root);
+  const { text: visPlain } = buildVisiblePlainIndex(root);
   const selPlain = collapseWhitespace(stripMarkdownSyntax(sel));
-  const visTarget = collapseWhitespace(visSlice);
+  const visTarget = collapseWhitespace(stripMarkdownSyntax(visSlice));
 
-  let vStart = visPlain.indexOf(visTarget);
-  if (vStart === -1) {
-    vStart = visPlain.indexOf(selPlain);
-    if (vStart === -1) return null;
+  let vStart = -1;
+  if (visTarget.length > 0) vStart = visPlain.indexOf(visTarget);
+  if (vStart === -1 && selPlain.length > 0) vStart = visPlain.indexOf(selPlain);
+  if (vStart === -1 && selPlain.length >= 12) {
+    vStart = visPlain.indexOf(selPlain.slice(0, 24));
   }
-  const vEnd = vStart + (vStart === visPlain.indexOf(visTarget) ? visTarget.length : selPlain.length);
+  if (vStart === -1) return null;
+
+  const vEnd =
+    vStart +
+    (visTarget.length > 0 && visPlain.indexOf(visTarget) === vStart
+      ? visTarget.length
+      : selPlain.length);
 
   const mdPlain = findPlainTextInMarkdown(markdown, sel);
   if (mdPlain) return mdPlain;
@@ -846,12 +1080,16 @@ export function computeToolSelectionSnapshot(
     }
   }
 
+  const replacementSlice =
+    start >= 0 && end > start ? baseContent.slice(start, end) : undefined;
+
   return {
     selectedText: sel,
     start,
     end,
     baseContent,
     contentHash: hashDraftContent(baseContent),
+    replacementSlice,
   };
 }
 
@@ -912,6 +1150,163 @@ export function resolveApplyRange(
   return findPlainTextInMarkdown(currentContent, sel);
 }
 
+/**
+ * Map a live DOM Range to [start, end) in markdown using visible plain-text indices.
+ * Does not require `selectedText` to match — uses what is actually selected in the DOM.
+ */
+export function findMarkdownRangeFromDomRange(
+  root: HTMLElement,
+  markdown: string,
+  range: Range
+): [number, number] | null {
+  if (!root.contains(range.commonAncestorContainer)) return null;
+
+  const offsets = getTextNodeCharOffsets(root, range);
+  if (!offsets) return null;
+  const [visStart, visEnd] = offsets;
+  if (visEnd <= visStart) return null;
+
+  const vis = buildVisiblePlainIndex(root);
+  const md = buildMarkdownPlainIndex(markdown);
+  const segment = vis.text.slice(visStart, visEnd);
+  if (!segment.trim()) return null;
+
+  const segmentNorm = collapseWhitespace(stripMarkdownSyntax(segment));
+  let mdPlainStart = md.text.indexOf(segment);
+  if (mdPlainStart === -1) mdPlainStart = md.text.indexOf(segmentNorm);
+  if (mdPlainStart === -1 && segmentNorm.length >= 16) {
+    mdPlainStart = md.text.indexOf(segmentNorm.slice(0, 16));
+  }
+  if (mdPlainStart === -1) return null;
+
+  const mdPlainLen =
+    md.text.indexOf(segment) === mdPlainStart
+      ? segment.length
+      : segmentNorm.length;
+  const mdPlainEnd = Math.min(md.text.length, mdPlainStart + mdPlainLen);
+
+  const start = mdPlainStart > 0 ? (md.toMarkdown[mdPlainStart - 1] ?? 0) + 1 : 0;
+  const end =
+    mdPlainEnd > 0 && mdPlainEnd <= md.toMarkdown.length
+      ? md.toMarkdown[mdPlainEnd - 1] + 1
+      : markdown.length;
+
+  if (end <= start) return null;
+  return [start, end];
+}
+
+function findRangeByReplacementSlice(
+  currentContent: string,
+  replacementSlice: string
+): [number, number] | null {
+  const slice = replacementSlice.trim();
+  if (!slice) return null;
+  const exact = currentContent.indexOf(slice);
+  if (exact !== -1) return [exact, exact + slice.length];
+  return findPlainTextInMarkdown(currentContent, slice);
+}
+
+/**
+ * Resolve apply range using stored offsets, snapshot, and live DOM (locked selection).
+ */
+export function resolveApplyRangeForDraft(
+  currentContent: string,
+  snapshot: ToolSelectionSnapshot | null,
+  selectedText: string,
+  editorEl: HTMLElement | null,
+  domRange: Range | null,
+  storedMarkdownRange: [number, number] | null,
+  options?: { trustStoredOffsets?: boolean }
+): [number, number] | null {
+  const sel = (snapshot?.selectedText ?? selectedText).trim();
+  if (!sel) return null;
+
+  const replacementSlice = snapshot?.replacementSlice?.trim();
+  if (replacementSlice) {
+    const bySlice = findRangeByReplacementSlice(currentContent, replacementSlice);
+    if (bySlice) return bySlice;
+  }
+
+  if (editorEl && domRange) {
+    try {
+      if (editorEl.contains(domRange.commonAncestorContainer)) {
+        const fromDomOnly = findMarkdownRangeFromDomRange(
+          editorEl,
+          currentContent,
+          domRange
+        );
+        if (fromDomOnly) return fromDomOnly;
+      }
+    } catch {
+      /* stale range after re-render */
+    }
+  }
+
+  if (storedMarkdownRange) {
+    const [start, end] = storedMarkdownRange;
+    if (start >= 0 && end > start && end <= currentContent.length) {
+      const slice = currentContent.slice(start, end);
+      const hashOk =
+        snapshot && hashDraftContent(currentContent) === snapshot.contentHash;
+      if (
+        options?.trustStoredOffsets ||
+        hashOk ||
+        sliceMatchesSelectionLoose(slice, sel) ||
+        (replacementSlice && slice === replacementSlice)
+      ) {
+        return [start, end];
+      }
+    }
+  }
+
+  if (
+    snapshot &&
+    snapshot.start >= 0 &&
+    snapshot.end > snapshot.start &&
+    snapshot.end <= currentContent.length
+  ) {
+    const slice = currentContent.slice(snapshot.start, snapshot.end);
+    if (
+      options?.trustStoredOffsets ||
+      hashDraftContent(currentContent) === snapshot.contentHash ||
+      sliceMatchesSelectionLoose(slice, sel)
+    ) {
+      return [snapshot.start, snapshot.end];
+    }
+  }
+
+  const resolved = resolveApplyRange(currentContent, snapshot, sel);
+  if (resolved) return resolved;
+
+  if (editorEl && domRange) {
+    const fromDom = findRangeFromDomSelection(
+      editorEl,
+      currentContent,
+      sel,
+      domRange
+    );
+    if (fromDom) return fromDom;
+  }
+
+  if (editorEl) {
+    const liveRange = findRangeFromPlainTextInElement(editorEl, sel);
+    if (liveRange) {
+      const fromLive = findRangeFromDomSelection(
+        editorEl,
+        currentContent,
+        sel,
+        liveRange
+      );
+      if (fromLive) return fromLive;
+    }
+  }
+
+  return (
+    findSelectionByAnchors(currentContent, sel) ??
+    findPlainTextInMarkdown(currentContent, sel)
+  );
+}
+
 type TextNodeOffset = { node: Text; nodeStart: number };
 
 /** Find a DOM Range by matching plain text inside `root` (whitespace-tolerant). */
@@ -926,7 +1321,9 @@ export function findRangeFromPlainTextInElement(
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
     const nodes: Text[] = [];
     let n: Node | null;
-    while ((n = walker.nextNode())) nodes.push(n as Text);
+    while ((n = walker.nextNode())) {
+      if (!isNodeInsideCitationTooltip(n)) nodes.push(n as Text);
+    }
 
     const norm: string[] = [];
     const map: TextNodeOffset[] = [];

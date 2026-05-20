@@ -1,5 +1,9 @@
 import axios from "axios";
 
+export function isUnauthorizedApiError(err: unknown): boolean {
+  return axios.isAxiosError(err) && err.response?.status === 401;
+}
+
 /** Parses FastAPI-style `{ detail: string | [...] }` from axios error responses. */
 export function getApiErrorDetailMessage(err: unknown, fallback: string): string {
   if (axios.isAxiosError(err)) {

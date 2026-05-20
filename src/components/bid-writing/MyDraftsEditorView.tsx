@@ -40,6 +40,10 @@ import {
 } from "@/lib/bid-writing/bidWritingApi";
 import { isPersistedDraftId, uiToolIdToApiTool } from "@/lib/bid-writing/bidToolUtils";
 import { draftListDateLabel } from "@/lib/bid-writing/draftUtils";
+import {
+  mergePastedMarkdown,
+  parseClipboardToMarkdown,
+} from "@/lib/bid-writing/draftClipboardPaste";
 import { detectMinHeadingLevel } from "@/lib/bid-writing/markdownToolOutput";
 import {
   sourceLabelMapFromRecord,
@@ -49,15 +53,16 @@ import { EditorToolbarTooltip } from "@/components/bid-writing/EditorToolbarTool
 import {
   computeToolSelectionSnapshot,
   editableDomToMarkdown,
+  findMarkdownRangeFromDomRange,
+  findPlainTextInMarkdown,
   findRangeFromPlainTextInElement,
-  findSelectionInMarkdown,
+  getMarkdownRangeForEditorSelection,
   hashDraftContent,
-  insertToolOutputHtmlAtRange,
   normalizeAppliedMarkdown,
   prepareAppliedToolOutput,
   renderEditableDraftHtml,
   sanitizeCitationMarkdown,
-  resolveApplyRange,
+  resolveApplyRangeForDraft,
   selectionFragmentToMarkdown,
   spliceMarkdownWithSelection,
   type ToolSelectionSnapshot,
@@ -221,15 +226,25 @@ function findTextRangeInElement(el: Element, searchText: string): Range | null {
     const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
     const nodes: Text[] = [];
     let n: Node | null;
-    while ((n = walker.nextNode())) nodes.push(n as Text);
+    while ((n = walker.nextNode())) {
+      if (
+        n.nodeType === Node.TEXT_NODE &&
+        (n as Text).parentElement?.closest(".atai-citation-tooltip")
+      ) {
+        continue;
+      }
+      nodes.push(n as Text);
+    }
 
     // Build a flat string from all text nodes so indexOf gives us a char offset.
     const chunks = nodes.map((t) => t.textContent ?? "");
     const full = chunks.join("");
-    const start = full.indexOf(searchText);
+    const target = searchText.replace(/\s+/g, " ").trim();
+    let start = full.indexOf(searchText);
+    if (start === -1 && target) start = full.indexOf(target);
     if (start === -1) return null;
 
-    const end = start + searchText.length;
+    const end = start + (full.indexOf(searchText) === start ? searchText.length : target.length);
     let startNode: Text | null = null, startOff = 0;
     let endNode: Text | null = null, endOff = 0;
     let pos = 0;
@@ -491,18 +506,32 @@ export function MyDraftsEditorView({
   useEffect(() => {
     const el = contentEditorRef.current;
     if (!el || activeDraftLoading) return;
-    const content = activeDraftContent ?? "";
+    const content = sanitizeCitationMarkdown(
+      activeDraftContent ?? "",
+      editorSourceLabelBySeq
+    );
     if (contentSyncSkipRef.current === content) {
       contentSyncSkipRef.current = null;
       return;
     }
+    contentSyncSkipRef.current = content;
     el.innerHTML = renderEditableDraftHtml(content, editorSourceLabelBySeq);
     setRenderedWordCount(countWords(el.textContent ?? ""));
 
     const snap = toolSelectionSnapshotRef.current;
     if (snap && !snap.baseContent && content) {
-      toolSelectionSnapshotRef.current = { ...snap, baseContent: content };
+      const next: ToolSelectionSnapshot = { ...snap, baseContent: content };
+      if (
+        !next.replacementSlice &&
+        next.start >= 0 &&
+        next.end > next.start &&
+        next.end <= content.length
+      ) {
+        next.replacementSlice = content.slice(next.start, next.end);
+      }
+      toolSelectionSnapshotRef.current = next;
     }
+    requestAnimationFrame(() => refreshLockedSelectionInEditor());
   }, [activeDraftId, activeDraftContent, activeDraftLoading, editorSourceLabelBySeq]);
 
   useEffect(() => {
@@ -649,7 +678,14 @@ export function MyDraftsEditorView({
     if (!activeDraftId || activeDraftLoading) return;
     if (historyDraftIdRef.current !== activeDraftId) return;
     if (historyRef.current.length > 0) return; // already seeded
-    historyRef.current = [{ content: activeDraftContent ?? "" }];
+    historyRef.current = [
+      {
+        content: sanitizeCitationMarkdown(
+          activeDraftContent ?? "",
+          editorSourceLabelBySeq
+        ),
+      },
+    ];
     historyIdxRef.current = 0;
     setCanUndo(false);
     setCanRedo(false);
@@ -702,6 +738,12 @@ export function MyDraftsEditorView({
     setSelectionLocked(false);
   }
 
+  function clearSelectionAfterContentChange() {
+    unlockSelection();
+    setSelectedText("");
+    window.getSelection()?.removeAllRanges();
+  }
+
   // Aborts any running tool stream and resets all tool state without touching draft content.
   function clearAllToolState() {
     toolStreamAbortRef.current?.abort();
@@ -733,10 +775,18 @@ export function MyDraftsEditorView({
     }
   }
 
-  /** Read the latest markdown from the contenteditable DOM (source of truth while editing). */
-  function getCurrentEditorMarkdown(): string {
+  /**
+   * Clean markdown for save/history/apply — never includes citation tooltip labels.
+   */
+  function getCleanDraftMarkdown(): string {
     const el = contentEditorRef.current;
-    return el ? editableDomToMarkdown(el) : (activeDraft?.content ?? "");
+    const raw = el ? editableDomToMarkdown(el) : (activeDraft?.content ?? "");
+    return sanitizeCitationMarkdown(raw, editorSourceLabelBySeq);
+  }
+
+  /** Read latest clean markdown (DOM round-trip with tooltip UI stripped). */
+  function getCurrentEditorMarkdown(): string {
+    return getCleanDraftMarkdown();
   }
 
   /** Sync editor DOM → draft state so Apply uses the same markdown string as the visible editor. */
@@ -751,80 +801,110 @@ export function MyDraftsEditorView({
     return md;
   }
 
+  /** Sync editor DOM → draft state; return clean markdown for apply/append. */
+  function getDraftContentForMutation(): string {
+    flushHistoryDebounce();
+    const md = getCleanDraftMarkdown();
+    if (activeDraftId) {
+      contentSyncSkipRef.current = md;
+      setDrafts((prev) =>
+        prev.map((d) => (d.id === activeDraftId ? { ...d, content: md } : d))
+      );
+    }
+    return md;
+  }
+
+  /** Re-bind locked highlight after editor HTML re-render (Range refs go stale). */
+  function refreshLockedSelectionInEditor() {
+    if (!selectionLockedRef.current || !toolInputSelectedText.trim()) return;
+    const el = contentEditorRef.current;
+    if (!el) return;
+
+    const sel = toolInputSelectedText.trim();
+    let range =
+      findRangeFromPlainTextInElement(el, sel) ??
+      findTextRangeInElement(el, sel);
+
+    if (!range && toolInputMarkdownRange) {
+      const md = getCleanDraftMarkdown();
+      const [start, end] = toolInputMarkdownRange;
+      if (start >= 0 && end > start && end <= md.length) {
+        const slice = md.slice(start, Math.min(end, start + 80));
+        range =
+          findRangeFromPlainTextInElement(el, slice) ??
+          findTextRangeInElement(el, slice);
+      }
+    }
+
+    if (range) {
+      lockedRangeRef.current = range;
+      applyLockedHighlight(range);
+    }
+  }
+
   function captureSelectionAtToolRun(selAtRun: string) {
     const editor = contentEditorRef.current;
     const domRange = lockedRangeRef.current;
-    // Keep original API markdown before DOM round-trip overwrites it.
-    const originalState = activeDraft?.content ?? "";
-    const fromDom = getCurrentEditorMarkdown();
-
-    const bases = [originalState, fromDom].filter(
-      (s, i, arr) => s.length > 0 && arr.indexOf(s) === i
-    );
+    const fromDom = getDraftContentForMutation();
 
     let snap: ToolSelectionSnapshot | null = null;
-    for (const base of bases) {
-      const attempt = computeToolSelectionSnapshot(base, selAtRun, editor, domRange);
-      if (attempt && attempt.start >= 0 && attempt.end > attempt.start) {
-        snap = attempt;
-        break;
+
+    if (editor && domRange) {
+      const fromDomRange = findMarkdownRangeFromDomRange(editor, fromDom, domRange);
+      if (fromDomRange) {
+        snap = {
+          selectedText: selAtRun,
+          start: fromDomRange[0],
+          end: fromDomRange[1],
+          baseContent: fromDom,
+          contentHash: hashDraftContent(fromDom),
+          replacementSlice: fromDom.slice(fromDomRange[0], fromDomRange[1]),
+        };
       }
-      if (!snap) snap = attempt;
+    }
+
+    if (!snap || snap.start < 0) {
+      snap = computeToolSelectionSnapshot(fromDom, selAtRun, editor, domRange);
+    }
+
+    if ((!snap || snap.start < 0) && editor && domRange) {
+      const fragMd = selectionFragmentToMarkdown(domRange.cloneContents()).trim();
+      const found =
+        findPlainTextInMarkdown(fromDom, fragMd) ??
+        findPlainTextInMarkdown(fromDom, selAtRun);
+      if (found) {
+        snap = {
+          selectedText: selAtRun,
+          start: found[0],
+          end: found[1],
+          baseContent: fromDom,
+          contentHash: hashDraftContent(fromDom),
+          replacementSlice: fromDom.slice(found[0], found[1]),
+        };
+      }
     }
 
     toolSelectionSnapshotRef.current = snap;
     if (snap && snap.start >= 0 && snap.end > snap.start) {
       setToolInputMarkdownRange([snap.start, snap.end]);
       setToolInputContentHash(snap.contentHash);
+      if (!snap.replacementSlice) {
+        toolSelectionSnapshotRef.current = {
+          ...snap,
+          replacementSlice: fromDom.slice(snap.start, snap.end),
+        };
+      }
     } else {
       setToolInputMarkdownRange(null);
       setToolInputContentHash(snap?.contentHash ?? hashDraftContent(fromDom));
     }
   }
 
-  /** Last-resort Apply: replace locked/visible text directly in the editor DOM. */
-  function applyOutputViaDomRange(preparedOutput: string): boolean {
-    const el = contentEditorRef.current;
-    const sel = toolInputSelectedText.trim();
-    if (!el || !sel) return false;
-
-    let range: Range | null = null;
-    try {
-      if (
-        lockedRangeRef.current &&
-        el.contains(lockedRangeRef.current.commonAncestorContainer)
-      ) {
-        range = lockedRangeRef.current.cloneRange();
-      }
-    } catch {
-      range = null;
-    }
-
-    if (!range) {
-      range = findTextRangeInElement(el, sel);
-    }
-    if (!range) {
-      range = findRangeFromPlainTextInElement(el, sel);
-    }
-    if (!range) return false;
-
-    try {
-      const html = renderEditableDraftHtml(
-        sanitizeCitationMarkdown(preparedOutput, editorSourceLabelBySeq),
-        editorSourceLabelBySeq
-      );
-      insertToolOutputHtmlAtRange(range, html);
-      commitDraftContent(getCurrentEditorMarkdown(), true);
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
   /** Push draft state + refresh the visible editor immediately (Apply/Append/undo). */
   function commitDraftContent(newContent: string, pushNow = false) {
     if (!activeDraftId) return;
-    contentSyncSkipRef.current = null;
+    const cleaned = sanitizeCitationMarkdown(newContent, editorSourceLabelBySeq);
+    contentSyncSkipRef.current = cleaned;
 
     if (pushNow) {
       flushHistoryDebounce();
@@ -834,20 +914,23 @@ export function MyDraftsEditorView({
         pushHistory({ content: currentFromDom });
       }
       const last = historyRef.current[historyRef.current.length - 1];
-      if (!last || last.content !== newContent) {
-        pushHistory({ content: newContent });
+      if (!last || last.content !== cleaned) {
+        pushHistory({ content: cleaned });
       }
       syncHistoryButtons();
     }
 
     setDrafts((prev) =>
-      prev.map((d) => (d.id === activeDraftId ? { ...d, content: newContent } : d))
+      prev.map((d) => (d.id === activeDraftId ? { ...d, content: cleaned } : d))
     );
 
     const el = contentEditorRef.current;
     if (el) {
-      el.innerHTML = renderEditableDraftHtml(newContent, editorSourceLabelBySeq);
+      el.innerHTML = renderEditableDraftHtml(cleaned, editorSourceLabelBySeq);
       setRenderedWordCount(countWords(el.textContent ?? ""));
+      if (selectionLockedRef.current) {
+        requestAnimationFrame(() => refreshLockedSelectionInEditor());
+      }
     }
   }
 
@@ -865,7 +948,7 @@ export function MyDraftsEditorView({
   function handleEditorInput() {
     const el = contentEditorRef.current;
     if (!el || !activeDraftId) return;
-    const markdown = editableDomToMarkdown(el);
+    const markdown = getCleanDraftMarkdown();
     contentSyncSkipRef.current = markdown;
     handleDraftContentChange(markdown);
     if (!selectionLockedRef.current) setSelectedText("");
@@ -884,9 +967,34 @@ export function MyDraftsEditorView({
       historyDebounceRef.current = null;
       const el = contentEditorRef.current;
       if (el) {
-        pushHistory({ content: editableDomToMarkdown(el) });
+        pushHistory({ content: getCleanDraftMarkdown() });
       }
     }
+  }
+
+  function handleEditorPaste(e: React.ClipboardEvent<HTMLDivElement>) {
+    if (!activeDraftId || !contentEditorRef.current) return;
+
+    const pasted = parseClipboardToMarkdown(
+      e.clipboardData,
+      editorSourceLabelBySeq
+    );
+    if (!pasted.trim()) return;
+
+    e.preventDefault();
+    flushHistoryDebounce();
+
+    const editor = contentEditorRef.current;
+    const current = getCleanDraftMarkdown();
+    const [start, end] = getMarkdownRangeForEditorSelection(editor, current);
+    const next = mergePastedMarkdown(
+      current.slice(0, start),
+      pasted,
+      current.slice(end)
+    );
+
+    commitDraftContent(next, true);
+    if (!selectionLockedRef.current) setSelectedText("");
   }
 
   function handleDraftContentChange(content: string, pushNow = false) {
@@ -909,9 +1017,16 @@ export function MyDraftsEditorView({
     historyIdxRef.current--;
     const entry = historyRef.current[historyIdxRef.current];
     if (!entry) return;
+    const cleaned = sanitizeCitationMarkdown(entry.content, editorSourceLabelBySeq);
+    contentSyncSkipRef.current = cleaned;
     setDrafts((prev) =>
-      prev.map((d) => (d.id === activeDraftId ? { ...d, content: entry.content } : d))
+      prev.map((d) => (d.id === activeDraftId ? { ...d, content: cleaned } : d))
     );
+    const el = contentEditorRef.current;
+    if (el) {
+      el.innerHTML = renderEditableDraftHtml(cleaned, editorSourceLabelBySeq);
+      setRenderedWordCount(countWords(el.textContent ?? ""));
+    }
     syncHistoryButtons();
   }
 
@@ -924,9 +1039,16 @@ export function MyDraftsEditorView({
     historyIdxRef.current++;
     const entry = historyRef.current[historyIdxRef.current];
     if (!entry) return;
+    const cleaned = sanitizeCitationMarkdown(entry.content, editorSourceLabelBySeq);
+    contentSyncSkipRef.current = cleaned;
     setDrafts((prev) =>
-      prev.map((d) => (d.id === activeDraftId ? { ...d, content: entry.content } : d))
+      prev.map((d) => (d.id === activeDraftId ? { ...d, content: cleaned } : d))
     );
+    const el = contentEditorRef.current;
+    if (el) {
+      el.innerHTML = renderEditableDraftHtml(cleaned, editorSourceLabelBySeq);
+      setRenderedWordCount(countWords(el.textContent ?? ""));
+    }
     syncHistoryButtons();
   }
 
@@ -1133,7 +1255,6 @@ export function MyDraftsEditorView({
 
   function applyOutput() {
     if (!toolOutput || !activeDraftId || !activeDraft) return;
-    flushHistoryDebounce();
 
     const preparedOutput = prepareAppliedToolOutput(
       toolOutput,
@@ -1143,85 +1264,74 @@ export function MyDraftsEditorView({
     const sel = toolInputSelectedText.trim();
 
     if (sel) {
-      const snap = toolSelectionSnapshotRef.current;
-      const fromDom = getCurrentEditorMarkdown();
-      const bases = [
-        snap?.baseContent,
-        fromDom,
-        activeDraft.content,
-      ].filter((s): s is string => Boolean(s && s.length > 0));
-      const uniqueBases = bases.filter((s, i, arr) => arr.indexOf(s) === i);
+      const editor = contentEditorRef.current;
+      const current = getDraftContentForMutation();
+      refreshLockedSelectionInEditor();
 
-      let range: [number, number] | null = null;
-      let markdownForSplice = fromDom;
-
-      for (const base of uniqueBases) {
-        const found = resolveApplyRange(base, snap, sel);
-        if (found) {
-          range = found;
-          markdownForSplice =
-            base === fromDom || hashDraftContent(base) === hashDraftContent(fromDom)
-              ? fromDom
-              : base;
-          break;
-        }
+      let snap = toolSelectionSnapshotRef.current;
+      if (snap && !snap.baseContent && current) {
+        snap = { ...snap, baseContent: current };
+        toolSelectionSnapshotRef.current = snap;
       }
-
       if (
-        !range &&
         snap &&
         snap.start >= 0 &&
         snap.end > snap.start &&
-        snap.end <= snap.baseContent.length
+        !snap.replacementSlice
       ) {
-        range = [snap.start, snap.end];
-        markdownForSplice = snap.baseContent;
-        if (markdownForSplice !== fromDom) {
-          const mapped = findSelectionInMarkdown(fromDom, sel, snap.start);
-          if (mapped) {
-            range = mapped;
-            markdownForSplice = fromDom;
-          }
-        }
+        snap = {
+          ...snap,
+          replacementSlice: (snap.baseContent || current).slice(
+            snap.start,
+            snap.end
+          ),
+        };
+        toolSelectionSnapshotRef.current = snap;
       }
 
+      const range = resolveApplyRangeForDraft(
+        current,
+        snap,
+        sel,
+        editor,
+        lockedRangeRef.current,
+        toolInputMarkdownRange,
+        { trustStoredOffsets: selectionLockedRef.current }
+      );
+
       if (range && range[0] >= 0 && range[1] > range[0]) {
-        const contentToSplice =
-          markdownForSplice === fromDom ? fromDom : getCurrentEditorMarkdown();
-        const end = Math.min(range[1], contentToSplice.length);
+        const end = Math.min(range[1], current.length);
         const start = Math.min(range[0], end);
         commitDraftContent(
-          spliceMarkdownWithSelection(contentToSplice, start, end, preparedOutput),
+          spliceMarkdownWithSelection(current, start, end, preparedOutput),
           true
         );
         clearOutputState();
-        toast.success("Applied to selection");
-        return;
-      }
-
-      if (applyOutputViaDomRange(preparedOutput)) {
-        clearOutputState();
+        clearSelectionAfterContentChange();
         toast.success("Applied to selection");
         return;
       }
 
       toast.error(
-        "Could not locate the selected range in the draft. Re-select the text and run the tool again."
+        "Could not locate the selected range in the draft. Re-select the text and run the tool again, or use Append to Draft to add output at the end."
       );
       return;
     }
 
     commitDraftContent(preparedOutput, true);
     clearOutputState();
+    clearSelectionAfterContentChange();
     toast.success("Applied to draft");
   }
 
   function appendOutput() {
     if (!toolOutput || !activeDraftId || !activeDraft) return;
-    flushHistoryDebounce();
 
     const labelMap = editorSourceLabelBySeq;
-    const base = sanitizeCitationMarkdown(getCurrentEditorMarkdown(), labelMap).trimEnd();
+    const base = sanitizeCitationMarkdown(
+      getDraftContentForMutation(),
+      labelMap
+    ).trimEnd();
     const appended = prepareAppliedToolOutput(
       toolOutput,
       toolOutputHeadingTarget,
@@ -1247,6 +1357,7 @@ export function MyDraftsEditorView({
     }
 
     clearOutputState();
+    clearSelectionAfterContentChange();
     toast.success("Appended to draft");
 
     requestAnimationFrame(() => {
@@ -1390,21 +1501,42 @@ export function MyDraftsEditorView({
       return;
     }
     if (isSaving) return;
+    flushHistoryDebounce();
+    const contentToSave = getCleanDraftMarkdown();
+    contentSyncSkipRef.current = contentToSave;
+    setDrafts((prev) =>
+      prev.map((d) =>
+        d.id === activeDraftId ? { ...d, content: contentToSave } : d
+      )
+    );
+    const el = contentEditorRef.current;
+    if (el) {
+      el.innerHTML = renderEditableDraftHtml(contentToSave, editorSourceLabelBySeq);
+      setRenderedWordCount(countWords(el.textContent ?? ""));
+    }
     setIsSaving(true);
     try {
-      const updated = await updateBidDraft(activeDraftId, activeDraft.content);
+      const updated = await updateBidDraft(activeDraftId, contentToSave);
+      const savedContent = sanitizeCitationMarkdown(
+        updated.content,
+        editorSourceLabelBySeq
+      );
+      contentSyncSkipRef.current = savedContent;
       setDrafts((prev) =>
         prev.map((d) =>
           d.id === activeDraftId
             ? {
                 ...d,
                 title: updated.title,
-                content: updated.content,
+                content: savedContent,
                 createdAt: draftListDateLabel(updated.created_at, updated.updated_at),
               }
             : d
         )
       );
+      if (el && savedContent !== contentToSave) {
+        el.innerHTML = renderEditableDraftHtml(savedContent, editorSourceLabelBySeq);
+      }
       toast.success("Draft saved");
     } catch (err) {
       console.error("[MyDraftsEditor] Save draft failed:", err);
@@ -2090,6 +2222,7 @@ export function MyDraftsEditorView({
                         "empty:before:pointer-events-none empty:before:block empty:before:text-muted-foreground empty:before:content-[attr(data-placeholder)]"
                       )}
                       onInput={handleEditorInput}
+                      onPaste={handleEditorPaste}
                       onBlur={handleEditorBlur}
                       onMouseDown={() => contentEditorRef.current?.focus()}
                       onKeyDown={(e) => {
@@ -2227,7 +2360,7 @@ export function MyDraftsEditorView({
                 selectionLocked ? "bg-primary/10" : "bg-muted/30"
               )}>
                 <p className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
-                  {selectionWordCount || countWords(toolInputSelectedText)} word{(selectionWordCount || countWords(toolInputSelectedText)) !== 1 ? "s" : ""} selected — Apply will replace this range.
+                  {selectionWordCount || countWords(toolInputSelectedText)} word{(selectionWordCount || countWords(toolInputSelectedText)) !== 1 ? "s" : ""} selected — Apply replaces this range; Append adds to the end.
                   {selectionLocked && (
                     <span className="inline-flex items-center rounded-full bg-primary/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-primary">
                       Locked
