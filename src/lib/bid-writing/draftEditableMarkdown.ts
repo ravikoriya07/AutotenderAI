@@ -457,7 +457,14 @@ export function editableDomToMarkdown(root: HTMLElement): string {
 export function selectionFragmentToMarkdown(fragment: DocumentFragment): string {
   const tmp = document.createElement("div");
   tmp.appendChild(fragment.cloneNode(true));
-  return badgeHtmlToMarkdown(tmp.innerHTML);
+  /*
+   * OLD CODE (BUGGY): badgeHtmlToMarkdown stripped ALL HTML tags (h2,h3,ul,li,strong,em)
+   * to plain text — so selected text sent to tools had no headings, bold, or bullets.
+   *
+   * return badgeHtmlToMarkdown(tmp.innerHTML);
+   */
+  // Use the same DOM→markdown converter as the full draft so headings/bullets/bold are preserved.
+  return editableDomToMarkdown(tmp);
 }
 
 function collapseWhitespace(s: string): string {

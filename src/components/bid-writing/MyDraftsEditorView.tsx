@@ -318,6 +318,9 @@ export function MyDraftsEditorView({
   const [activeTool, setActiveTool] = useState<string | null>(null);
   const [toolOutputHeadingTarget, setToolOutputHeadingTarget] = useState(0);
   const [toolOutputSources, setToolOutputSources] = useState<Record<string, string> | null>(null);
+  // True after Apply/Append — keeps output visible on right side so user can re-apply after undo.
+  // Reset when user runs a new tool or manually clears the panel.
+  const [toolOutputApplied, setToolOutputApplied] = useState(false);
   const toolStreamAbortRef = useRef<AbortController | null>(null);
   // Mirrors toolStreaming state as a ref so event-handler closures (registered once)
   // can read the current value without being re-registered on every state change.
@@ -721,6 +724,10 @@ export function MyDraftsEditorView({
         return;
       }
       if (e.key === "s" || e.key === "S") {
+        // Don't trigger save when a button has keyboard focus (e.g. Clear button
+        // in the tool output panel), to avoid saving when the user intends to interact
+        // with a button and accidentally presses Ctrl+S.
+        if (tag === "button") return;
         e.preventDefault();
         saveDraftFnRef.current();
       }
@@ -749,7 +756,7 @@ export function MyDraftsEditorView({
     toolStreamAbortRef.current?.abort();
     toolStreamAbortRef.current = null;
     setToolStreaming(false);
-    clearOutputState();
+    clearOutputStateFull();
   }
 
   function syncHistoryButtons() {
@@ -757,14 +764,66 @@ export function MyDraftsEditorView({
     setCanRedo(historyIdxRef.current < historyRef.current.length - 1);
   }
 
+  function historyContentMatches(a: string, b: string) {
+    return (
+      normalizeAppliedMarkdown(sanitizeCitationMarkdown(a, editorSourceLabelBySeq)) ===
+      normalizeAppliedMarkdown(sanitizeCitationMarkdown(b, editorSourceLabelBySeq))
+    );
+  }
+
   function pushHistory(entry: HistoryEntry) {
-    // Truncate any redo stack above the current position.
-    historyRef.current = historyRef.current.slice(0, historyIdxRef.current + 1);
-    // Skip duplicate consecutive entries (e.g., rapid re-renders with the same content).
-    const last = historyRef.current[historyRef.current.length - 1];
-    if (last && last.content === entry.content) return;
-    historyRef.current.push(entry);
-    historyIdxRef.current = historyRef.current.length - 1;
+    /*
+     * OLD CODE (TRUNCATING) kept for frontend review:
+     * This wiped the redo stack on every typing push. After undo + manual edit,
+     * the user could never redo back to a tool output — B was gone forever.
+     *
+     * historyRef.current = historyRef.current.slice(0, historyIdxRef.current + 1);
+     * const last = historyRef.current[historyRef.current.length - 1];
+     * if (last && last.content === entry.content) return;
+     * historyRef.current.push(entry);
+     * historyIdxRef.current = historyRef.current.length - 1;
+     * syncHistoryButtons();
+     */
+    // Insert at current position without truncating redo stack above.
+    // This means typing after undo does NOT erase the redo history —
+    // the user can always redo forward to a previous tool output.
+    const current = historyRef.current[historyIdxRef.current];
+    if (current && historyContentMatches(current.content, entry.content)) {
+      // Same content as where we are now — no-op, but keep redo intact.
+      syncHistoryButtons();
+      return;
+    }
+    // Splice the new entry right after current idx, advance idx to it.
+    historyRef.current.splice(historyIdxRef.current + 1, 0, entry);
+    historyIdxRef.current = historyIdxRef.current + 1;
+    syncHistoryButtons();
+  }
+
+  function recordProgrammaticHistoryChange(beforeContent: string, afterContent: string) {
+    const before = sanitizeCitationMarkdown(beforeContent, editorSourceLabelBySeq);
+    const after = sanitizeCitationMarkdown(afterContent, editorSourceLabelBySeq);
+
+    /*
+     * OLD BEHAVIOR kept for frontend review:
+     * Apply/Append used commitDraftContent() to infer currentFromDom and cleaned,
+     * then conditionally pushed both. For tool-generated text this was too easy
+     * to skip when the DOM/state pointer was already partially synced.
+     */
+    flushHistoryDebounce();
+
+    // Push "before" if it differs from where we currently are.
+    const current = historyRef.current[historyIdxRef.current];
+    if (!current || !historyContentMatches(current.content, before)) {
+      historyRef.current.splice(historyIdxRef.current + 1, 0, { content: before });
+      historyIdxRef.current += 1;
+    }
+
+    // Push "after" if it differs from "before".
+    if (!historyContentMatches(before, after)) {
+      historyRef.current.splice(historyIdxRef.current + 1, 0, { content: after });
+      historyIdxRef.current += 1;
+    }
+
     syncHistoryButtons();
   }
 
@@ -904,21 +963,29 @@ export function MyDraftsEditorView({
   function commitDraftContent(newContent: string, pushNow = false) {
     if (!activeDraftId) return;
     const cleaned = sanitizeCitationMarkdown(newContent, editorSourceLabelBySeq);
-    contentSyncSkipRef.current = cleaned;
 
     if (pushNow) {
-      flushHistoryDebounce();
+      /*
+       * OLD CODE (BUGGY) kept for frontend review:
+       * contentSyncSkipRef.current = cleaned was set BEFORE getCurrentEditorMarkdown(),
+       * so the useEffect sync was skipped on re-render and undo never updated the DOM.
+       * Also currentFromDom was read after contentSyncSkipRef was already set to cleaned,
+       * so historyContentMatches(last, before) always matched and "before" was never pushed,
+       * leaving only one entry — making undo a no-op.
+       *
+       * const cleaned = sanitizeCitationMarkdown(newContent, editorSourceLabelBySeq);
+       * contentSyncSkipRef.current = cleaned;  ← was here (too early)
+       * const currentFromDom = getCurrentEditorMarkdown();
+       * recordProgrammaticHistoryChange(currentFromDom, cleaned);
+       */
+
+      // Capture "before" from DOM first, before anything is set.
       const currentFromDom = getCurrentEditorMarkdown();
-      const top = historyRef.current[historyIdxRef.current];
-      if (!top || top.content !== currentFromDom) {
-        pushHistory({ content: currentFromDom });
-      }
-      const last = historyRef.current[historyRef.current.length - 1];
-      if (!last || last.content !== cleaned) {
-        pushHistory({ content: cleaned });
-      }
-      syncHistoryButtons();
+      recordProgrammaticHistoryChange(currentFromDom, cleaned);
     }
+
+    // Set skip AFTER history recording so the useEffect sync is not blocked on undo.
+    contentSyncSkipRef.current = cleaned;
 
     setDrafts((prev) =>
       prev.map((d) => (d.id === activeDraftId ? { ...d, content: cleaned } : d))
@@ -941,9 +1008,24 @@ export function MyDraftsEditorView({
     flushHistoryDebounce();
     const currentContent = getCurrentEditorMarkdown();
     const top = historyRef.current[historyIdxRef.current];
-    if (!top || top.content === currentContent) return;
+    if (!top || historyContentMatches(top.content, currentContent)) return;
     pushHistory({ content: currentContent });
   }
+
+  /*
+   * clearRedoStackForManualEdit() REMOVED — kept here as comment for review.
+   * Previously called inside handleEditorInput() to wipe redo on every keystroke.
+   * Removed because pushHistory() no longer truncates the redo stack, so manual
+   * edits after undo no longer destroy the ability to redo back to tool outputs.
+   *
+   * function clearRedoStackForManualEdit(currentContent: string) {
+   *   if (historyIdxRef.current >= historyRef.current.length - 1) return;
+   *   const top = historyRef.current[historyIdxRef.current];
+   *   if (top && historyContentMatches(top.content, currentContent)) return;
+   *   historyRef.current = historyRef.current.slice(0, historyIdxRef.current + 1);
+   *   syncHistoryButtons();
+   * }
+   */
 
   function handleEditorInput() {
     const el = contentEditorRef.current;
@@ -1010,9 +1092,20 @@ export function MyDraftsEditorView({
 
   function undo() {
     if (!activeDraftId) return;
-    // Flush the debounce and capture any in-progress typing as a history entry so
-    // the user can redo back to this exact state after undoing.
-    snapshotCurrentContent();
+    /*
+     * OLD CODE (BUGGY) kept for frontend review:
+     * snapshotCurrentContent() reads the DOM via editableDomToMarkdown() and compares
+     * against historyRef[idx]. After Apply/Append, the DOM was set via el.innerHTML
+     * but editableDomToMarkdown() round-trips through HTML and produces slightly different
+     * whitespace than the stored entry — so historyContentMatches() returned false,
+     * a duplicate "after" entry was pushed making stackLength=3, idx=2.
+     * Then undo moved to idx=1 which was also the "after" content — nothing changed.
+     *
+     * snapshotCurrentContent();
+     */
+    // Just flush any pending typing debounce. The top of the stack already holds the
+    // current state (set by Apply/Append or the last typing snapshot).
+    flushHistoryDebounce();
     if (historyIdxRef.current <= 0) return;
     historyIdxRef.current--;
     const entry = historyRef.current[historyIdxRef.current];
@@ -1032,6 +1125,14 @@ export function MyDraftsEditorView({
 
   function redo() {
     if (!activeDraftId) return;
+    /*
+     * OLD CODE (BUGGY) kept for frontend review:
+     * snapshotCurrentContent() calls pushHistory() which truncates the redo stack,
+     * making historyIdxRef.current >= historyRef.current.length - 1 always true,
+     * so redo always returned early and never did anything.
+     *
+     * snapshotCurrentContent();
+     */
     // Cancel any pending debounce without snapshotting — we're going forward,
     // so in-progress edits since the last checkpoint are intentionally discarded.
     flushHistoryDebounce();
@@ -1118,6 +1219,7 @@ export function MyDraftsEditorView({
     setToolStreaming(true);
     setToolOutput("");
     setToolOutputSources(null);
+    setToolOutputApplied(false);
     setToolOutputHeadingTarget(
       detectMinHeadingLevel(
         selectedText.trim() ? selectedText : activeDraft.content
@@ -1238,7 +1340,23 @@ export function MyDraftsEditorView({
     }
   }
 
+  // Called after Apply/Append — clears selection state but keeps output visible on right panel
+  // so user can undo on the left and re-apply without losing the tool output.
   function clearOutputState() {
+    unlockSelection();
+    setPendingHighlightRestore(false);
+    setToolInputSelectedText("");
+    setToolInputSelectionRange(null);
+    setToolInputMarkdownRange(null);
+    setToolInputContentHash(null);
+    toolSelectionSnapshotRef.current = null;
+    setSelectedText("");
+    window.getSelection()?.removeAllRanges();
+    setToolOutputApplied(true);
+  }
+
+  // Called when starting a new tool run or manually dismissing — fully clears everything.
+  function clearOutputStateFull() {
     unlockSelection();
     setPendingHighlightRestore(false);
     setToolOutput(null);
@@ -1251,6 +1369,7 @@ export function MyDraftsEditorView({
     toolSelectionSnapshotRef.current = null;
     setSelectedText("");
     window.getSelection()?.removeAllRanges();
+    setToolOutputApplied(false);
   }
 
   function applyOutput() {
@@ -1418,6 +1537,7 @@ export function MyDraftsEditorView({
     setToolStreaming(true);
     setToolOutput("");
     setToolOutputSources(null);
+    setToolOutputApplied(false);
     setToolOutputHeadingTarget(
       detectMinHeadingLevel(selAtRun ? selectedText : activeDraft.content)
     );
@@ -1538,6 +1658,7 @@ export function MyDraftsEditorView({
         el.innerHTML = renderEditableDraftHtml(savedContent, editorSourceLabelBySeq);
       }
       toast.success("Draft saved");
+      clearAllToolState();
     } catch (err) {
       console.error("[MyDraftsEditor] Save draft failed:", err);
       const msg = err instanceof Error && err.message.trim() ? err.message.trim() : "Could not save draft";
@@ -2315,6 +2436,14 @@ export function MyDraftsEditorView({
               />
             </div>
             <div className="shrink-0 select-none border-t border-border bg-card/50 px-3 py-2.5">
+              {toolOutputApplied && (
+                <p className="mb-2 text-[11px] text-muted-foreground">
+                  <span className="mr-1.5 inline-flex items-center rounded-full bg-green-500/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-green-600 dark:text-green-400">
+                    Applied
+                  </span>
+                  Undo on the left to revert, then Apply again to re-apply.
+                </p>
+              )}
               <div className="flex flex-wrap items-center justify-start gap-2">
                 <button
                   type="button"
@@ -2389,6 +2518,14 @@ export function MyDraftsEditorView({
               />
             </div>
             <div className="shrink-0 select-none border-t border-border bg-card/50 px-3 py-2.5">
+              {toolOutputApplied && (
+                <p className="mb-2 text-[11px] text-muted-foreground">
+                  <span className="mr-1.5 inline-flex items-center rounded-full bg-green-500/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-green-600 dark:text-green-400">
+                    Applied
+                  </span>
+                  Undo on the left to revert, then Apply again.
+                </p>
+              )}
               <div className="flex flex-wrap items-center gap-2">
                 <button
                   type="button"
