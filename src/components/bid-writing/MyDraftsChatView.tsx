@@ -63,6 +63,10 @@ import {
   streamBidChat,
   deleteClientProject,
 } from "@/lib/bid-writing/bidWritingApi";
+import {
+  loadSelectedBidJob,
+  saveSelectedBidJob,
+} from "@/lib/bid-writing/selectedJobStorage";
 
 function isHighScoringPresetBid(b: PastBid): boolean {
   const wonOrLost = b.group === "won" || b.group === "lost";
@@ -147,6 +151,14 @@ function saveChatUiPrefs(prefs: ChatUiPrefs) {
 }
 
 function loadInitialSelectedClientProject(): { id: string; name: string } | null {
+  const selectedJob = loadSelectedBidJob();
+  if (selectedJob) {
+    return {
+      id: selectedJob.job_id,
+      name: selectedJob.job_name,
+    };
+  }
+
   const prefs = loadChatUiPrefs();
   if (!prefs) return null;
   if (prefs.clientProjectId) {
@@ -253,6 +265,34 @@ export function MyDraftsChatView({
     setSessions(loadChatHistory());
     setLocalSessionsLoaded(true);
   }, []);
+
+  useEffect(() => {
+    const jobIdFromUrl = searchParams?.get("job_id")?.trim() ?? "";
+    const jobNameFromUrl = searchParams?.get("job_name")?.trim() ?? "";
+    const selectedJob =
+      jobIdFromUrl || jobNameFromUrl
+        ? {
+            job_id: jobIdFromUrl,
+            job_name: jobNameFromUrl || "Selected opportunity",
+          }
+        : loadSelectedBidJob();
+
+    if (!selectedJob) return;
+    setSelectedClientProject((prev) => {
+      if (
+        prev?.id === selectedJob.job_id &&
+        prev?.name === selectedJob.job_name
+      ) {
+        return prev;
+      }
+      return {
+        id: selectedJob.job_id,
+        name: selectedJob.job_name,
+      };
+    });
+    saveSelectedBidJob(selectedJob);
+    setShowClientProjectError(false);
+  }, [searchParams]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1413,26 +1453,25 @@ export function MyDraftsChatView({
               Bid Writing Assistant
             </h2>
             <div className="flex flex-wrap items-center justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => {
-                  setFilterOpen(false);
-                  setShowClientProjectError(false);
-                  setClientModalOpen(true);
-                }}
+              <div
                 className={cn(
-                  "flex max-w-[11rem] items-center gap-1.5 rounded-full border bg-background px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground",
+                  "flex max-w-[11rem] items-center gap-1.5 rounded-full border bg-background px-2.5 py-1 text-xs text-muted-foreground",
                   showClientProjectError
                     ? "border-destructive ring-2 ring-destructive/25"
                     : "border-border"
                 )}
-                title="Select client project"
+                title={selectedClientProject?.name ?? "No client doc"}
+                aria-label={
+                  selectedClientProject
+                    ? `Selected job: ${selectedClientProject.name}`
+                    : "No job selected"
+                }
               >
                 <FolderOpen className="h-3.5 w-3.5 shrink-0" aria-hidden />
                 <span className="truncate">
                   {selectedClientProject?.name ?? "No client doc"}
                 </span>
-              </button>
+              </div>
               <button
                 type="button"
                 onClick={() => {

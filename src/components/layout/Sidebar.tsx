@@ -7,7 +7,6 @@ import { useSidebar } from "@/contexts/SidebarContext";
 import {
   // Search,
   Briefcase,
-  FileText,
   // Lightbulb,
   FlaskConical,
   // BookOpen,
@@ -26,7 +25,6 @@ import { cn } from "@/lib/utils";
 const mainNav = [
   // { href: "/search", label: "Search", icon: Search },
   { href: "/projects", label: "Projects", icon: Briefcase },
-  { href: "/my-drafts/chat", label: "My Drafts", icon: FileText },
   // { href: "/ideator", label: "Ideator", icon: Lightbulb },
   { href: "/research", label: "Research", icon: FlaskConical },
 ];
@@ -46,7 +44,6 @@ function isSidebarNavActive(pathname: string | null, href: string): boolean {
   if (href === "/quantity-take-off" && pathname.startsWith("/quantity-take-off/"))
     return true;
   if (href === "/projects" && pathname.startsWith("/projects/")) return true;
-  if (href === "/my-drafts/chat" && pathname.startsWith("/my-drafts")) return true;
   return false;
 }
 

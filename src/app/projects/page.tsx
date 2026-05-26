@@ -47,6 +47,7 @@ import { toast } from "react-toastify";
 import { requestProjectCatalogRefresh } from "@/lib/projectCatalogRefresh";
 import { cn } from "@/lib/utils";
 import { DateRangePickerWrapper } from "@/components/DateRangePickerWrapper";
+import { saveSelectedBidJob } from "@/lib/bid-writing/selectedJobStorage";
 
 const STATUS_OPTIONS = ["Preparing", "In Progress", "Completed"];
 const DEFAULT_LIMIT = 10;
@@ -393,6 +394,7 @@ function ProjectMobileCard({
   openActionId,
   setOpenActionId,
   router,
+  onOpportunityClick,
   onEditRequest,
   onDeleteRequest,
 }: {
@@ -400,6 +402,7 @@ function ProjectMobileCard({
   openActionId: string | null;
   setOpenActionId: Dispatch<SetStateAction<string | null>>;
   router: ReturnType<typeof useRouter>;
+  onOpportunityClick: (p: Project) => void;
   onEditRequest: (p: Project) => void;
   onDeleteRequest: (p: Project) => void;
 }) {
@@ -409,7 +412,14 @@ function ProjectMobileCard({
       <div className="flex gap-3">
         <div className="min-w-0 flex-1 space-y-3">
           <h3 className="text-base font-semibold leading-snug text-foreground">
-            {project.opportunity}
+            <button
+              type="button"
+              onClick={() => onOpportunityClick(project)}
+              className="line-clamp-2 text-left text-primary underline-offset-4 transition-colors hover:text-primary/80 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+              title={`Open ${project.opportunity} in bid chat`}
+            >
+              {project.opportunity}
+            </button>
           </h3>
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
             <span className="text-muted-foreground">
@@ -599,6 +609,23 @@ export default function ProjectsPage() {
     });
   };
 
+  const openOpportunityInDraftsChat = useCallback(
+    (project: Project) => {
+      const jobId = (project.job_id ?? project.id).trim();
+      const jobName = project.opportunity?.trim() || "Selected opportunity";
+      saveSelectedBidJob({
+        job_id: jobId,
+        job_name: jobName,
+      });
+
+      const params = new URLSearchParams();
+      params.set("job_id", jobId);
+      params.set("job_name", jobName);
+      router.push(`/my-drafts/chat?${params.toString()}`);
+    },
+    [router]
+  );
+
   const projectList = Array.isArray(projects) ? projects : [];
 
   return (
@@ -655,6 +682,7 @@ export default function ProjectsPage() {
                     openActionId={openActionId}
                     setOpenActionId={setOpenActionId}
                     router={router}
+                    onOpportunityClick={openOpportunityInDraftsChat}
                     onEditRequest={(p) => {
                       setProjectToEdit(p);
                       setEditModalOpen(true);
@@ -700,12 +728,14 @@ export default function ProjectsPage() {
                       {projectList.map((project) => (
                         <TableRow key={project.id}>
                           <TableCell className="min-w-0 px-3 py-3 align-middle lg:px-4">
-                            <span
-                              className="line-clamp-2 font-medium text-foreground lg:line-clamp-1 lg:truncate"
-                              title={project.opportunity}
+                            <button
+                              type="button"
+                              className="line-clamp-2 max-w-full text-left font-medium text-primary underline-offset-4 transition-colors hover:text-primary/80 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 lg:line-clamp-1 lg:truncate"
+                              title={`Open ${project.opportunity} in bid chat`}
+                              onClick={() => openOpportunityInDraftsChat(project)}
                             >
                               {project.opportunity}
-                            </span>
+                            </button>
                           </TableCell>
                           <TableCell className="whitespace-nowrap px-3 py-3 text-sm text-muted-foreground lg:px-4">
                             {project.dueDate ?? "N/A"}
