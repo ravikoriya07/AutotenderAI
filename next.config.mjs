@@ -4,6 +4,20 @@ const nextConfig = {
   devIndicators: {
     position: "bottom-right",
   },
+  async redirects() {
+    return [
+      {
+        source: "/inventory-management",
+        destination: "/inquiry-management",
+        permanent: true,
+      },
+      {
+        source: "/inventory-management/:path*",
+        destination: "/inquiry-management/:path*",
+        permanent: true,
+      },
+    ];
+  },
 };
 
 export default nextConfig;

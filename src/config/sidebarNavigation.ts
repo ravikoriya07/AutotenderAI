@@ -1,4 +1,4 @@
-import type { LucideIcon } from "lucide-react";
+﻿import type { LucideIcon } from "lucide-react";
 import {
   Briefcase,
   FlaskConical,
@@ -9,10 +9,10 @@ import {
 } from "lucide-react";
 import {
   DEFAULT_INVENTORY_MODULE,
+  INQUIRY_MANAGEMENT_BASE,
+  INQUIRY_MANAGEMENT_LABEL,
   INVENTORY_MODULES,
 } from "@/features/inventory-management/config/modules";
-
-export const INVENTORY_MANAGEMENT_BASE = "/inventory-management";
 
 export type SidebarNavLinkItem = {
   kind: "link";
@@ -60,11 +60,11 @@ export const SIDEBAR_MAIN_NAV: SidebarNavItem[] = [
   },
   {
     kind: "group",
-    id: "inventory-management",
-    label: "Inventory Management",
+    id: "inquiry-management",
+    label: INQUIRY_MANAGEMENT_LABEL,
     icon: Package,
-    href: `${INVENTORY_MANAGEMENT_BASE}/${DEFAULT_INVENTORY_MODULE}`,
-    matchPrefix: INVENTORY_MANAGEMENT_BASE,
+    href: `${INQUIRY_MANAGEMENT_BASE}/${DEFAULT_INVENTORY_MODULE}`,
+    matchPrefix: INQUIRY_MANAGEMENT_BASE,
     children: INVENTORY_MODULES.map((mod) => ({
       href: mod.href,
       label: mod.label,

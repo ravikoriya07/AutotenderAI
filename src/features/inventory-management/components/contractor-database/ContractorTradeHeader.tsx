@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { Button } from "@/components/ui/Button";
+import { INQUIRY_MANAGEMENT_BASE } from "@/features/inventory-management/config/modules";
 import { cn } from "@/lib/utils";
 
 type ContractorTradeHeaderProps = {
@@ -34,7 +35,7 @@ export function ContractorTradeHeader({
         + Add Contact
       </Button>
       <Link
-        href="/inventory-management/enquiry-generation"
+        href={`${INQUIRY_MANAGEMENT_BASE}/enquiry-generation`}
         className="inline-flex h-8 items-center justify-center rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:bg-primary/90"
       >
         Confirm for Enquiry →

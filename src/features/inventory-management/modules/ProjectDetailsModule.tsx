@@ -15,6 +15,7 @@ import {
   FormInput,
   FormTextarea,
 } from "@/features/inventory-management/components/ui/FormField";
+import { INQUIRY_MANAGEMENT_BASE } from "@/features/inventory-management/config/modules";
 import { PROJECT_DETAILS_SECTIONS } from "@/features/inventory-management/config/project-details-sections";
 import { useInventoryWorkflow } from "@/features/inventory-management/context/InventoryWorkflowContext";
 import {
@@ -80,7 +81,7 @@ export function ProjectDetailsModule() {
             Save
           </Button>
           <Link
-            href="/inventory-management/document-abstraction"
+            href={`${INQUIRY_MANAGEMENT_BASE}/document-abstraction`}
             className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:bg-primary/90"
           >
             Proceed →

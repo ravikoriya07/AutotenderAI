@@ -3,7 +3,10 @@
 import { usePathname } from "next/navigation";
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
 import { InventoryWorkflowProvider } from "@/features/inventory-management/context/InventoryWorkflowContext";
-import { getInventoryModule } from "@/features/inventory-management/config/modules";
+import {
+  getInventoryModule,
+  INQUIRY_MANAGEMENT_LABEL,
+} from "@/features/inventory-management/config/modules";
 
 export default function InventoryManagementLayout({
   children,
@@ -16,7 +19,7 @@ export default function InventoryManagementLayout({
 
   return (
     <DashboardLayout
-      title={moduleMeta?.label ?? "Inventory Management"}
+      title={moduleMeta?.label ?? INQUIRY_MANAGEMENT_LABEL}
       fullHeight
     >
       <InventoryWorkflowProvider>

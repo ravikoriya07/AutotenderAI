@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/Button";
 import { ModuleShell } from "@/features/inventory-management/components/layout/ModuleShell";
 import { EmailPreview } from "@/features/inventory-management/components/ui/EmailPreview";
 import { TradeList } from "@/features/inventory-management/components/ui/TradeList";
+import { INQUIRY_MANAGEMENT_BASE } from "@/features/inventory-management/config/modules";
 import { useInventoryWorkflow } from "@/features/inventory-management/context/InventoryWorkflowContext";
 import {
   fetchContactsByTrade,
@@ -294,7 +295,7 @@ export function EnquiryGenerationModule() {
           body={displayBody}
           docsLink={
             <Link
-              href="/inventory-management/document-abstraction"
+              href={`${INQUIRY_MANAGEMENT_BASE}/document-abstraction`}
               className="text-xs text-primary hover:underline"
             >
               View document package
