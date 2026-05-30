@@ -1,39 +1,16 @@
-"use client";
+import { ProjectDetailRouteClient } from "@/app/projects/[id]/ProjectDetailRouteClient";
 
-import { useParams, useRouter } from "next/navigation";
-import { ChevronLeft } from "lucide-react";
-import { DashboardLayout } from "@/components/layout/DashboardLayout";
-import { PageContainer } from "@/components/layout/PageContainer";
-import { ProjectDetailPageContent } from "@/components/projects/ProjectDetailPageContent";
-import { Button } from "@/components/ui/Button";
+export const dynamic = "force-dynamic";
 
-export default function ProjectDetailRoutePage() {
-  const router = useRouter();
-  const params = useParams();
-  const raw = params.id;
-  const projectId = Array.isArray(raw) ? raw[0] ?? "" : raw ?? "";
+type ProjectDetailPageProps = {
+  params: Promise<{ id: string }>;
+};
 
-  return (
-    <DashboardLayout
-      titleLeading={
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          className="h-9 min-h-9 gap-1 px-2 text-muted-foreground hover:text-foreground sm:min-h-0"
-          onClick={() => router.push("/projects")}
-          aria-label="Back to projects"
-        >
-          <ChevronLeft className="h-4 w-4 shrink-0" />
-          <span className="hidden sm:inline">Back</span>
-        </Button>
-      }
-      title="Project detail"
-      searchPlaceholder="Search your projects"
-    >
-      <PageContainer>
-        <ProjectDetailPageContent projectId={projectId} />
-      </PageContainer>
-    </DashboardLayout>
-  );
+export default async function ProjectDetailPage({
+  params,
+}: ProjectDetailPageProps) {
+  const { id } = await params;
+  const projectId = Array.isArray(id) ? id[0] ?? "" : id ?? "";
+
+  return <ProjectDetailRouteClient projectId={projectId} />;
 }

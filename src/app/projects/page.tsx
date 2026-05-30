@@ -34,7 +34,7 @@ import {
   Trash2,
   FileDown,
   Library,
-  PanelRight,
+  MessageSquare,
 } from "lucide-react";
 import { Modal } from "@/components/ui/Modal";
 import { CreateProjectForm } from "@/components/CreateProjectForm";
@@ -45,6 +45,7 @@ import Swal from "sweetalert2";
 import type { Project, Pagination } from "@/types/project";
 import { toast } from "react-toastify";
 import { requestProjectCatalogRefresh } from "@/lib/projectCatalogRefresh";
+import { getProjectDetailPath, getProjectJobId } from "@/lib/project/getProjectJobId";
 import { cn } from "@/lib/utils";
 import { DateRangePickerWrapper } from "@/components/DateRangePickerWrapper";
 import { saveSelectedBidJob } from "@/lib/bid-writing/selectedJobStorage";
@@ -189,11 +190,35 @@ function PaginationControls({
 }
 
 const ACTION_MENU_WIDTH = 176;
-const ACTION_MENU_EST_HEIGHT = 260;
+const ACTION_MENU_EST_HEIGHT = 220;
+
+function BidChatButton({
+  project,
+  onClick,
+  className,
+}: {
+  project: Project;
+  onClick: () => void;
+  className?: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "inline-flex items-center gap-1.5 rounded-full border border-primary/25 bg-primary/10 px-2.5 py-1 text-xs font-medium text-primary transition-colors hover:bg-primary/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
+        className
+      )}
+      title={`Open ${project.opportunity} in bid chat`}
+    >
+      <MessageSquare className="h-3 w-3 shrink-0" aria-hidden />
+      Bid chat
+    </button>
+  );
+}
 
 function ProjectActionsCell({
   onEdit,
-  onDetail,
   onExtract,
   onLibrary,
   onDelete,
@@ -202,7 +227,6 @@ function ProjectActionsCell({
   onClose,
 }: {
   onEdit: () => void;
-  onDetail: () => void;
   onExtract: () => void;
   onLibrary: () => void;
   onDelete: () => void;
@@ -319,18 +343,6 @@ function ProjectActionsCell({
         type="button"
         role="menuitem"
         onClick={() => {
-          onDetail();
-          onClose();
-        }}
-        className="flex w-full items-center gap-2.5 px-3 py-2.5 text-left text-sm text-foreground transition-colors hover:bg-muted focus:bg-muted focus:outline-none"
-      >
-        <PanelRight className="h-4 w-4 shrink-0 text-primary" />
-        Detail
-      </button>
-      <button
-        type="button"
-        role="menuitem"
-        onClick={() => {
           onExtract();
           onClose();
         }}
@@ -394,7 +406,8 @@ function ProjectMobileCard({
   openActionId,
   setOpenActionId,
   router,
-  onOpportunityClick,
+  onProjectClick,
+  onBidChatClick,
   onEditRequest,
   onDeleteRequest,
 }: {
@@ -402,11 +415,12 @@ function ProjectMobileCard({
   openActionId: string | null;
   setOpenActionId: Dispatch<SetStateAction<string | null>>;
   router: ReturnType<typeof useRouter>;
-  onOpportunityClick: (p: Project) => void;
+  onProjectClick: (p: Project) => void;
+  onBidChatClick: (p: Project) => void;
   onEditRequest: (p: Project) => void;
   onDeleteRequest: (p: Project) => void;
 }) {
-  const jobId = project.job_id ?? project.id;
+  const jobId = getProjectJobId(project);
   return (
     <article className="rounded-xl border border-border bg-card p-4 shadow-sm">
       <div className="flex gap-3">
@@ -414,9 +428,9 @@ function ProjectMobileCard({
           <h3 className="text-base font-semibold leading-snug text-foreground">
             <button
               type="button"
-              onClick={() => onOpportunityClick(project)}
+              onClick={() => onProjectClick(project)}
               className="line-clamp-2 text-left text-primary underline-offset-4 transition-colors hover:text-primary/80 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-              title={`Open ${project.opportunity} in bid chat`}
+              title={`Open ${project.opportunity} details`}
             >
               {project.opportunity}
             </button>
@@ -435,19 +449,12 @@ function ProjectMobileCard({
               <span className="h-1.5 w-1.5 rounded-full bg-current" aria-hidden />
               {project.status}
             </span>
+            <BidChatButton
+              project={project}
+              onClick={() => onBidChatClick(project)}
+            />
           </div>
           <div className="flex flex-wrap gap-2">
-            <Button
-              type="button"
-              size="sm"
-              variant="secondary"
-              className="h-9 flex-1 min-[380px]:flex-none"
-              onClick={() =>
-                router.push(`/projects/${encodeURIComponent(project.id)}`)
-              }
-            >
-              Detail
-            </Button>
             <Button
               type="button"
               size="sm"
@@ -481,9 +488,6 @@ function ProjectMobileCard({
           }
           onClose={() => setOpenActionId(null)}
           onEdit={() => onEditRequest(project)}
-          onDetail={() =>
-            router.push(`/projects/${encodeURIComponent(project.id)}`)
-          }
           onExtract={() =>
             router.push(`/extract?job_id=${encodeURIComponent(jobId)}`)
           }
@@ -609,9 +613,16 @@ export default function ProjectsPage() {
     });
   };
 
-  const openOpportunityInDraftsChat = useCallback(
+  const openProjectDetail = useCallback(
     (project: Project) => {
-      const jobId = (project.job_id ?? project.id).trim();
+      router.push(getProjectDetailPath(project));
+    },
+    [router]
+  );
+
+  const openBidChat = useCallback(
+    (project: Project) => {
+      const jobId = getProjectJobId(project);
       const jobName = project.opportunity?.trim() || "Selected opportunity";
       saveSelectedBidJob({
         job_id: jobId,
@@ -682,7 +693,8 @@ export default function ProjectsPage() {
                     openActionId={openActionId}
                     setOpenActionId={setOpenActionId}
                     router={router}
-                    onOpportunityClick={openOpportunityInDraftsChat}
+                    onProjectClick={openProjectDetail}
+                    onBidChatClick={openBidChat}
                     onEditRequest={(p) => {
                       setProjectToEdit(p);
                       setEditModalOpen(true);
@@ -696,19 +708,22 @@ export default function ProjectsPage() {
 
           <div className="hidden md:block">
             <div className="overflow-x-auto">
-              <Table className="min-w-[640px] table-fixed">
+              <Table className="min-w-[720px] table-fixed">
                 <TableHeader>
                   <TableRow className="hover:bg-transparent">
-                    <TableHead className="h-11 w-[40%] min-w-0 px-3 lg:px-4">
+                    <TableHead className="h-11 w-[34%] min-w-0 px-3 lg:px-4">
                       Opportunity
                     </TableHead>
-                    <TableHead className="h-11 w-[18%] whitespace-nowrap px-3 lg:px-4">
+                    <TableHead className="h-11 w-[16%] whitespace-nowrap px-3 lg:px-4">
                       Due date
                     </TableHead>
-                    <TableHead className="h-11 w-[26%] whitespace-nowrap px-3 lg:px-4">
+                    <TableHead className="h-11 w-[22%] whitespace-nowrap px-3 lg:px-4">
                       Status
                     </TableHead>
-                    <TableHead className="h-11 w-[16%] whitespace-nowrap px-3 py-2 text-right lg:px-4">
+                    <TableHead className="h-11 w-[14%] whitespace-nowrap px-3 lg:px-4">
+                      Bid chat
+                    </TableHead>
+                    <TableHead className="h-11 w-[14%] whitespace-nowrap px-3 py-2 text-right lg:px-4">
                       Actions
                     </TableHead>
                   </TableRow>
@@ -717,7 +732,7 @@ export default function ProjectsPage() {
                   {loading ? (
                     <TableRow>
                       <TableCell
-                        colSpan={4}
+                        colSpan={5}
                         className="py-10 text-center text-sm text-muted-foreground"
                       >
                         Loading…
@@ -731,8 +746,8 @@ export default function ProjectsPage() {
                             <button
                               type="button"
                               className="line-clamp-2 max-w-full text-left font-medium text-primary underline-offset-4 transition-colors hover:text-primary/80 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 lg:line-clamp-1 lg:truncate"
-                              title={`Open ${project.opportunity} in bid chat`}
-                              onClick={() => openOpportunityInDraftsChat(project)}
+                              title={`Open ${project.opportunity} details`}
+                              onClick={() => openProjectDetail(project)}
                             >
                               {project.opportunity}
                             </button>
@@ -751,6 +766,12 @@ export default function ProjectsPage() {
                               <span className="truncate">{project.status}</span>
                             </span>
                           </TableCell>
+                          <TableCell className="px-3 py-3 lg:px-4">
+                            <BidChatButton
+                              project={project}
+                              onClick={() => openBidChat(project)}
+                            />
+                          </TableCell>
                           <TableCell className="px-2 py-3 text-right lg:px-4">
                             <ProjectActionsCell
                               open={openActionId === project.id}
@@ -764,19 +785,14 @@ export default function ProjectsPage() {
                                 setProjectToEdit(project);
                                 setEditModalOpen(true);
                               }}
-                              onDetail={() => {
-                                router.push(
-                                  `/projects/${encodeURIComponent(project.id)}`
-                                );
-                              }}
                               onExtract={() => {
-                                const jobId = project.job_id ?? project.id;
+                                const jobId = getProjectJobId(project);
                                 router.push(
                                   `/extract?job_id=${encodeURIComponent(jobId)}`
                                 );
                               }}
                               onLibrary={() => {
-                                const jobId = project.job_id ?? project.id;
+                                const jobId = getProjectJobId(project);
                                 router.push(
                                   `/libraries?job_id=${encodeURIComponent(jobId)}`
                                 );
@@ -789,7 +805,7 @@ export default function ProjectsPage() {
                       {projectList.length === 0 && !loading && (
                         <TableRow>
                           <TableCell
-                            colSpan={4}
+                            colSpan={5}
                             className="py-10 text-center text-sm text-muted-foreground"
                           >
                             No projects found.

@@ -64,6 +64,26 @@ export type ListProjectsResult = {
   pagination: Pagination | null;
 };
 
+function normalizeProject(raw: unknown): Project | null {
+  if (!raw || typeof raw !== "object") return null;
+  const row = raw as Record<string, unknown>;
+  const jobId = String(row.job_id ?? row.id ?? "").trim();
+  if (!jobId) return null;
+
+  return {
+    id: jobId,
+    job_id: jobId,
+    opportunity: String(row.opportunity ?? ""),
+    dueDate: String(row.dueDate ?? row.due_date ?? "N/A"),
+    status: String(row.status ?? ""),
+  };
+}
+
+function normalizeProjects(raw: unknown): Project[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.map(normalizeProject).filter(Boolean) as Project[];
+}
+
 export async function listProjects(
   params?: ListProjectsParams,
   signal?: AbortSignal
@@ -82,14 +102,14 @@ export async function listProjects(
   };
   const { data } = await apiClient.get<unknown>(url, config);
   if (data && typeof data === "object" && "projects" in data) {
-    const obj = data as { projects: Project[]; pagination?: Pagination };
+    const obj = data as { projects: unknown; pagination?: Pagination };
     return {
-      projects: Array.isArray(obj.projects) ? obj.projects : [],
+      projects: normalizeProjects(obj.projects),
       pagination: obj.pagination ?? null,
     };
   }
   if (Array.isArray(data)) {
-    return { projects: data as Project[], pagination: null };
+    return { projects: normalizeProjects(data), pagination: null };
   }
   return { projects: [], pagination: null };
 }
