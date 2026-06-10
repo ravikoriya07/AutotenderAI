@@ -1,6 +1,7 @@
 ﻿import type { LucideIcon } from "lucide-react";
 import {
   Briefcase,
+  ClipboardList,
   FlaskConical,
   Library,
   Package,
@@ -79,6 +80,13 @@ export const SIDEBAR_BOTTOM_NAV: SidebarNavLinkItem[] = [
     href: "/quantity-take-off",
     label: "Quantity take-off",
     icon: Ruler,
+    matchSubpaths: true,
+  },
+  {
+    kind: "link",
+    href: "/schedule-of-works",
+    label: "Schedule of Works",
+    icon: ClipboardList,
     matchSubpaths: true,
   },
   { kind: "link", href: "/settings", label: "Settings", icon: Settings },

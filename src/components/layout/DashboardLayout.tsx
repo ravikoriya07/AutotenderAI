@@ -9,8 +9,8 @@ import { cn } from "@/lib/utils";
 interface DashboardLayoutProps {
   children: React.ReactNode;
   titleLeading?: React.ReactNode;
-  title?: string;
-  subtitle?: string;
+  title?: React.ReactNode;
+  subtitle?: React.ReactNode;
   searchPlaceholder?: string;
   /**
    * When true the layout is clamped to the dynamic viewport height so that

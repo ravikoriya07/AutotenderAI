@@ -68,15 +68,17 @@ export function ResearchProjectProvider({
   const onResearchRoute = pathname.startsWith("/research");
   const onOrganisationLibraryRoute = pathname === "/library";
   const onQuantityTakeOffRoute = pathname.startsWith("/quantity-take-off");
+  const onScheduleOfWorksRoute = pathname.startsWith("/schedule-of-works");
   const needsCompletedStepsCatalog =
     onResearchRoute ||
     onOrganisationLibraryRoute ||
-    onQuantityTakeOffRoute;
+    onQuantityTakeOffRoute ||
+    onScheduleOfWorksRoute;
 
   const { projects: completedStepProjects, loading: completedStepsLoading } =
     useCompletedStepProjects({
       enabled: needsCompletedStepsCatalog,
-      ...(onResearchRoute || onQuantityTakeOffRoute
+      ...(onResearchRoute || onQuantityTakeOffRoute || onScheduleOfWorksRoute
         ? { stepName: "upload_to_neo4j" }
         : {}),
     });

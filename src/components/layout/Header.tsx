@@ -12,8 +12,8 @@ import { CompletedStepsProjectSelect } from "@/components/projects/CompletedStep
 interface HeaderProps {
   /** Renders before the page title (e.g. back control). */
   titleLeading?: ReactNode;
-  title?: string;
-  subtitle?: string;
+  title?: ReactNode;
+  subtitle?: ReactNode;
   searchPlaceholder?: string;
 }
 
@@ -39,8 +39,12 @@ export function Header({
   const onResearchRoute = pathname.startsWith("/research");
   const onOrganisationLibraryRoute = pathname === "/library";
   const onQuantityTakeOffRoute = pathname.startsWith("/quantity-take-off");
+  const onScheduleOfWorksRoute = pathname.startsWith("/schedule-of-works");
   const needsCompletedStepsCatalog =
-    onResearchRoute || onOrganisationLibraryRoute || onQuantityTakeOffRoute;
+    onResearchRoute ||
+    onOrganisationLibraryRoute ||
+    onQuantityTakeOffRoute ||
+    onScheduleOfWorksRoute;
   const showResearchProjectPicker = needsCompletedStepsCatalog;
 
   const {
@@ -51,7 +55,12 @@ export function Header({
   } = useResearchProject();
 
   useEffect(() => {
-    if (!onResearchRoute && !onOrganisationLibraryRoute && !onQuantityTakeOffRoute)
+    if (
+      !onResearchRoute &&
+      !onOrganisationLibraryRoute &&
+      !onQuantityTakeOffRoute &&
+      !onScheduleOfWorksRoute
+    )
       return;
     if (researchCatalogLoading) return;
     const id = selectedProjectJobId.trim();
@@ -63,6 +72,7 @@ export function Header({
     onResearchRoute,
     onOrganisationLibraryRoute,
     onQuantityTakeOffRoute,
+    onScheduleOfWorksRoute,
     researchCatalogLoading,
     researchCatalogProjects,
     selectedProjectJobId,
