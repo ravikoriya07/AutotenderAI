@@ -44,6 +44,211 @@ function openAllocateModal(ref,desc){
 var splitFile = null;
 var splitActiveTrade = null;
 var splitTrades = [];   // [{id, label, nbs, items:[{ref,desc,qty,unit}], lineCount}]
+var sowProjectJobId = '';
+var sowSplitProcessing = false;
+var sowFoundFiles = [];
+var sowSelectedFileIndex = -1;
+var sowFoundFilesLoading = false;
+var sowSplitValidationMsg = '';
+var sowSplitStepTimers = null;
+var sowFullSchedule = [];
+var sowSplitResponse = null;
+var SHARED_ITEMS = [];
+
+function updateSowEmsSectionStatus(){
+  if(splitFile) return;
+  var statusEl = el('sec1-status');
+  var numEl = el('sec1-num');
+  if(!statusEl || !numEl) return;
+  var selected = sowSelectedFileIndex >= 0 ? sowFoundFiles[sowSelectedFileIndex] : null;
+  if(selected && selected.file_name){
+    var name = selected.file_name;
+    statusEl.textContent = name.length > 18 ? name.substring(0,16)+'…' : name;
+    numEl.className = 'section-num done';
+  } else if(!sowFoundFilesLoading){
+    statusEl.textContent = '';
+    if(sowFoundFiles.length) numEl.className = 'section-num done';
+  }
+}
+
+function renderSowFoundFilesList(){
+  var container = el('sec1-ems-files');
+  var emptyEl = el('sec1-ems-empty');
+  var notice = el('sec1-ems-notice');
+  if(!container) return;
+
+  if(splitFile){
+    if(notice) notice.style.display = 'none';
+    return;
+  }
+
+  if(notice) notice.style.display = 'flex';
+
+  if(sowFoundFilesLoading){
+    container.innerHTML = '';
+    container.style.display = 'none';
+    if(emptyEl){
+      emptyEl.style.display = 'block';
+      emptyEl.textContent = 'Loading schedules from EMS…';
+    }
+    return;
+  }
+
+  if(!sowFoundFiles.length){
+    container.innerHTML = '';
+    container.style.display = 'none';
+    if(emptyEl){
+      emptyEl.style.display = 'block';
+      emptyEl.textContent = 'No schedule loaded yet — upload below or open from EMS';
+    }
+    updateSowEmsSectionStatus();
+    return;
+  }
+
+  if(emptyEl) emptyEl.style.display = 'none';
+  container.style.display = 'flex';
+
+  container.innerHTML = sowFoundFiles.map(function(f,i){
+    var checked = i === sowSelectedFileIndex ? ' checked' : '';
+    return '<label class="sow-ems-file-item">'+
+      '<input type="checkbox" value="'+i+'"'+checked+' onchange="toggleSowFoundFile('+i+', this.checked)">'+
+      '<span class="sow-ems-file-name" title="'+esc(f.file_name)+'">'+esc(f.file_name)+'</span>'+
+    '</label>';
+  }).join('');
+
+  updateSowEmsSectionStatus();
+}
+
+function toggleSowFoundFile(index, checked){
+  clearSplitValidation();
+  if(checked){
+    sowSelectedFileIndex = index;
+  } else if(sowSelectedFileIndex === index){
+    sowSelectedFileIndex = -1;
+  }
+  renderSowFoundFilesList();
+}
+
+window.setSowFoundFiles = function(files){
+  sowFoundFiles = Array.isArray(files) ? files.filter(function(f){ return f && f.file_name; }) : [];
+  sowSelectedFileIndex = -1;
+  sowFoundFilesLoading = false;
+  renderSowFoundFilesList();
+};
+
+window.setSowFoundFilesLoading = function(loading){
+  sowFoundFilesLoading = Boolean(loading);
+  renderSowFoundFilesList();
+};
+
+var SOW_TRADE_SPLIT_CONFIG = {
+  method: {
+    label: 'Identify trades by',
+    default: 'ai',
+    options: [
+      { value: 'ai', label: 'AI — NBS codes + section headings (recommended)' },
+      { value: 'nbs', label: 'NBS codes only' },
+      { value: 'headings', label: 'Section headings only' }
+    ]
+  },
+  inclPrelims: {
+    label: 'Include preliminaries section',
+    default: true
+  },
+  inclBwic: {
+    label: "Include builder's work items",
+    default: true
+  }
+};
+
+function normalizeSowTradeSplitMethod(value){
+  var v = String(value || '').trim().toLowerCase();
+  if(v === 'nbs' || v === 'headings' || v === 'ai') return v;
+  return SOW_TRADE_SPLIT_CONFIG.method.default;
+}
+
+function getSowTradeSplitOptions(){
+  var methodEl = el('split-method');
+  var prelimsEl = el('split-inclPrelims');
+  var bwicEl = el('split-inclBwic');
+  return {
+    method: normalizeSowTradeSplitMethod(methodEl ? methodEl.value : SOW_TRADE_SPLIT_CONFIG.method.default),
+    inclPrelims: prelimsEl ? prelimsEl.checked : SOW_TRADE_SPLIT_CONFIG.inclPrelims.default,
+    inclBwic: bwicEl ? bwicEl.checked : SOW_TRADE_SPLIT_CONFIG.inclBwic.default
+  };
+}
+
+function setSowTradeSplitOptions(opts){
+  if(!opts) return;
+  var methodEl = el('split-method');
+  if(methodEl) methodEl.value = normalizeSowTradeSplitMethod(opts.method);
+  var prelimsEl = el('split-inclPrelims');
+  if(prelimsEl && typeof opts.inclPrelims === 'boolean') prelimsEl.checked = opts.inclPrelims;
+  var bwicEl = el('split-inclBwic');
+  if(bwicEl && typeof opts.inclBwic === 'boolean') bwicEl.checked = opts.inclBwic;
+}
+
+function renderSowTradeSplitForm(){
+  var container = el('sow-trade-split-form');
+  if(!container) return;
+  var cfg = SOW_TRADE_SPLIT_CONFIG;
+  var methodOpts = cfg.method.options.map(function(o){
+    return '<option value="'+esc(o.value)+'">'+esc(o.label)+'</option>';
+  }).join('');
+  container.innerHTML =
+    '<div class="field">'+
+      '<label for="split-method">'+esc(cfg.method.label)+'</label>'+
+      '<select id="split-method" name="method">'+methodOpts+'</select>'+
+    '</div>'+
+    '<label class="sow-trade-split-check" for="split-inclPrelims">'+
+      '<input type="checkbox" id="split-inclPrelims" name="inclPrelims"'+(cfg.inclPrelims.default ? ' checked' : '')+'>'+
+      esc(cfg.inclPrelims.label)+
+    '</label>'+
+    '<label class="sow-trade-split-check" for="split-inclBwic">'+
+      '<input type="checkbox" id="split-inclBwic" name="inclBwic"'+(cfg.inclBwic.default ? ' checked' : '')+'>'+
+      esc(cfg.inclBwic.label)+
+    '</label>';
+  var methodEl = el('split-method');
+  if(methodEl) methodEl.value = cfg.method.default;
+}
+
+window.getSowTradeSplitOptions = getSowTradeSplitOptions;
+window.setSowTradeSplitOptions = setSowTradeSplitOptions;
+
+function updateSplitRunBtnState(){
+  var btn = el('split-run-btn');
+  if(!btn) return;
+  btn.disabled = sowSplitProcessing || !sowProjectJobId;
+  if(sowSplitProcessing){
+    btn.textContent = 'Running AI Trade Split…';
+  } else {
+    btn.innerHTML = '&#10022; Run AI Trade Split';
+  }
+  var hint = el('split-run-hint');
+  if(hint){
+    if(sowSplitProcessing){
+      hint.textContent = 'This may take around 2 minutes — please keep this page open.';
+      hint.style.color = 'var(--text-hint)';
+    } else if(sowSplitValidationMsg){
+      hint.textContent = sowSplitValidationMsg;
+      hint.style.color = 'var(--red)';
+    } else {
+      hint.textContent = sowProjectJobId
+        ? 'AI reads the schedule and identifies trade packages'
+        : 'Select a project in the header to run';
+      hint.style.color = '';
+    }
+  }
+}
+
+window.setSowProjectContext = function(ctx){
+  sowProjectJobId = (ctx && ctx.jobId) ? String(ctx.jobId).trim() : '';
+  if(ctx && ctx.projectName){
+    var nameEl = el('split-proj-name');
+    if(nameEl) nameEl.value = ctx.projectName;
+  }
+  updateSplitRunBtnState();
+};
 
 // Realistic extracted data based on the B7 pricing document format
 var SPLIT_DEMO = [
@@ -181,6 +386,7 @@ function splitHandleDrop(event){
 }
 function setSplitFile(f){
   splitFile = f;
+  clearSplitValidation();
   var ext = f.name.split('.').pop().toLowerCase();
   var kb = Math.round(f.size/1024);
   var sizeStr = (kb>1024?(kb/1024).toFixed(1)+' MB':kb+' KB');
@@ -221,6 +427,170 @@ function clearSowFile(){
   el('sec1-status').textContent = '';
   expandSection('sec1');
   updateCheckBtn();
+  renderSowFoundFilesList();
+}
+
+function showSplitValidation(msg){
+  sowSplitValidationMsg = msg || '';
+  expandSection('sec1');
+  updateSplitRunBtnState();
+}
+
+function clearSplitValidation(){
+  sowSplitValidationMsg = '';
+  updateSplitRunBtnState();
+}
+
+function getSowSplitSource(){
+  if(splitFile){
+    return { type: 'upload', file: splitFile, label: splitFile.name };
+  }
+  if(sowSelectedFileIndex >= 0){
+    var selected = sowFoundFiles[sowSelectedFileIndex];
+    if(selected && selected.file_path){
+      return { type: 'existing', file_path: selected.file_path, label: selected.file_name };
+    }
+  }
+  return null;
+}
+
+function renderSplitProcessingSteps(){
+  var steps=[
+    {label:'Reading document',detail:'Parsing file format and extracting content'},
+    {label:'Extracting NBS work sections',detail:'Scanning for NBS codes: C, D, G, K, L, M, N, T, V, W series'},
+    {label:'Identifying section headings & line items',detail:'Parsing headings, item references, descriptions and quantities'},
+    {label:'Classifying items to trades',detail:'Mapping sections to DCK trade packages'},
+    {label:'Building trade pricing documents',detail:'Generating one Excel-ready document per trade'},
+  ];
+  el('split-steps').innerHTML=steps.map(function(s,i){
+    return '<div id="spstep-'+i+'" style="display:flex;align-items:flex-start;gap:12px;padding:13px 18px;border-bottom:1px solid var(--border)">'+
+      '<div id="spicon-'+i+'" style="width:26px;height:26px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;flex-shrink:0;margin-top:1px;background:var(--bg);color:var(--text-hint);border:1.5px solid var(--border)">'+(i+1)+'</div>'+
+      '<div style="flex:1"><div id="splabel-'+i+'" style="font-size:13px;color:var(--text-mid)">'+s.label+'</div>'+
+      '<div style="font-size:11.5px;color:var(--text-hint);margin-top:2px">'+s.detail+'</div></div></div>';
+  }).join('');
+}
+
+function startSplitStepAnimation(){
+  stopSplitStepAnimation();
+  stepActive(0);
+  sowSplitStepTimers = [
+    setTimeout(function(){ stepDone(0); stepActive(1); }, 15000),
+    setTimeout(function(){ stepDone(1); stepActive(2); }, 35000),
+    setTimeout(function(){ stepDone(2); stepActive(3); }, 60000),
+    setTimeout(function(){ stepDone(3); stepActive(4); }, 85000),
+  ];
+}
+
+function stopSplitStepAnimation(){
+  if(!sowSplitStepTimers) return;
+  sowSplitStepTimers.forEach(function(timer){ clearTimeout(timer); });
+  sowSplitStepTimers = null;
+}
+
+function normalizeSowSplitTrades(response){
+  if(!response) return null;
+  if(response.tabs && Array.isArray(response.tabs.trade_documents) && response.tabs.trade_documents.length){
+    return response.tabs.trade_documents;
+  }
+  if(Array.isArray(response)) return response;
+  if(Array.isArray(response.trades)) return response.trades;
+  if(Array.isArray(response.data)) return response.data;
+  if(response.outputs && Array.isArray(response.outputs.trades)) return response.outputs.trades;
+  if(response.result && Array.isArray(response.result.trades)) return response.result.trades;
+  return null;
+}
+
+function normalizeTradeDocument(trade){
+  if(!trade) return null;
+  var items = Array.isArray(trade.items) ? trade.items : [];
+  return {
+    id: trade.id || '',
+    label: trade.label || trade.id || 'Trade',
+    nbs: Array.isArray(trade.nbs) ? trade.nbs : [],
+    section: trade.section || trade.label || '',
+    lineCount: trade.lineCount != null ? trade.lineCount : items.length,
+    items: items,
+    unallocated: trade.id === 'unallocated' || Boolean(trade.unallocated)
+  };
+}
+
+function normalizeSharedItem(item){
+  if(!item) return null;
+  return {
+    id: item.id || '',
+    ref: item.ref || '',
+    desc: item.desc || '',
+    trades: Array.isArray(item.trades) ? item.trades.map(function(t){
+      return {
+        trade: t.trade || '',
+        nbs: t.nbs || '',
+        lead: Boolean(t.lead),
+        scope: t.scope || '',
+        note: t.note || ''
+      };
+    }) : []
+  };
+}
+
+function normalizeFullScheduleItem(item){
+  if(!item) return null;
+  return {
+    ref: item.ref || '',
+    desc: item.desc || '',
+    qty: item.qty != null ? item.qty : '',
+    unit: item.unit || '',
+    section: item.section || '',
+    tradeId: item.tradeId || '',
+    tradeLabel: item.tradeLabel || ''
+  };
+}
+
+function applySowSplitResponse(response){
+  if(!response) return false;
+  sowSplitResponse = response;
+
+  var tabs = response.tabs || {};
+  var tradeDocs = Array.isArray(tabs.trade_documents) ? tabs.trade_documents : [];
+  if(!tradeDocs.length) tradeDocs = normalizeSowSplitTrades(response) || [];
+
+  if(!tradeDocs.length) return false;
+
+  splitTrades = tradeDocs.map(normalizeTradeDocument).filter(function(t){ return t && t.id; });
+
+  var fullSched = Array.isArray(tabs.full_schedule) ? tabs.full_schedule : [];
+  sowFullSchedule = fullSched.map(normalizeFullScheduleItem).filter(function(i){ return i && i.ref; });
+
+  if(!sowFullSchedule.length){
+    splitTrades.forEach(function(t){
+      (t.items || []).forEach(function(item){
+        sowFullSchedule.push({
+          ref: item.ref,
+          desc: item.desc,
+          qty: item.qty,
+          unit: item.unit,
+          section: item.section || t.section || t.label,
+          tradeId: t.id,
+          tradeLabel: t.label
+        });
+      });
+    });
+  }
+
+  var shared = Array.isArray(tabs.shared_items) ? tabs.shared_items : [];
+  SHARED_ITEMS = shared.map(normalizeSharedItem).filter(function(i){ return i && i.ref; });
+
+  splitActiveTrade = splitTrades[0] ? splitTrades[0].id : null;
+  return true;
+}
+
+function failSplitProcessing(msg){
+  stopSplitStepAnimation();
+  sowSplitProcessing = false;
+  updateSplitRunBtnState();
+  el('split-processing').style.display = 'none';
+  el('split-results').style.display = 'none';
+  el('split-empty').style.display = 'flex';
+  showSplitValidation(msg || 'Trade split failed. Please try again.');
 }
 
 function stepDone(i){
@@ -247,150 +617,71 @@ function stepError(i,msg){
 }
 
 async function runSplit(){
-  if(!splitFile){alert('Please upload a schedule of works document first.');return;}
-  el('split-empty').style.display='none';
-  el('split-results').style.display='none';
-  el('split-processing').style.display='flex';
-  el('split-run-btn').disabled=true;
-  el('split-proc-file').textContent='Reading: '+splitFile.name;
-
-  var steps=[
-    {label:'Reading document',detail:'Parsing file format and extracting content'},
-    {label:'Extracting NBS work sections',detail:'Scanning for NBS codes: C, D, G, K, L, M, N, T, V, W series'},
-    {label:'Identifying section headings & line items',detail:'Parsing headings, item references, descriptions and quantities'},
-    {label:'Classifying items to trades',detail:'Mapping sections to DCK trade packages'},
-    {label:'Building trade pricing documents',detail:'Generating one Excel-ready document per trade'},
-  ];
-
-  el('split-steps').innerHTML=steps.map(function(s,i){
-    return '<div id="spstep-'+i+'" style="display:flex;align-items:flex-start;gap:12px;padding:13px 18px;border-bottom:1px solid var(--border)">'+
-      '<div id="spicon-'+i+'" style="width:26px;height:26px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;flex-shrink:0;margin-top:1px;background:var(--bg);color:var(--text-hint);border:1.5px solid var(--border)">'+(i+1)+'</div>'+
-      '<div style="flex:1"><div id="splabel-'+i+'" style="font-size:13px;color:var(--text-mid)">'+s.label+'</div>'+
-      '<div style="font-size:11.5px;color:var(--text-hint);margin-top:2px">'+s.detail+'</div></div></div>';
-  }).join('');
-
-  // Step 0: Read & parse file
-  stepActive(0);
-  var prepared;
-  try {
-    prepared = await prepareFileContent(splitFile);
-    stepDone(0);
-  } catch(e) {
-    stepError(0, 'Failed to read file: '+e.message);
-    el('split-run-btn').disabled=false;
+  if(!sowProjectJobId){
+    window.dispatchEvent(new CustomEvent('sow-needs-project'));
     return;
   }
 
-  // Steps 1-4: AI call
-  stepActive(1);
-  var projName = el('split-proj-name').value || 'Project';
-  var client = el('split-client').value || '';
-  var method = el('split-method').value;
-  var inclPrelims = el('split-prelims').checked;
-  var inclBwic = el('split-bwic').checked;
+  var source = getSowSplitSource();
+  if(!source){
+    showSplitValidation('Please select a schedule from EMS or upload a document in Step 1.');
+    return;
+  }
 
-  var systemPrompt = 'You are a construction estimating assistant for DCK Construction Ltd. You analyse schedules of works / bills of quantities and split them into trade packages.\n\n'+
-    'Return a JSON array of trade objects. Each object:\n'+
-    '{"id":"snake_case_id","label":"Trade name","nbs":["NBS","codes"],"section":"Primary section","lineCount":N,"items":[{"ref":"1.01","desc":"description","qty":1,"unit":"item","section":"Section heading"}]}\n\n'+
-    'Rules:\n'+
-    '- Use these IDs where applicable: general, demolition, groundworks, partitions, glazing, doors, flooring, decoration, mechanical, electrical, ict, ffe, sanitaryware, external. Create new snake_case IDs for others.\n'+
-    '- Unclassifiable items → id "unallocated", label "To Be Allocated".\n'+
-    (inclPrelims ? '- Include a "general" trade for preliminaries.\n' : '- Omit preliminaries.\n')+
-    (inclBwic ? '- Include builders work items in the relevant trade.\n' : '- Omit builders work items.\n')+
-    '- Trade identification: '+(method==='nbs'?'NBS codes primarily':method==='headings'?'Section headings primarily':'NBS codes + section headings')+'.\n'+
-    '- Extract EVERY line item with ref, description, quantity and unit. Set lineCount = items.length.\n'+
-    '- Project: '+projName+(client?', Client: '+client:'')+'.\n\n'+
-    'Respond ONLY with a valid JSON array — no markdown, no preamble.';
+  clearSplitValidation();
+  el('split-empty').style.display='none';
+  el('split-results').style.display='none';
+  el('split-processing').style.display='flex';
+  sowSplitProcessing = true;
+  updateSplitRunBtnState();
+  el('split-proc-file').textContent='Processing: '+source.label;
+  renderSplitProcessingSteps();
+  startSplitStepAnimation();
 
-  var userContent = buildApiContent(prepared, 'Split this schedule of works into trade packages. Return only a JSON array as instructed.');
+  var splitOptions = getSowTradeSplitOptions();
+  var request = {
+    type: source.type,
+    method: splitOptions.method,
+    inclPrelims: splitOptions.inclPrelims,
+    inclBwic: splitOptions.inclBwic
+  };
+  if(source.type === 'existing'){
+    request.file_path = source.file_path;
+  } else {
+    request.file = source.file;
+  }
 
   try {
-    // Animate steps 1–2 while waiting for response
-    setTimeout(function(){ stepDone(1); stepActive(2); }, 500);
-    setTimeout(function(){ stepDone(2); stepActive(3); }, 1200);
+    if(typeof window.submitSowSplit !== 'function'){
+      throw new Error('Split service is not ready. Please refresh the page.');
+    }
+    var response = await window.submitSowSplit(sowProjectJobId, request);
+    console.log(response);
+    stopSplitStepAnimation();
+    for(var i = 0; i < 5; i++){ stepDone(i); }
 
-    // Use streaming so we can show live progress
-    var resp = await fetch('https://api.anthropic.com/v1/messages',{
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({
-        model:'claude-sonnet-4-20250514',
-        max_tokens:16000,
-        stream:true,
-        system:systemPrompt,
-        messages:[{role:'user', content:userContent}]
-      })
-    });
-
-    if(!resp.ok){
-      var errData = await resp.json().catch(function(){return {};});
-      throw new Error(errData.error && errData.error.message ? errData.error.message : 'API error '+resp.status);
+    if(response && response.status && response.status !== 'success'){
+      throw new Error('Trade split did not complete successfully.');
     }
 
-    // Read stream and show live character count
-    var reader = resp.body.getReader();
-    var decoder = new TextDecoder();
-    var rawAccum = '';
-    var tokenCount = 0;
-
-    stepDone(3); stepActive(4);
-    var liveLabel = el('splabel-4');
-
-    while(true){
-      var chunk = await reader.read();
-      if(chunk.done) break;
-      var text = decoder.decode(chunk.value, {stream:true});
-      // SSE lines
-      text.split('\n').forEach(function(line){
-        if(!line.startsWith('data:')) return;
-        var json = line.slice(5).trim();
-        if(json === '[DONE]') return;
-        try {
-          var evt = JSON.parse(json);
-          if(evt.type === 'content_block_delta' && evt.delta && evt.delta.text){
-            rawAccum += evt.delta.text;
-            tokenCount++;
-            // Update live label every ~20 chunks
-            if(tokenCount % 20 === 0 && liveLabel){
-              var tradeCount = (rawAccum.match(/"id"\s*:/g)||[]).length;
-              liveLabel.textContent = 'Building trade documents' + (tradeCount > 0 ? ' — '+tradeCount+' trade'+(tradeCount===1?'':'s')+' identified…' : '…');
-            }
-          }
-        } catch(e){}
-      });
+    if(!applySowSplitResponse(response)){
+      throw new Error('Trade split response did not include any trade documents.');
     }
-
-    if(liveLabel) liveLabel.textContent = 'Finalising trade documents';
-
-    var cleaned = rawAccum.trim().replace(/^```json\s*/,'').replace(/^```\s*/,'').replace(/\s*```$/,'').trim();
-    var parsed = JSON.parse(cleaned);
-
-    if(!Array.isArray(parsed) || parsed.length === 0) throw new Error('AI returned empty or invalid trade list');
-
-    parsed.forEach(function(t){
-      if(!t.lineCount) t.lineCount = (t.items||[]).length;
-      if(!t.items) t.items = [];
-      if(!t.nbs) t.nbs = [];
-    });
-
-    stepDone(4);
-    splitTrades = parsed;
-    splitActiveTrade = splitTrades[0] ? splitTrades[0].id : null;
     setTimeout(showSplitResults, 300);
-
+    return;
   } catch(e) {
-    stepError(4, 'AI processing failed: '+e.message+'. Showing demo data instead.');
-    splitTrades = SPLIT_DEMO;
-    splitActiveTrade = splitTrades[0].id;
-    setTimeout(showSplitResults, 1200);
+    failSplitProcessing(e && e.message ? e.message : 'Trade split failed. Please try again.');
   }
 }
 
 function showSplitResults(){
   el('split-processing').style.display='none';
   el('split-results').style.display='flex';
-  el('split-run-btn').disabled=false;
-  var totalItems=splitTrades.reduce(function(s,t){return s+t.lineCount;},0);
+  sowSplitProcessing = false;
+  updateSplitRunBtnState();
+  var totalItems=splitTrades.reduce(function(s,t){
+    return s + (t.lineCount != null ? t.lineCount : (t.items || []).length);
+  }, 0);
   el('split-result-title').textContent=splitTrades.length+' trades identified';
   el('split-result-sub').textContent=totalItems+' line items across '+splitTrades.length+' pricing documents';
   renderSplitTradeList();
@@ -509,7 +800,9 @@ function renderSplitPreview(id){
       tableHTML+='<div style="display:grid;grid-template-columns:'+colW+';background:'+bg+';border-bottom:1px solid #F0F0F5">'+
         '<div style="padding:7px 8px;font-size:11px;text-align:center;color:#888">'+globalRow+'</div>'+
         '<div style="padding:7px 8px;font-size:11px;font-weight:600;color:#1B3A6B;text-align:center">'+esc(item.ref)+'</div>'+
-        '<div style="padding:7px 8px;font-size:11px;color:#333;line-height:1.4">'+esc(item.desc)+
+        '<div style="padding:7px 8px;font-size:11px;color:#333;line-height:1.4">'+
+          (isSharedItemRef(item.ref)?'<span style="font-size:10px;font-weight:700;color:var(--amber);background:var(--amber-bg);border:1px solid rgba(196,123,0,.25);padding:1px 6px;border-radius:8px;margin-right:6px">SHARED</span>':'')+
+          esc(item.desc)+
           (item.note?'<div style="font-size:10.5px;color:var(--amber);margin-top:2px;font-style:italic">'+esc(item.note)+'</div>':'')+
         '</div>'+
         '<div style="padding:7px 8px;font-size:11px;text-align:center">'+item.qty+'</div>'+
@@ -578,6 +871,9 @@ function sendToEnquiry(){
 }
 function resetSplit(){
   splitFile=null; splitTrades=[]; splitActiveTrade=null;
+  sowFullSchedule = [];
+  sowSplitResponse = null;
+  SHARED_ITEMS = [];
   // Restore SOW section
   el('split-file-pill').style.display='none';
   el('sow-upload-area').style.display='block';
@@ -591,7 +887,8 @@ function resetSplit(){
   el('split-empty').style.display='flex';
   el('split-results').style.display='none';
   el('split-processing').style.display='none';
-  el('split-run-btn').disabled=false;
+  sowSplitProcessing = false;
+  updateSplitRunBtnState();
 }
 
 
@@ -602,14 +899,14 @@ function exportToEMS(){
 
 function renderSharedItems(){
   var panel=el('shared-items-panel');
-  var tradeColor={'Mechanical Services':'var(--teal)','Electrical Services':'var(--blue)','ICT / AV Installations':'var(--purple)','Doors, Shutters & Hatches':'var(--amber)','Sanitary Appliances':'var(--green)'};
+  if(!panel) return;
 
   var headerHTML='<div class="flex-b mb16">'+
     '<div>'+
       '<div style="font-size:18px;font-weight:700;color:var(--text)">Shared Items</div>'+
       '<div style="font-size:13px;color:var(--text-light);margin-top:2px">'+SHARED_ITEMS.length+' items identified that span multiple trades</div>'+
     '</div>'+
-    '<button class="btn btn-secondary btn-sm" onclick="exportSharedItems()">&#8681; Export Schedule</button>'+
+    '<button class="btn btn-secondary btn-sm" onclick="exportSharedItems()"'+(SHARED_ITEMS.length ? '' : ' disabled')+'>&#8681; Export Schedule</button>'+
   '</div>'+
   '<div style="display:flex;gap:8px;margin-bottom:20px;flex-wrap:wrap">'+
     '<span style="font-size:12px;color:var(--text-mid);display:flex;align-items:center;gap:5px"><span style="width:12px;height:12px;border-radius:2px;background:var(--amber-bg);border:1px solid rgba(196,123,0,.3);display:inline-block"></span>Lead trade</span>'+
@@ -618,13 +915,24 @@ function renderSharedItems(){
 
   panel.innerHTML=headerHTML;
 
+  if(!SHARED_ITEMS.length){
+    panel.insertAdjacentHTML('beforeend',
+      '<div style="background:var(--white);border:1px solid var(--border);border-radius:8px;padding:32px 24px;text-align:center;color:var(--text-light)">'+
+        '<div style="font-size:28px;opacity:.2;margin-bottom:8px">&#128279;</div>'+
+        '<div style="font-size:14px;font-weight:600;color:var(--text-mid)">No shared items identified</div>'+
+        '<div style="font-size:12.5px;margin-top:6px;line-height:1.5">Items spanning multiple trades will appear here after a successful trade split.</div>'+
+      '</div>'
+    );
+    return;
+  }
+
   SHARED_ITEMS.forEach(function(item){
     var card=document.createElement('div');
     card.style.cssText='background:var(--white);border:1px solid var(--border);border-radius:8px;overflow:hidden;box-shadow:0 1px 4px rgba(0,0,0,.05);margin-bottom:16px';
 
     // Card header
     var tradeBadges=item.trades.map(function(t){
-      var col=tradeColor[t.trade]||'var(--text-mid)';
+      var col=resolveSharedTradeColor(t.trade);
       return '<span style="font-size:11px;padding:2px 8px;border-radius:10px;font-weight:600;background:'+col+'18;color:'+col+';border:1px solid '+col+'28">'+(t.lead?'&#9733; ':'')+esc(t.trade)+'</span>';
     }).join(' ');
 
@@ -649,7 +957,7 @@ function renderSharedItems(){
 
     // Trade rows
     item.trades.forEach(function(t){
-      var col=tradeColor[t.trade]||'var(--text-mid)';
+      var col=resolveSharedTradeColor(t.trade);
       var isLead=t.lead;
       var row=document.createElement('div');
       row.style.cssText='padding:13px 18px;border-bottom:1px solid var(--border);background:'+(isLead?'rgba(196,123,0,.04)':'rgba(15,108,189,.03)')+';border-left:3px solid '+(isLead?'var(--amber)':'var(--blue)');
@@ -690,8 +998,10 @@ showSplitResults = function(){
   var badge = el('shared-count-badge');
   if(badge){
     badge.textContent = SHARED_ITEMS.length;
+    badge.style.display = SHARED_ITEMS.length > 0 ? '' : 'none';
     badge.style.background = SHARED_ITEMS.length > 0 ? 'var(--amber-bg)' : 'var(--bg)';
   }
+  switchResultTab('trades');
 };
 
 
@@ -806,43 +1116,37 @@ var TRADE_COLOURS = {
   'ict':         {bg:'#F4F0FB',border:'#5B3DA8',text:'#5B3DA8',label:'ICT / AV'},
   'ffe':         {bg:'#EFF8EF',border:'#107C10',text:'#107C10',label:'FFE & Joinery'},
   'sanitaryware':{bg:'#EBF7F7',border:'#0D7377',text:'#0D7377',label:'Sanitary'},
-  'external':    {bg:'#FFF8E6',border:'#C47B00',text:'#C47B00',label:'External'}
+  'external':    {bg:'#FFF8E6',border:'#C47B00',text:'#C47B00',label:'External'},
+  'metalwork':   {bg:'#F0F0F5',border:'#6B7280',text:'#4B5563',label:'Metalwork'},
+  'plastering':  {bg:'#EBF7F7',border:'#0D7377',text:'#0D7377',label:'Plastering'},
+  'ceilings':    {bg:'#EFF6FC',border:'#0F6CBD',text:'#0F6CBD',label:'Ceilings'},
+  'fire_protection':{bg:'#FDF2F2',border:'#C42B1C',text:'#C42B1C',label:'Fire Protection'}
 };
 
+function resolveSharedTradeColor(tradeName){
+  var preset={
+    'Mechanical Services':'var(--teal)',
+    'Electrical Services':'var(--blue)',
+    'ICT / AV Installations':'var(--purple)',
+    'Doors, Shutters & Hatches':'var(--amber)',
+    'Doors & Ironmongery':'var(--amber)',
+    'Sanitary Appliances':'var(--green)',
+    'Sanitaryware & Plumbing':'var(--green)',
+    'Metalwork':'#6B7280',
+    'Partitions & Linings':'var(--blue)',
+    'Glazing & Windows':'var(--purple)'
+  };
+  if(preset[tradeName]) return preset[tradeName];
+  var match=splitTrades.find(function(t){ return t.label === tradeName; });
+  if(match && TRADE_COLOURS[match.id]) return TRADE_COLOURS[match.id].border;
+  return 'var(--text-mid)';
+}
+
 // ── SHARED ITEMS ──────────────────────────────────────────
-var SHARED_ITEMS = [
-  {id:'sh1',ref:'12.04',desc:'Air conditioning VRF system to reception and meeting rooms; indoor and outdoor units, pipework, controls and commissioning; CDP Item',
-   trades:[
-    {trade:'Mechanical Services',nbs:'T31',lead:true,scope:'Supply and install VRF system; indoor and outdoor units; all refrigerant pipework, insulation and brackets; commissioning of plant and controls',note:'LEAD TRADE — responsible for full system design and commissioning'},
-    {trade:'Electrical Services',nbs:'V20',lead:false,scope:'Electrical supply and connection to VRF outdoor condensers; 20A isolators; wiring from distribution board to each unit; connection to BMS controls',note:'SUPPORTING TRADE — electrical connection only, mechanical contractor coordinates'}
-   ]},
-  {id:'sh2',ref:'12.05',desc:'Repairs and upgrades to existing LTHW panel heater system including new radiator panel sections CDP Item 7; 9no. panels',
-   trades:[
-    {trade:'Mechanical Services',nbs:'T10',lead:true,scope:'Strip down existing radiator panels; carry out repairs; supply and install 9no. new radiator panel sections; LTHW pipework connections and controls',note:'LEAD TRADE — full mechanical scope including pipework and controls'},
-    {trade:'Electrical Services',nbs:'V20',lead:false,scope:'Electrical connection to new heating controls and thermostats; wiring from existing circuits; testing and commissioning of electrical elements',note:'SUPPORTING TRADE — controls wiring only'}
-   ]},
-  {id:'sh3',ref:'15.02',desc:'Fire alarm system CDP Item 2; full contractor design and install; compatible with existing systems; connection to all relevant building systems',
-   trades:[
-    {trade:'Electrical Services',nbs:'V20',lead:true,scope:'Full contractor design and install of fire alarm system; detectors, sounders, call points, control panel, wiring and containment; commissioning',note:'LEAD TRADE — CDP Item, full design responsibility'},
-    {trade:'Mechanical Services',nbs:'T10',lead:false,scope:'Interface and connection of mechanical ventilation systems to fire alarm; smoke dampers; witnessing of commissioning',note:'SUPPORTING TRADE — M&E interface only'},
-    {trade:'ICT / AV Installations',nbs:'W20',lead:false,scope:'Interface of access control and security systems with fire alarm; connection of door release mechanisms to fire alarm outputs',note:'SUPPORTING TRADE — security system interface only'}
-   ]},
-  {id:'sh4',ref:'5.18',desc:'Electrically operated sliding folding door CDP Item 8; HAG Industrial C Door; 5410x2081mm; single phase; includes electrical connection',
-   trades:[
-    {trade:'Doors, Shutters & Hatches',nbs:'L20',lead:true,scope:'Supply and install sliding folding door; full installation and adjustment',note:'LEAD TRADE — supply and mechanical installation'},
-    {trade:'Electrical Services',nbs:'V20',lead:false,scope:'Electrical connection to sliding folding door motor; single phase supply; push button controls; testing and commissioning',note:'SUPPORTING TRADE — electrical connection and controls only'}
-   ]},
-  {id:'sh5',ref:'13.03',desc:'Hand dryers; Dryflow JetDri MKII Carbon Neutral; includes supply, fix and electrical connection from unswitched FCU',
-   trades:[
-    {trade:'Sanitary Appliances',nbs:'N13',lead:true,scope:'Supply and fix Dryflow JetDri MKII Carbon Neutral hand dryers to walls; secure fixing to substrate',note:'LEAD TRADE — supply and mechanical fixing'},
-    {trade:'Electrical Services',nbs:'V20',lead:false,scope:'Supply and install unswitched FCU adjacent to each hand dryer; wiring from nearest distribution point; final connection to hand dryer',note:'SUPPORTING TRADE — FCU and final electrical connection'}
-   ]},
-  {id:'sh6',ref:'5.19',desc:'Fire curtains to all lift openings GF, 1F, 2F; CDP Item 1; connection to fire alarm',
-   trades:[
-    {trade:'Doors, Shutters & Hatches',nbs:'L20',lead:true,scope:'Supply and install fire curtains to all lift openings; 3500x2626mm; fixed to concrete; full CDP contractor design responsibility',note:'LEAD TRADE — CDP Item, full design and installation'},
-    {trade:'Electrical Services',nbs:'V20',lead:false,scope:'Connection of fire curtain release mechanism to fire alarm system; wiring and interface with fire alarm panel outputs',note:'SUPPORTING TRADE — fire alarm interface and electrical connection only'}
-   ]}
-];
+
+function isSharedItemRef(ref){
+  return SHARED_ITEMS.some(function(item){ return item.ref === ref; });
+}
 
 // ── SETTINGS TOGGLE ───────────────────────────────────────
 // ── SECTION COLLAPSE ─────────────────────────────────────
@@ -903,12 +1207,20 @@ function renderScheduleView(){
   var panel=el('schedule-panel');
   if(!panel)return;
   var allItems=[];
-  splitTrades.forEach(function(t){
-    (t.items||[]).forEach(function(item){
-      allItems.push({ref:item.ref,desc:item.desc,qty:item.qty,unit:item.unit,
-        section:item.section||t.label,tradeId:t.id,tradeLabel:t.label});
+  if(sowFullSchedule.length){
+    allItems = sowFullSchedule.slice();
+  } else {
+    splitTrades.forEach(function(t){
+      (t.items||[]).forEach(function(item){
+        allItems.push({ref:item.ref,desc:item.desc,qty:item.qty,unit:item.unit,
+          section:item.section||t.label,tradeId:t.id,tradeLabel:t.label});
+      });
     });
-  });
+  }
+  if(!allItems.length){
+    panel.innerHTML='<div style="padding:40px;text-align:center;color:var(--text-light)">No schedule items available yet. Run AI Trade Split to populate the full schedule.</div>';
+    return;
+  }
   allItems.sort(function(a,b){return String(a.ref).localeCompare(String(b.ref),undefined,{numeric:true});});
   var tradeOptions=splitTrades.map(function(t){return '<option value="'+escQ(t.id)+'">'+esc(t.label)+'</option>';}).join('');
   var sections={},sectionOrder=[];
@@ -1831,6 +2143,9 @@ resetSplit = function(){
   if(revEx2) revEx2.style.display = 'block';
   var revbtn = el('rev-compare-btn'); if(revbtn) revbtn.disabled=true;
 };
+
+updateSplitRunBtnState();
+renderSowTradeSplitForm();
 
 function confirmAllocation(ref){
   var tradeId=document.getElementById('allocate-trade-select').value;

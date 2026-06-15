@@ -208,7 +208,8 @@
 
 .sow-module .field input,
 .sow-module .field select,
-.sow-module #split-method {
+.sow-module #split-method,
+.sow-module .sow-trade-split-form select {
   width: 100%;
   padding: 7px 10px;
   border: 1px solid #c5cad4;
@@ -221,10 +222,37 @@
 }
 
 .sow-module .field input:focus,
-.sow-module .field select:focus {
+.sow-module .field select:focus,
+.sow-module .sow-trade-split-form select:focus {
   outline: none;
   border-color: var(--blue);
   box-shadow: 0 0 0 2px hsl(262 83% 58% / 0.15);
+}
+
+.sow-module .sow-trade-split-form {
+  padding-top: 12px;
+}
+
+.sow-module .sow-trade-split-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text-mid);
+  margin-bottom: 8px;
+}
+
+.sow-module .sow-trade-split-check:last-child {
+  margin-bottom: 12px;
+}
+
+.sow-module .sow-trade-split-check input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  accent-color: var(--blue);
+  cursor: pointer;
 }
 
 .sow-module .flex-b {
@@ -307,6 +335,47 @@
   text-decoration: underline;
   flex-shrink: 0;
   font-family: inherit;
+}
+
+.sow-module .sow-ems-file-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 2px;
+}
+
+.sow-module .sow-ems-file-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 5px 6px;
+  margin: 0 -6px;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+
+.sow-module .sow-ems-file-item:hover {
+  background: rgba(13, 115, 119, 0.08);
+}
+
+.sow-module .sow-ems-file-item input[type="checkbox"] {
+  margin: 2px 0 0;
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  accent-color: var(--teal);
+  cursor: pointer;
+}
+
+.sow-module .sow-ems-file-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--teal);
+  line-height: 1.45;
+  word-break: break-word;
 }
 
 .sow-module .section-header {

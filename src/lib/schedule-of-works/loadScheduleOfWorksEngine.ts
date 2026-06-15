@@ -1,5 +1,18 @@
+import type {
+  SowFoundFile,
+  SowSplitRequest,
+  SowTradeSplitOptions,
+} from "@/services/sowService";
+
 const ENGINE_SRC = "/schedule-of-works/engine.js";
 const LOADED_FLAG = "__sowEngineLoaded";
+
+export type SowProjectContext = {
+  jobId: string;
+  projectName?: string;
+};
+
+export type { SowFoundFile, SowSplitRequest, SowTradeSplitOptions };
 
 let loadPromise: Promise<void> | null = null;
 
@@ -44,4 +57,73 @@ export function loadScheduleOfWorksEngine(): Promise<void> {
   });
 
   return loadPromise;
+}
+
+export function setSowProjectContext(ctx: SowProjectContext): void {
+  if (typeof window === "undefined") return;
+  const bridge = (
+    window as Window & {
+      setSowProjectContext?: (context: SowProjectContext) => void;
+    }
+  ).setSowProjectContext;
+  bridge?.(ctx);
+}
+
+export function setSowFoundFiles(files: SowFoundFile[]): void {
+  if (typeof window === "undefined") return;
+  const bridge = (
+    window as Window & {
+      setSowFoundFiles?: (files: SowFoundFile[]) => void;
+    }
+  ).setSowFoundFiles;
+  bridge?.(files);
+}
+
+export function setSowFoundFilesLoading(loading: boolean): void {
+  if (typeof window === "undefined") return;
+  const bridge = (
+    window as Window & {
+      setSowFoundFilesLoading?: (loading: boolean) => void;
+    }
+  ).setSowFoundFilesLoading;
+  bridge?.(loading);
+}
+
+export function getSowTradeSplitOptions(): SowTradeSplitOptions | null {
+  if (typeof window === "undefined") return null;
+  const bridge = (
+    window as Window & {
+      getSowTradeSplitOptions?: () => SowTradeSplitOptions;
+    }
+  ).getSowTradeSplitOptions;
+  return bridge?.() ?? null;
+}
+
+export function setSowTradeSplitOptions(options: SowTradeSplitOptions): void {
+  if (typeof window === "undefined") return;
+  const bridge = (
+    window as Window & {
+      setSowTradeSplitOptions?: (options: SowTradeSplitOptions) => void;
+    }
+  ).setSowTradeSplitOptions;
+  bridge?.(options);
+}
+
+export type SowSplitSubmitHandler = (
+  jobId: string,
+  request: SowSplitRequest,
+  signal?: AbortSignal
+) => Promise<unknown>;
+
+export function registerSowSplitSubmit(
+  handler: SowSplitSubmitHandler
+): () => void {
+  if (typeof window === "undefined") return () => undefined;
+  const win = window as Window & {
+    submitSowSplit?: SowSplitSubmitHandler;
+  };
+  win.submitSowSplit = handler;
+  return () => {
+    delete win.submitSowSplit;
+  };
 }
