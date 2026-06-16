@@ -119,6 +119,59 @@ export type SowSharedItem = {
   trades?: SowSharedItemTrade[];
 };
 
+/** Unwraps GET/POST split payloads that may nest tabs under data/result/etc. */
+export function normalizeSowSplitResponse(
+  raw: unknown
+): SowSplitResponse | null {
+  if (raw == null) return null;
+  if (typeof raw === "string") {
+    try {
+      return normalizeSowSplitResponse(JSON.parse(raw));
+    } catch {
+      return null;
+    }
+  }
+  if (typeof raw !== "object") return null;
+
+  const record = raw as Record<string, unknown>;
+
+  if (record.tabs && typeof record.tabs === "object") {
+    return {
+      status: String(record.status ?? "success"),
+      tabs: record.tabs as SowSplitResponse["tabs"],
+    };
+  }
+
+  for (const key of ["data", "result", "split_result", "payload"] as const) {
+    const nested = record[key];
+    if (nested && typeof nested === "object") {
+      const unwrapped = normalizeSowSplitResponse(nested);
+      if (unwrapped) return unwrapped;
+    }
+  }
+
+  if (Array.isArray(record.trade_documents)) {
+    return {
+      status: String(record.status ?? "success"),
+      tabs: {
+        trade_documents: record.trade_documents as SowTradeDocument[],
+        full_schedule: record.full_schedule as SowFullScheduleItem[] | undefined,
+        shared_items: record.shared_items as SowSharedItem[] | undefined,
+      },
+    };
+  }
+
+  return null;
+}
+
+export function hasSavedSowSplitData(
+  response: SowSplitResponse | null | undefined
+): boolean {
+  if (!response) return false;
+  const trades = response.tabs?.trade_documents;
+  return Array.isArray(trades) && trades.length > 0;
+}
+
 /**
  * Submits a schedule-of-works trade split job.
  * POST /sow/split/:job_id (multipart/form-data)
@@ -171,10 +224,51 @@ export async function submitSowSplit(
 
   const contentType = res.headers.get("content-type") ?? "";
   if (contentType.includes("application/json")) {
-    return (await res.json()) as SowSplitResponse;
+    const raw: unknown = await res.json();
+    const normalized = normalizeSowSplitResponse(raw);
+    if (normalized) return normalized;
+    if (raw && typeof raw === "object" && "status" in raw) {
+      return raw as SowSplitResponse;
+    }
   }
 
   return { status: "success" };
+}
+
+/**
+ * Loads a previously saved trade split for a project.
+ * GET /sow/split/:job_id
+ */
+export async function fetchSavedSowSplit(
+  jobId: string,
+  signal?: AbortSignal
+): Promise<SowSplitResponse | null> {
+  const trimmed = jobId.trim();
+  if (!trimmed) {
+    throw new Error("Invalid job id.");
+  }
+
+  const config: SowRequestConfig = {
+    skipGlobalLoader: true,
+    ...(signal ? { signal } : {}),
+    validateStatus: (status) => status === 200 || status === 404,
+  };
+
+  try {
+    const { data, status } = await apiClient.get<unknown>(
+      `/sow/split/${encodeURIComponent(trimmed)}`,
+      config
+    );
+
+    if (status === 404 || data == null) return null;
+
+    const normalized = normalizeSowSplitResponse(data);
+    return hasSavedSowSplitData(normalized) ? normalized : null;
+  } catch (err) {
+    if (signal?.aborted) throw err;
+    console.error("[schedule-of-works] GET /sow/split failed", err);
+    return null;
+  }
 }
 
 /**

@@ -4,17 +4,26 @@ import { useEffect, useRef, useState } from "react";
 import { SOW_BODY_HTML } from "@/components/schedule-of-works/sowBodyHtml";
 import { useResearchProject } from "@/contexts/ResearchProjectContext";
 import {
+  cancelLoadSavedSowSplit,
   loadScheduleOfWorksEngine,
+  registerSowSplitLoad,
   registerSowSplitSubmit,
+  runLoadSavedSowSplit,
   setSowFoundFiles,
   setSowFoundFilesLoading,
   setSowProjectContext,
 } from "@/lib/schedule-of-works/loadScheduleOfWorksEngine";
-import { fetchSowByJobId, submitSowSplit, type SowFoundFile } from "@/services/sowService";
+import {
+  fetchSavedSowSplit,
+  fetchSowByJobId,
+  submitSowSplit,
+  type SowFoundFile,
+} from "@/services/sowService";
 import "./schedule-of-works.css";
 
 export function ScheduleOfWorksView() {
-  const rootRef = useRef<HTMLDivElement>(null);
+  const sowHostRef = useRef<HTMLDivElement>(null);
+  const sowHtmlMountedRef = useRef(false);
   const pendingSowFilesRef = useRef<{ loading: boolean; files: SowFoundFile[] }>({
     loading: false,
     files: [],
@@ -28,11 +37,20 @@ export function ScheduleOfWorksView() {
   } = useResearchProject();
 
   useEffect(() => {
+    const host = sowHostRef.current;
+    if (host && !sowHtmlMountedRef.current) {
+      host.innerHTML = SOW_BODY_HTML;
+      sowHtmlMountedRef.current = true;
+    }
+
     let cancelled = false;
 
     loadScheduleOfWorksEngine()
       .then(() => {
         if (cancelled) return;
+        (
+          window as Window & { refreshSowEngineDom?: () => void }
+        ).refreshSowEngineDom?.();
         setEngineReady(true);
         setEngineError(null);
       })
@@ -71,6 +89,13 @@ export function ScheduleOfWorksView() {
     if (!engineReady) return;
     return registerSowSplitSubmit((jobId, request, signal) =>
       submitSowSplit(jobId, request, signal)
+    );
+  }, [engineReady]);
+
+  useEffect(() => {
+    if (!engineReady) return;
+    return registerSowSplitLoad((jobId, signal) =>
+      fetchSavedSowSplit(jobId, signal)
     );
   }, [engineReady]);
 
@@ -129,11 +154,31 @@ export function ScheduleOfWorksView() {
     return () => controller.abort();
   }, [selectedProjectJobId, engineReady]);
 
+  useEffect(() => {
+    if (!engineReady) return;
+
+    const jobId = selectedProjectJobId.trim();
+    cancelLoadSavedSowSplit();
+
+    if (!jobId) {
+      runLoadSavedSowSplit("");
+      return;
+    }
+
+    const controller = new AbortController();
+    runLoadSavedSowSplit(jobId, controller.signal);
+
+    return () => {
+      controller.abort();
+      cancelLoadSavedSowSplit();
+    };
+  }, [engineReady, selectedProjectJobId]);
+
   return (
-    <div ref={rootRef} className="sow-module relative h-full min-h-0 w-full">
+    <div className="sow-module relative h-full min-h-0 w-full">
       <div
+        ref={sowHostRef}
         className="flex h-full min-h-0 w-full flex-1"
-        dangerouslySetInnerHTML={{ __html: SOW_BODY_HTML }}
         suppressHydrationWarning
       />
       {engineError ? (

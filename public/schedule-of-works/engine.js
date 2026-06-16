@@ -51,6 +51,7 @@ var sowSelectedFileIndex = -1;
 var sowFoundFilesLoading = false;
 var sowSplitValidationMsg = '';
 var sowSplitStepTimers = null;
+var sowSplitLoadGeneration = 0;
 var sowFullSchedule = [];
 var sowSplitResponse = null;
 var SHARED_ITEMS = [];
@@ -481,6 +482,17 @@ function startSplitStepAnimation(){
   ];
 }
 
+function startSplitStepAnimationFast(){
+  stopSplitStepAnimation();
+  stepActive(0);
+  sowSplitStepTimers = [
+    setTimeout(function(){ stepDone(0); stepActive(1); }, 400),
+    setTimeout(function(){ stepDone(1); stepActive(2); }, 900),
+    setTimeout(function(){ stepDone(2); stepActive(3); }, 1400),
+    setTimeout(function(){ stepDone(3); stepActive(4); }, 1900),
+  ];
+}
+
 function stopSplitStepAnimation(){
   if(!sowSplitStepTimers) return;
   sowSplitStepTimers.forEach(function(timer){ clearTimeout(timer); });
@@ -583,6 +595,53 @@ function applySowSplitResponse(response){
   return true;
 }
 
+function clearSplitResultsOnly(){
+  splitTrades = [];
+  splitActiveTrade = null;
+  sowFullSchedule = [];
+  sowSplitResponse = null;
+  SHARED_ITEMS = [];
+  var emptyEl = el('split-empty');
+  var resultsEl = el('split-results');
+  var procEl = el('split-processing');
+  if(emptyEl) emptyEl.style.display = 'flex';
+  if(resultsEl) resultsEl.style.display = 'none';
+  if(procEl) procEl.style.display = 'none';
+  sowSplitProcessing = false;
+  updateSplitRunBtnState();
+  var badge = el('shared-count-badge');
+  if(badge){
+    badge.textContent = '0';
+    badge.style.display = 'none';
+  }
+}
+
+function beginSplitProcessing(label){
+  clearSplitValidation();
+  if(el('split-empty')) el('split-empty').style.display = 'none';
+  if(el('split-results')) el('split-results').style.display = 'none';
+  if(el('split-processing')) el('split-processing').style.display = 'flex';
+  sowSplitProcessing = true;
+  updateSplitRunBtnState();
+  if(el('split-proc-file')) el('split-proc-file').textContent = label;
+  renderSplitProcessingSteps();
+}
+
+function completeSplitProcessingSteps(){
+  stopSplitStepAnimation();
+  for(var i = 0; i < 5; i++){ stepDone(i); }
+}
+
+function handleSowSplitResponseResult(response, delayMs){
+  if(response && response.status && response.status !== 'success'){
+    throw new Error('Trade split did not complete successfully.');
+  }
+  if(!applySowSplitResponse(response)){
+    throw new Error('Trade split response did not include any trade documents.');
+  }
+  setTimeout(showSplitResults, delayMs != null ? delayMs : 300);
+}
+
 function failSplitProcessing(msg){
   stopSplitStepAnimation();
   sowSplitProcessing = false;
@@ -629,13 +688,7 @@ async function runSplit(){
   }
 
   clearSplitValidation();
-  el('split-empty').style.display='none';
-  el('split-results').style.display='none';
-  el('split-processing').style.display='flex';
-  sowSplitProcessing = true;
-  updateSplitRunBtnState();
-  el('split-proc-file').textContent='Processing: '+source.label;
-  renderSplitProcessingSteps();
+  beginSplitProcessing('Processing: '+source.label);
   startSplitStepAnimation();
 
   var splitOptions = getSowTradeSplitOptions();
@@ -657,22 +710,57 @@ async function runSplit(){
     }
     var response = await window.submitSowSplit(sowProjectJobId, request);
     console.log(response);
-    stopSplitStepAnimation();
-    for(var i = 0; i < 5; i++){ stepDone(i); }
-
-    if(response && response.status && response.status !== 'success'){
-      throw new Error('Trade split did not complete successfully.');
-    }
-
-    if(!applySowSplitResponse(response)){
-      throw new Error('Trade split response did not include any trade documents.');
-    }
-    setTimeout(showSplitResults, 300);
+    completeSplitProcessingSteps();
+    handleSowSplitResponseResult(response);
     return;
   } catch(e) {
     failSplitProcessing(e && e.message ? e.message : 'Trade split failed. Please try again.');
   }
 }
+
+window.runLoadSavedSowSplit = async function(jobId, signal){
+  var trimmed = jobId ? String(jobId).trim() : '';
+  var gen = ++sowSplitLoadGeneration;
+
+  if(!trimmed){
+    stopSplitStepAnimation();
+    clearSplitResultsOnly();
+    return;
+  }
+
+  beginSplitProcessing('Loading saved trade split…');
+  startSplitStepAnimationFast();
+
+  try {
+    if(typeof window.fetchSavedSowSplit !== 'function'){
+      throw new Error('Split load service is not ready. Please refresh the page.');
+    }
+    var response = await window.fetchSavedSowSplit(trimmed, signal);
+    if(signal && signal.aborted) return;
+    if(gen !== sowSplitLoadGeneration) return;
+
+    console.log('[schedule-of-works] GET /sow/split', response);
+    completeSplitProcessingSteps();
+
+    if(!response){
+      clearSplitResultsOnly();
+      return;
+    }
+
+    handleSowSplitResponseResult(response, 200);
+  } catch(e) {
+    if(signal && signal.aborted) return;
+    if(gen !== sowSplitLoadGeneration) return;
+    console.error('[schedule-of-works] GET /sow/split failed', e);
+    stopSplitStepAnimation();
+    clearSplitResultsOnly();
+  }
+};
+
+window.cancelLoadSavedSowSplit = function(){
+  sowSplitLoadGeneration++;
+  stopSplitStepAnimation();
+};
 
 function showSplitResults(){
   el('split-processing').style.display='none';
@@ -2146,6 +2234,13 @@ resetSplit = function(){
 
 updateSplitRunBtnState();
 renderSowTradeSplitForm();
+
+window.refreshSowEngineDom = function(){
+  renderSowTradeSplitForm();
+  updateSplitRunBtnState();
+  renderSowFoundFilesList();
+  updateSowEmsSectionStatus();
+};
 
 function confirmAllocation(ref){
   var tradeId=document.getElementById('allocate-trade-select').value;

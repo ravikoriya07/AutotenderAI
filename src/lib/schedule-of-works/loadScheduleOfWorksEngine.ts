@@ -1,6 +1,7 @@
 import type {
   SowFoundFile,
   SowSplitRequest,
+  SowSplitResponse,
   SowTradeSplitOptions,
 } from "@/services/sowService";
 
@@ -113,7 +114,7 @@ export type SowSplitSubmitHandler = (
   jobId: string,
   request: SowSplitRequest,
   signal?: AbortSignal
-) => Promise<unknown>;
+) => Promise<SowSplitResponse>;
 
 export function registerSowSplitSubmit(
   handler: SowSplitSubmitHandler
@@ -126,4 +127,45 @@ export function registerSowSplitSubmit(
   return () => {
     delete win.submitSowSplit;
   };
+}
+
+export type SowSplitLoadHandler = (
+  jobId: string,
+  signal?: AbortSignal
+) => Promise<SowSplitResponse | null>;
+
+export function registerSowSplitLoad(
+  handler: SowSplitLoadHandler
+): () => void {
+  if (typeof window === "undefined") return () => undefined;
+  const win = window as Window & {
+    fetchSavedSowSplit?: SowSplitLoadHandler;
+  };
+  win.fetchSavedSowSplit = handler;
+  return () => {
+    delete win.fetchSavedSowSplit;
+  };
+}
+
+export function runLoadSavedSowSplit(
+  jobId: string,
+  signal?: AbortSignal
+): void {
+  if (typeof window === "undefined") return;
+  const bridge = (
+    window as Window & {
+      runLoadSavedSowSplit?: (jobId: string, signal?: AbortSignal) => void;
+    }
+  ).runLoadSavedSowSplit;
+  bridge?.(jobId, signal);
+}
+
+export function cancelLoadSavedSowSplit(): void {
+  if (typeof window === "undefined") return;
+  const bridge = (
+    window as Window & {
+      cancelLoadSavedSowSplit?: () => void;
+    }
+  ).cancelLoadSavedSowSplit;
+  bridge?.();
 }
