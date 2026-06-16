@@ -33,17 +33,35 @@ export const SOW_TRADE_SPLIT_DEFAULTS: SowTradeSplitOptions = {
   inclBwic: true,
 };
 
-export type SowSplitExistingRequest = SowTradeSplitOptions & {
-  type: "existing";
-  file_path: string;
+export type SowSplitSupportingFiles = {
+  specifications?: File[];
+  drawings?: File[];
 };
 
-export type SowSplitUploadRequest = SowTradeSplitOptions & {
-  type: "upload";
-  file: File;
-};
+export type SowSplitExistingRequest = SowTradeSplitOptions &
+  SowSplitSupportingFiles & {
+    type: "existing";
+    file_path: string;
+  };
+
+export type SowSplitUploadRequest = SowTradeSplitOptions &
+  SowSplitSupportingFiles & {
+    type: "upload";
+    file: File;
+  };
 
 export type SowSplitRequest = SowSplitExistingRequest | SowSplitUploadRequest;
+
+function appendOptionalSplitFiles(
+  formData: FormData,
+  files: File[] | undefined,
+  fieldName: string
+): void {
+  if (!files?.length) return;
+  for (const file of files) {
+    formData.append(fieldName, file);
+  }
+}
 
 async function parseSowSplitError(res: Response): Promise<string> {
   let detail = `Trade split failed (${res.status})`;
@@ -204,6 +222,9 @@ export async function submitSowSplit(
   } else {
     formData.append("file", request.file);
   }
+
+  appendOptionalSplitFiles(formData, request.specifications, "specifications");
+  appendOptionalSplitFiles(formData, request.drawings, "drawings");
 
   const token = getAuthToken();
   const res = await fetch(

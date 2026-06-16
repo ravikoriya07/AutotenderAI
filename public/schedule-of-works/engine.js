@@ -703,6 +703,12 @@ async function runSplit(){
   } else {
     request.file = source.file;
   }
+  if(supportingFiles.spec.length){
+    request.specifications = supportingFiles.spec.slice();
+  }
+  if(supportingFiles.dwg.length){
+    request.drawings = supportingFiles.dwg.slice();
+  }
 
   try {
     if(typeof window.submitSowSplit !== 'function'){
@@ -1497,15 +1503,26 @@ function addSupportingFile(f, type) {
   supportingFiles[type].push(f);
   renderSupportingFilesList();
   updateCheckBtn();
-  // Update section 2 header
-  var total = supportingFiles.spec.length + supportingFiles.dwg.length;
-  el('sec2-status').textContent = total + ' file' + (total===1?'':'s') + ' loaded';
-  el('sec2-num').className = 'section-num done';
+  updateSec2Status();
 }
 function removeSupportingFile(type, idx) {
   supportingFiles[type].splice(idx, 1);
   renderSupportingFilesList();
   updateCheckBtn();
+  updateSec2Status();
+}
+function updateSec2Status() {
+  var statusEl = el('sec2-status');
+  var numEl = el('sec2-num');
+  if(!statusEl || !numEl) return;
+  var total = supportingFiles.spec.length + supportingFiles.dwg.length;
+  if(total > 0){
+    statusEl.textContent = total + ' file' + (total===1?'':'s') + ' loaded';
+    numEl.className = 'section-num done';
+  } else {
+    statusEl.textContent = 'optional';
+    numEl.className = 'section-num optional';
+  }
 }
 function renderSupportingFilesList() {
   var list = el('supporting-files-list');
@@ -2211,13 +2228,12 @@ resetSplit = function(){
   complianceResults = null;
   renderSupportingFilesList();
   updateCheckBtn();
+  updateSec2Status();
   // Clear compliance badge and panel — restore example state
   var badge = el('compliance-count-badge');
   if(badge){ badge.style.display='none'; }
   var ex = el('compliance-example');
   if(ex) ex.style.display='block';
-  el('sec2-status').textContent = 'optional';
-  el('sec2-num').className = 'section-num optional';
   // Clear revision state — restore example
   revFile = null; revisionResults = null;
   var rp = el('rev-file-pill'); if(rp) rp.style.display='none';
