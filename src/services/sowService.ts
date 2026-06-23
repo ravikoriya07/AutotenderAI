@@ -1,6 +1,8 @@
 import type { AxiosRequestConfig } from "axios";
 import { apiClient } from "@/lib/apiClient";
 import { getAuthToken } from "@/lib/authStorage";
+import { parseContentDispositionFilename } from "@/lib/downloadFilename";
+import { assertSowWorkbookTemplateContent } from "@/lib/schedule-of-works/validateSowWorkbookTemplate";
 
 type SowRequestConfig = AxiosRequestConfig & {
   skipGlobalLoader?: boolean;
@@ -63,7 +65,7 @@ function appendOptionalSplitFiles(
   }
 }
 
-async function parseSowSplitError(res: Response): Promise<string> {
+async function parseSowApiError(res: Response): Promise<string> {
   let detail = `Trade split failed (${res.status})`;
   try {
     const contentType = res.headers.get("content-type") ?? "";
@@ -82,6 +84,126 @@ async function parseSowSplitError(res: Response): Promise<string> {
     /* keep default detail */
   }
   return detail;
+}
+
+async function sowBlobLooksLikeJsonError(blob: Blob): Promise<boolean> {
+  const contentType = blob.type?.toLowerCase() ?? "";
+  if (contentType.includes("application/json")) return true;
+  if (blob.size === 0 || blob.size > 65536) return false;
+  try {
+    const head = await blob.slice(0, 1).text();
+    return head === "{";
+  } catch {
+    return false;
+  }
+}
+
+async function messageFromSowJsonBlob(blob: Blob): Promise<string | null> {
+  try {
+    const text = await blob.text();
+    const data = JSON.parse(text) as {
+      message?: string;
+      detail?: string | { msg?: string }[];
+      error?: string;
+    };
+    if (typeof data.message === "string" && data.message.trim()) {
+      return data.message.trim();
+    }
+    if (typeof data.error === "string" && data.error.trim()) {
+      return data.error.trim();
+    }
+    if (typeof data.detail === "string" && data.detail.trim()) {
+      return data.detail.trim();
+    }
+    if (Array.isArray(data.detail)) {
+      const parts = data.detail
+        .map((entry) => (typeof entry === "string" ? entry : entry?.msg))
+        .filter((value): value is string => typeof value === "string" && value.trim().length > 0);
+      if (parts.length > 0) return parts.join("; ");
+    }
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
+export const SOW_WORKBOOK_INCLUDE_KEYS = [
+  "wb-include-summary",
+  "wb-include-sow",
+  "wb-include-comps",
+  "wb-include-psums",
+  "wb-include-sc",
+  "wb-include-links",
+] as const;
+
+export type SowWorkbookIncludeKey = (typeof SOW_WORKBOOK_INCLUDE_KEYS)[number];
+
+export type SowWorkbookRequest = {
+  /** Checked include keys; omit or leave empty to include all sections server-side */
+  include?: SowWorkbookIncludeKey[];
+  template?: File;
+};
+
+export type SowWorkbookResult = {
+  blob: Blob;
+  filename: string;
+};
+
+export type SowDownloadType = "trade" | "all" | "shared" | "schedule";
+
+export type SowDownloadRequest = {
+  type: SowDownloadType;
+  /** Trade id slug for `type=trade` (e.g. preambles, demolitions). */
+  tradeId?: string;
+};
+
+export type SowFileDownloadResult = SowWorkbookResult;
+
+function fallbackSowDownloadFilename(
+  type: SowDownloadType,
+  tradeId?: string
+): string {
+  switch (type) {
+    case "all":
+      return "Trade_Pricing_Documents.zip";
+    case "shared":
+      return "Shared_Items_Schedule.xlsx";
+    case "schedule":
+      return "Full_Schedule.xlsx";
+    case "trade":
+    default: {
+      const safe =
+        tradeId?.replace(/[^\w\s-]+/g, "").trim().replace(/\s+/g, "_") ||
+        "Trade";
+      return `${safe}_Pricing.xlsx`;
+    }
+  }
+}
+
+async function parseSowFileResponse(
+  res: Response,
+  fallbackFilename: string,
+  errorLabel: string
+): Promise<SowFileDownloadResult> {
+  if (!res.ok) {
+    throw new Error(await parseSowApiError(res));
+  }
+
+  const blob = await res.blob();
+  if (blob.size === 0) {
+    throw new Error(`${errorLabel}: file is empty.`);
+  }
+
+  if (await sowBlobLooksLikeJsonError(blob)) {
+    const apiMessage = await messageFromSowJsonBlob(blob);
+    throw new Error(apiMessage ?? errorLabel);
+  }
+
+  const contentDisposition = res.headers.get("content-disposition");
+  const filename =
+    parseContentDispositionFilename(contentDisposition) ?? fallbackFilename;
+
+  return { blob, filename };
 }
 
 export type SowSplitResponse = {
@@ -240,7 +362,7 @@ export async function submitSowSplit(
   );
 
   if (!res.ok) {
-    throw new Error(await parseSowSplitError(res));
+    throw new Error(await parseSowApiError(res));
   }
 
   const contentType = res.headers.get("content-type") ?? "";
@@ -254,6 +376,171 @@ export async function submitSowSplit(
   }
 
   return { status: "success" };
+}
+
+export type SowAllocationChanges = Record<string, string>;
+
+export type SowAllocationsRequest = {
+  changes: SowAllocationChanges;
+};
+
+export type SowAllocationsResponse = {
+  status: string;
+  moved?: string[];
+  not_found?: string[];
+  trade_line_counts?: Record<string, number>;
+  tabs?: SowSplitResponse["tabs"];
+};
+
+/**
+ * Persists Full Schedule trade re-allocations.
+ * PATCH /sow/allocations/:job_id (application/json)
+ */
+export async function patchSowAllocations(
+  jobId: string,
+  request: SowAllocationsRequest,
+  signal?: AbortSignal
+): Promise<SowAllocationsResponse> {
+  const trimmed = jobId.trim();
+  if (!trimmed) {
+    throw new Error("Invalid job id.");
+  }
+  if (!API_BASE_URL) {
+    throw new Error("API base URL is not configured.");
+  }
+
+  const changes = request.changes ?? {};
+  if (Object.keys(changes).length === 0) {
+    throw new Error("No allocation changes to apply.");
+  }
+
+  const token = getAuthToken();
+  const res = await fetch(
+    `${API_BASE_URL}/sow/allocations/${encodeURIComponent(trimmed)}`,
+    {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({ changes }),
+      signal,
+    }
+  );
+
+  if (!res.ok) {
+    throw new Error(await parseSowApiError(res));
+  }
+
+  const raw = (await res.json()) as SowAllocationsResponse;
+  return {
+    status: String(raw.status ?? "success"),
+    moved: raw.moved,
+    not_found: raw.not_found,
+    trade_line_counts: raw.trade_line_counts,
+    tabs: raw.tabs,
+  };
+}
+
+/**
+ * Downloads a SOW export file for a split job.
+ * GET /sow/download/:job_id
+ */
+export async function downloadSowExport(
+  jobId: string,
+  request: SowDownloadRequest,
+  signal?: AbortSignal
+): Promise<SowFileDownloadResult> {
+  const trimmed = jobId.trim();
+  if (!trimmed) {
+    throw new Error("Invalid job id.");
+  }
+  if (!API_BASE_URL) {
+    throw new Error("API base URL is not configured.");
+  }
+
+  const tradeId = request.tradeId?.trim();
+  if (request.type === "trade" && !tradeId) {
+    throw new Error("A trade must be selected before downloading.");
+  }
+
+  const params = new URLSearchParams({ type: request.type });
+  if (request.type === "trade" && tradeId) {
+    params.set("trade_id", tradeId);
+  }
+
+  const token = getAuthToken();
+  const res = await fetch(
+    `${API_BASE_URL}/sow/download/${encodeURIComponent(trimmed)}?${params.toString()}`,
+    {
+      method: "GET",
+      headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      signal,
+    }
+  );
+
+  return parseSowFileResponse(
+    res,
+    fallbackSowDownloadFilename(request.type, tradeId),
+    "Download failed"
+  );
+}
+
+/**
+ * Builds and downloads the DCK Tender Workbook for a split job.
+ * POST /sow/workbook/:job_id (multipart/form-data)
+ */
+export async function submitSowWorkbook(
+  jobId: string,
+  request: SowWorkbookRequest = {},
+  signal?: AbortSignal
+): Promise<SowWorkbookResult> {
+  const trimmed = jobId.trim();
+  if (!trimmed) {
+    throw new Error("Invalid job id.");
+  }
+  if (!API_BASE_URL) {
+    throw new Error("API base URL is not configured.");
+  }
+  if (!request.template) {
+    throw new Error(
+      "Please upload a DCK Tender Workbook template (.xlsx) before creating the workbook."
+    );
+  }
+
+  const formData = new FormData();
+  if (request.include?.length) {
+    for (const key of request.include) {
+      formData.append("include", key);
+    }
+  }
+  await assertSowWorkbookTemplateContent(request.template);
+  formData.append("template", request.template);
+
+  const token = getAuthToken();
+  const res = await fetch(
+    `${API_BASE_URL}/sow/workbook/${encodeURIComponent(trimmed)}`,
+    {
+      method: "POST",
+      headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: formData,
+      signal,
+    }
+  );
+
+  if (!res.ok) {
+    throw new Error(await parseSowApiError(res));
+  }
+
+  return parseSowFileResponse(
+    res,
+    `DCK_Tender_Workbook_${trimmed}.xlsx`,
+    "Workbook generation failed"
+  );
 }
 
 /**

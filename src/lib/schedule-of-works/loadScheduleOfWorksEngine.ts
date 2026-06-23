@@ -3,10 +3,17 @@ import type {
   SowSplitRequest,
   SowSplitResponse,
   SowTradeSplitOptions,
+  SowWorkbookRequest,
+  SowWorkbookResult,
+  SowDownloadRequest,
+  SowFileDownloadResult,
+  SowAllocationsRequest,
+  SowAllocationsResponse,
 } from "@/services/sowService";
 
-const ENGINE_SRC = "/schedule-of-works/engine.js";
-const LOADED_FLAG = "__sowEngineLoaded";
+const ENGINE_VERSION = "9";
+const ENGINE_SRC = `/schedule-of-works/engine.js?v=${ENGINE_VERSION}`;
+const LOADED_FLAG = `__sowEngineLoaded_${ENGINE_VERSION}`;
 
 export type SowProjectContext = {
   jobId: string;
@@ -144,6 +151,80 @@ export function registerSowSplitLoad(
   win.fetchSavedSowSplit = handler;
   return () => {
     delete win.fetchSavedSowSplit;
+  };
+}
+
+export type SowWorkbookSubmitHandler = (
+  jobId: string,
+  request: SowWorkbookRequest,
+  signal?: AbortSignal
+) => Promise<SowWorkbookResult>;
+
+export function registerSowWorkbookSubmit(
+  handler: SowWorkbookSubmitHandler
+): () => void {
+  if (typeof window === "undefined") return () => undefined;
+  const win = window as Window & {
+    submitSowWorkbook?: SowWorkbookSubmitHandler;
+  };
+  win.submitSowWorkbook = handler;
+  return () => {
+    delete win.submitSowWorkbook;
+  };
+}
+
+export type SowWorkbookTemplateValidateHandler = (
+  file: File
+) => Promise<void>;
+
+export function registerSowWorkbookTemplateValidate(
+  handler: SowWorkbookTemplateValidateHandler
+): () => void {
+  if (typeof window === "undefined") return () => undefined;
+  const win = window as Window & {
+    validateSowWorkbookTemplate?: SowWorkbookTemplateValidateHandler;
+  };
+  win.validateSowWorkbookTemplate = handler;
+  return () => {
+    delete win.validateSowWorkbookTemplate;
+  };
+}
+
+export type SowDownloadExportHandler = (
+  jobId: string,
+  request: SowDownloadRequest,
+  signal?: AbortSignal
+) => Promise<SowFileDownloadResult>;
+
+export function registerSowDownloadExport(
+  handler: SowDownloadExportHandler
+): () => void {
+  if (typeof window === "undefined") return () => undefined;
+  const win = window as Window & {
+    downloadSowExport?: SowDownloadExportHandler;
+  };
+  win.downloadSowExport = handler;
+  return () => {
+    delete win.downloadSowExport;
+  };
+}
+
+export type SowAllocationsPatchHandler = (
+  jobId: string,
+  request: SowAllocationsRequest,
+  signal?: AbortSignal
+) => Promise<SowAllocationsResponse>;
+
+export function registerSowAllocationsPatch(
+  handler: SowAllocationsPatchHandler
+): () => void {
+  if (typeof window === "undefined") return () => undefined;
+  const win = window as Window & {
+    patchSowAllocations?: SowAllocationsPatchHandler;
+  };
+  win.patchSowAllocations = handler;
+  return () => {
+    delete win.patchSowAllocations;
   };
 }
 

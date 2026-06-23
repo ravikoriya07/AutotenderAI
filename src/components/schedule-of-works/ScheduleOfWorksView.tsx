@@ -6,17 +6,25 @@ import { useResearchProject } from "@/contexts/ResearchProjectContext";
 import {
   cancelLoadSavedSowSplit,
   loadScheduleOfWorksEngine,
+  registerSowAllocationsPatch,
+  registerSowDownloadExport,
   registerSowSplitLoad,
   registerSowSplitSubmit,
+  registerSowWorkbookSubmit,
+  registerSowWorkbookTemplateValidate,
   runLoadSavedSowSplit,
   setSowFoundFiles,
   setSowFoundFilesLoading,
   setSowProjectContext,
 } from "@/lib/schedule-of-works/loadScheduleOfWorksEngine";
+import { assertSowWorkbookTemplateContent } from "@/lib/schedule-of-works/validateSowWorkbookTemplate";
 import {
+  downloadSowExport,
   fetchSavedSowSplit,
   fetchSowByJobId,
+  patchSowAllocations,
   submitSowSplit,
+  submitSowWorkbook,
   type SowFoundFile,
 } from "@/services/sowService";
 import "./schedule-of-works.css";
@@ -86,9 +94,36 @@ export function ScheduleOfWorksView() {
   }, [engineReady, selectedProjectJobId, completedStepProjects]);
 
   useEffect(() => {
+    return registerSowWorkbookTemplateValidate(async (file) => {
+      await assertSowWorkbookTemplateContent(file);
+    });
+  }, []);
+
+  useEffect(() => {
     if (!engineReady) return;
     return registerSowSplitSubmit((jobId, request, signal) =>
       submitSowSplit(jobId, request, signal)
+    );
+  }, [engineReady]);
+
+  useEffect(() => {
+    if (!engineReady) return;
+    return registerSowWorkbookSubmit((jobId, request, signal) =>
+      submitSowWorkbook(jobId, request, signal)
+    );
+  }, [engineReady]);
+
+  useEffect(() => {
+    if (!engineReady) return;
+    return registerSowDownloadExport((jobId, request, signal) =>
+      downloadSowExport(jobId, request, signal)
+    );
+  }, [engineReady]);
+
+  useEffect(() => {
+    if (!engineReady) return;
+    return registerSowAllocationsPatch((jobId, request, signal) =>
+      patchSowAllocations(jobId, request, signal)
     );
   }, [engineReady]);
 

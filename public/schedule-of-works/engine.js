@@ -601,6 +601,7 @@ function clearSplitResultsOnly(){
   sowFullSchedule = [];
   sowSplitResponse = null;
   SHARED_ITEMS = [];
+  scheduleChanges = {};
   var emptyEl = el('split-empty');
   var resultsEl = el('split-results');
   var procEl = el('split-processing');
@@ -614,6 +615,7 @@ function clearSplitResultsOnly(){
     badge.textContent = '0';
     badge.style.display = 'none';
   }
+  setWorkbookTabVisible(false);
 }
 
 function beginSplitProcessing(label){
@@ -768,18 +770,33 @@ window.cancelLoadSavedSowSplit = function(){
   stopSplitStepAnimation();
 };
 
+function updateSplitResultSummary(){
+  var totalItems=splitTrades.reduce(function(s,t){
+    return s + (t.lineCount != null ? t.lineCount : (t.items || []).length);
+  }, 0);
+  var titleEl=el('split-result-title');
+  var subEl=el('split-result-sub');
+  if(titleEl) titleEl.textContent=splitTrades.length+' trades identified';
+  if(subEl) subEl.textContent=totalItems+' line items across '+splitTrades.length+' pricing documents';
+}
+
+function updateSharedCountBadge(){
+  var badge=el('shared-count-badge');
+  if(!badge) return;
+  badge.textContent=SHARED_ITEMS.length;
+  badge.style.display=SHARED_ITEMS.length>0?'':'none';
+  badge.style.background=SHARED_ITEMS.length>0?'var(--amber-bg)':'var(--bg)';
+}
+
 function showSplitResults(){
   el('split-processing').style.display='none';
   el('split-results').style.display='flex';
   sowSplitProcessing = false;
   updateSplitRunBtnState();
-  var totalItems=splitTrades.reduce(function(s,t){
-    return s + (t.lineCount != null ? t.lineCount : (t.items || []).length);
-  }, 0);
-  el('split-result-title').textContent=splitTrades.length+' trades identified';
-  el('split-result-sub').textContent=totalItems+' line items across '+splitTrades.length+' pricing documents';
+  updateSplitResultSummary();
   renderSplitTradeList();
   renderSplitPreview(splitActiveTrade);
+  switchResultTab('schedule');
 }
 
 function renderSplitTradeList(){
@@ -846,7 +863,7 @@ function renderSplitPreview(id){
     dlBtn.className='btn btn-primary btn-sm';
     dlBtn.innerHTML='&#8681; Download Excel';
     dlBtn.setAttribute('data-trade-id',id);
-    dlBtn.onclick=function(){downloadTradeExcel(this.getAttribute('data-trade-id'));};
+    dlBtn.onclick=function(){downloadTradeExcel(this.getAttribute('data-trade-id'), this);};
     actionDiv.appendChild(dlBtn);
   }
   headerDiv.appendChild(actionDiv);
@@ -951,14 +968,69 @@ function renderSplitPreview(id){
 }
 
 function editSplitTrade(id){alert('Edit mode: you can add, remove or rename line items before downloading.');}
-function downloadTradeExcel(id){
-  var t=splitTrades.find(function(x){return x.id===id;});
-  if(!t)return;
-  var fname=t.label.replace(/[^a-zA-Z0-9 ]/g,'').replace(/\s+/g,'-')+'_Pricing.xlsx';
-  alert('Downloading: '+fname+' ('+t.lineCount+' line items). In production this generates a formatted Excel matching your existing pricing document templates.');
+
+function triggerSowFileDownload(blob, filename){
+  var url = URL.createObjectURL(blob);
+  var anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename || 'download';
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+}
+
+function withSowDownloadButton(btn, work){
+  if(!btn) return work();
+  var origHtml = btn.innerHTML;
+  var origDisabled = btn.disabled;
+  btn.disabled = true;
+  btn.innerHTML = '<span style="animation:spin .8s linear infinite;display:inline-block">&#8635;</span> Downloading…';
+  return Promise.resolve()
+    .then(work)
+    .finally(function(){
+      btn.disabled = origDisabled;
+      btn.innerHTML = origHtml;
+    });
+}
+
+async function runSowDownload(exportType, tradeId, btn){
+  if(!splitTrades.length){
+    alert('Run the AI Trade Split first.');
+    return;
+  }
+  if(!sowProjectJobId){
+    window.dispatchEvent(new CustomEvent('sow-needs-project'));
+    alert('Select a project before downloading.');
+    return;
+  }
+  if(exportType === 'trade' && !tradeId){
+    alert('Select a trade first.');
+    return;
+  }
+  return withSowDownloadButton(btn, async function(){
+    if(typeof window.downloadSowExport !== 'function'){
+      throw new Error('Download API is not available. Please refresh the page.');
+    }
+    var request = { type: exportType };
+    if(exportType === 'trade' && tradeId) request.tradeId = tradeId;
+    var result = await window.downloadSowExport(sowProjectJobId, request);
+    triggerSowFileDownload(result.blob, result.filename);
+  }).catch(function(e){
+    alert(e && e.message ? e.message : 'Download failed.');
+  });
+}
+
+function downloadTradeExcel(id, btn){
+  var t = splitTrades.find(function(x){ return x.id === id; });
+  if(!t) return;
+  void runSowDownload('trade', t.id, btn || null);
 }
 function downloadAllExcel(){
-  alert('Downloading all '+splitTrades.length+' trade pricing documents as ZIP. In production this calls the Excel generator to build all files in the same format as your existing pricing documents.');
+  void runSowDownload('all', null, el('sow-download-all-btn'));
+}
+function exportFullSchedule(){
+  void runSowDownload('schedule', null, el('sow-export-schedule-btn'));
 }
 function sendToEnquiry(){
   alert(splitTrades.length+' trade packages sent to Enquiry Generation module. Trades are now available in Module 4.');
@@ -968,6 +1040,7 @@ function resetSplit(){
   sowFullSchedule = [];
   sowSplitResponse = null;
   SHARED_ITEMS = [];
+  scheduleChanges = {};
   // Restore SOW section
   el('split-file-pill').style.display='none';
   el('sow-upload-area').style.display='block';
@@ -983,6 +1056,7 @@ function resetSplit(){
   el('split-processing').style.display='none';
   sowSplitProcessing = false;
   updateSplitRunBtnState();
+  setWorkbookTabVisible(false);
 }
 
 
@@ -1000,7 +1074,7 @@ function renderSharedItems(){
       '<div style="font-size:18px;font-weight:700;color:var(--text)">Shared Items</div>'+
       '<div style="font-size:13px;color:var(--text-light);margin-top:2px">'+SHARED_ITEMS.length+' items identified that span multiple trades</div>'+
     '</div>'+
-    '<button class="btn btn-secondary btn-sm" onclick="exportSharedItems()"'+(SHARED_ITEMS.length ? '' : ' disabled')+'>&#8681; Export Schedule</button>'+
+    '<button class="btn btn-secondary btn-sm" id="sow-export-shared-btn" onclick="exportSharedItems()"'+(SHARED_ITEMS.length ? '' : ' disabled')+'>&#8681; Export Schedule</button>'+
   '</div>'+
   '<div style="display:flex;gap:8px;margin-bottom:20px;flex-wrap:wrap">'+
     '<span style="font-size:12px;color:var(--text-mid);display:flex;align-items:center;gap:5px"><span style="width:12px;height:12px;border-radius:2px;background:var(--amber-bg);border:1px solid rgba(196,123,0,.3);display:inline-block"></span>Lead trade</span>'+
@@ -1089,13 +1163,8 @@ function editLeadTrade(itemId){
 var _baseSplitResults = showSplitResults;
 showSplitResults = function(){
   _baseSplitResults();
-  var badge = el('shared-count-badge');
-  if(badge){
-    badge.textContent = SHARED_ITEMS.length;
-    badge.style.display = SHARED_ITEMS.length > 0 ? '' : 'none';
-    badge.style.background = SHARED_ITEMS.length > 0 ? 'var(--amber-bg)' : 'var(--bg)';
-  }
-  switchResultTab('trades');
+  updateSharedCountBadge();
+  setWorkbookTabVisible(true);
 };
 
 
@@ -1189,7 +1258,7 @@ function buildApiContent(prepared, promptText) {
 
 // ── STUB FOR MISSING FUNCTION ─────────────────────────────
 function exportSharedItems(){
-  alert('Exporting shared items schedule... (full export available in the EMS)');
+  void runSowDownload('shared', null, el('sow-export-shared-btn'));
 }
 
 
@@ -1272,8 +1341,13 @@ function expandSection(id){
 
 
 // ── SWITCH RESULT TAB ─────────────────────────────────────
+function setWorkbookTabVisible(visible){
+  var wbTab = el('rtab-workbook');
+  if(wbTab) wbTab.style.display = visible ? 'inline-block' : 'none';
+}
+
 function switchResultTab(tab){
-  ['schedule','trades','shared','compliance','revision'].forEach(function(t){
+  ['schedule','trades','shared','compliance','revision','workbook'].forEach(function(t){
     var panel=el('rpanel-'+t),btn=el('rtab-'+t);
     if(!panel||!btn)return;
     var isActive=t===tab;
@@ -1282,6 +1356,7 @@ function switchResultTab(tab){
   });
   if(tab==='shared')renderSharedItems();
   if(tab==='schedule')renderScheduleView();
+  if(tab==='workbook')renderWorkbookPanel();
 }
 
 // ── MAKE ALLOC BTN HELPER ─────────────────────────────────
@@ -1296,6 +1371,89 @@ function makeAllocBtn(ref,desc){
 
 // ── SCHEDULE VIEW ─────────────────────────────────────────
 var scheduleChanges={};
+var scheduleApplying=false;
+
+function getSchedulePendingCount(){
+  return Object.keys(scheduleChanges).length;
+}
+
+function updateScheduleChangeUi(){
+  var pending=getSchedulePendingCount();
+  var hasPending=pending>0 && !scheduleApplying;
+  document.querySelectorAll('[data-schedule-discard]').forEach(function(btn){
+    btn.disabled=!hasPending;
+  });
+  document.querySelectorAll('[data-schedule-apply]').forEach(function(btn){
+    btn.disabled=!hasPending;
+  });
+  var bar=el('schedule-change-bar');
+  if(bar){
+    bar.style.display=hasPending?'flex':'none';
+    var countSpan=bar.querySelector('[data-schedule-pending-count]');
+    if(countSpan){
+      countSpan.textContent=pending+' change'+(pending===1?'':'s')+' pending';
+    }
+  }
+}
+
+function scheduleMarkChange(ref,newTradeId,originalTradeId){
+  if(newTradeId===originalTradeId) delete scheduleChanges[ref];
+  else scheduleChanges[ref]=newTradeId;
+  updateScheduleChangeUi();
+}
+
+function resetScheduleChanges(){
+  if(!getSchedulePendingCount()) return;
+  scheduleChanges={};
+  renderScheduleView();
+}
+
+function applyAllocationResponse(response){
+  if(!applySowSplitResponse({status:response.status||'success',tabs:response.tabs})){
+    throw new Error('Allocation update did not return valid split data.');
+  }
+  scheduleChanges={};
+  updateSplitResultSummary();
+  updateSharedCountBadge();
+  renderSplitTradeList();
+  if(splitActiveTrade) renderSplitPreview(splitActiveTrade);
+  renderSharedItems();
+  renderScheduleView();
+}
+
+async function applyScheduleAllocations(){
+  var changes=Object.assign({}, scheduleChanges);
+  var count=Object.keys(changes).length;
+  if(!count || scheduleApplying) return;
+  if(!sowProjectJobId){
+    window.dispatchEvent(new CustomEvent('sow-needs-project'));
+    alert('Select a project before applying allocation changes.');
+    return;
+  }
+
+  scheduleApplying=true;
+  updateScheduleChangeUi();
+  document.querySelectorAll('[data-schedule-apply]').forEach(function(btn){
+    btn.innerHTML='<span style="animation:spin .8s linear infinite;display:inline-block">&#8635;</span> Applying…';
+  });
+
+  try {
+    if(typeof window.patchSowAllocations!=='function'){
+      throw new Error('Allocation API is not available. Please refresh the page.');
+    }
+    var response=await window.patchSowAllocations(sowProjectJobId,{changes:changes});
+    applyAllocationResponse(response);
+  } catch(e) {
+    alert(e && e.message ? e.message : 'Failed to apply allocation changes.');
+    updateScheduleChangeUi();
+  } finally {
+    scheduleApplying=false;
+    document.querySelectorAll('[data-schedule-apply]').forEach(function(btn){
+      btn.innerHTML='&#10003; Apply Changes';
+    });
+    updateScheduleChangeUi();
+  }
+}
 
 function renderScheduleView(){
   var panel=el('schedule-panel');
@@ -1330,96 +1488,94 @@ function renderScheduleView(){
 
   // Toolbar
   var tb=document.createElement('div');
+  tb.className='schedule-toolbar';
   tb.style.cssText='padding:10px 18px;background:var(--white);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px;flex-shrink:0';
-  tb.innerHTML='<div style="flex:1"><span style="font-size:14px;font-weight:700;color:var(--text)">Full Schedule</span>'+
+  tb.innerHTML='<div style="flex:1;min-width:0"><span style="font-size:14px;font-weight:700;color:var(--text)">Full Schedule</span>'+
     '<span style="font-size:12px;color:var(--text-light);margin-left:10px">'+allItems.length+' items &middot; '+sectionOrder.length+' sections'+
     (unallocCount>0?' &middot; <span style="color:var(--red);font-weight:600">'+unallocCount+' unallocated</span>':'')+
     '</span></div>'+
-    '<div style="font-size:11.5px;color:var(--text-light)">Change any dropdown to reassign</div>'+
-    '<button class="btn btn-secondary btn-sm" onclick="resetScheduleChanges()">Discard</button>'+
-    '<button class="btn btn-primary btn-sm" style="background:var(--green)" onclick="applyScheduleAllocations()">&#10003; Apply Changes</button>'+
-    '<button class="btn btn-secondary btn-sm" onclick="alert(\'Exporting annotated schedule...\')">&#8681; Export</button>';
+    '<div class="schedule-toolbar-hint">Change any dropdown to reassign</div>'+
+    '<button class="btn btn-secondary btn-sm" data-schedule-discard disabled onclick="resetScheduleChanges()">Discard</button>'+
+    '<button class="btn btn-primary btn-sm" data-schedule-apply style="background:var(--green)" disabled onclick="applyScheduleAllocations()">&#10003; Apply Changes</button>'+
+    '<button class="btn btn-secondary btn-sm" id="sow-export-schedule-btn" onclick="exportFullSchedule()">&#8681; Export</button>';
   wrap.appendChild(tb);
 
-  // Spreadsheet
+  // Spreadsheet — single parent grid keeps header and row columns aligned
   var sheetWrap=document.createElement('div');
-  sheetWrap.style.cssText='flex:1;overflow:auto;background:#E8EAF0';
+  sheetWrap.className='schedule-sheet-wrap';
   var sheet=document.createElement('div');
-  sheet.style.cssText='min-width:860px;font-family:Arial,sans-serif;font-size:12px';
+  sheet.className='schedule-sheet';
 
-  // Column header
-  var colHdr=document.createElement('div');
-  colHdr.style.cssText='display:grid;grid-template-columns:36px 58px 1fr 46px 50px 210px;position:sticky;top:0;z-index:10;background:#1B3A6B';
   ['','Ref','Description','Qty','Unit','Trade Allocation'].forEach(function(h){
     var d=document.createElement('div');
-    d.style.cssText='padding:7px 8px;font-size:10px;font-weight:700;color:#fff;text-transform:uppercase;letter-spacing:.05em;border-right:1px solid rgba(255,255,255,.15)';
+    d.className='schedule-head-cell';
     d.textContent=h;
-    colHdr.appendChild(d);
+    sheet.appendChild(d);
   });
-  sheet.appendChild(colHdr);
 
   var rowNum=0;
   sectionOrder.forEach(function(sectionName){
     var items=sections[sectionName];
-    // Section row
     var secRow=document.createElement('div');
-    secRow.style.cssText='background:#2E4B7A;padding:6px 12px;font-size:11.5px;font-weight:700;color:#fff;display:flex;align-items:center;gap:8px';
+    secRow.className='schedule-section-row';
     secRow.innerHTML='<span style="opacity:.5;font-size:10px">&#9654;</span>'+esc(sectionName)+
       '<span style="font-size:10px;color:rgba(255,255,255,.45);font-weight:400">'+items.length+' item'+(items.length===1?'':'s')+'</span>';
     sheet.appendChild(secRow);
 
-    items.forEach(function(item,i){
+    items.forEach(function(item){
       rowNum++;
-      var col=TRADE_COLOURS[item.tradeId]||{bg:'#F0F0F5',border:'#9BA3BF',text:'#4A5272'};
-      var bg=i%2===0?'#fff':'#F5F6FA';
-      var isUnalloc=item.tradeId==='unallocated';
+      var savedTradeId=item.tradeId;
+      var displayTradeId=scheduleChanges[item.ref]!=null?scheduleChanges[item.ref]:savedTradeId;
+      var col=TRADE_COLOURS[displayTradeId]||{bg:'#F0F0F5',border:'#9BA3BF',text:'#4A5272'};
+      var isUnalloc=displayTradeId==='unallocated';
+      var altClass=rowNum%2===0?'':' schedule-cell--alt';
 
-      var row=document.createElement('div');
-      row.style.cssText='display:grid;grid-template-columns:36px 58px 1fr 46px 50px 210px;background:'+bg+';border-bottom:1px solid #E8EAF0';
-
-      // Row num
       var n=document.createElement('div');
-      n.style.cssText='padding:6px 4px;text-align:center;font-size:10px;color:#9BA3BF;background:#F5F6FA;border-right:2px solid #E8EAF0';
+      n.className='schedule-cell schedule-cell--num'+altClass;
       n.textContent=rowNum;
-      row.appendChild(n);
+      sheet.appendChild(n);
 
-      // Ref
       var r=document.createElement('div');
-      r.style.cssText='padding:6px 8px;text-align:center;font-size:11px;font-weight:700;color:#1B3A6B;border-right:1px solid #E8EAF0';
+      r.className='schedule-cell schedule-cell--ref'+altClass;
       r.textContent=item.ref;
-      row.appendChild(r);
+      sheet.appendChild(r);
 
-      // Desc
       var d=document.createElement('div');
-      d.style.cssText='padding:6px 8px;font-size:11.5px;color:#1A1A2E;line-height:1.5;border-right:1px solid #E8EAF0';
+      d.className='schedule-cell schedule-cell--desc'+altClass;
       d.textContent=item.desc;
-      row.appendChild(d);
+      sheet.appendChild(d);
 
-      // Qty
       var q=document.createElement('div');
-      q.style.cssText='padding:6px 4px;text-align:center;font-size:11.5px;border-right:1px solid #E8EAF0';
-      q.textContent=item.qty;
-      row.appendChild(q);
+      q.className='schedule-cell schedule-cell--qty'+altClass;
+      q.textContent=item.qty!=null?item.qty:'';
+      sheet.appendChild(q);
 
-      // Unit
       var u=document.createElement('div');
-      u.style.cssText='padding:6px 4px;text-align:center;font-size:11px;color:#666;border-right:1px solid #E8EAF0';
-      u.textContent=item.unit;
-      row.appendChild(u);
+      u.className='schedule-cell schedule-cell--unit'+altClass;
+      u.textContent=item.unit||'';
+      sheet.appendChild(u);
 
-      // Trade dropdown
       var tc=document.createElement('div');
-      tc.style.cssText='padding:4px 6px;display:flex;align-items:center;gap:5px';
+      tc.className='schedule-cell schedule-cell--trade'+altClass;
       var swatch=document.createElement('div');
-      swatch.style.cssText='width:9px;height:9px;border-radius:2px;flex-shrink:0;background:'+col.text;
+      swatch.className='schedule-trade-swatch';
+      swatch.style.background=col.text;
       tc.appendChild(swatch);
       var sel=document.createElement('select');
+      sel.className='schedule-trade-select';
       sel.setAttribute('data-item-ref',item.ref);
-      sel.style.cssText='flex:1;border:1px solid '+(isUnalloc?'var(--red)':'var(--border)')+';border-radius:3px;padding:3px 5px;font-size:11px;color:'+(isUnalloc?'var(--red)':'var(--text)')+';background:'+(isUnalloc?'var(--red-bg)':'#fff')+';font-family:DM Sans,sans-serif;cursor:pointer';
+      sel.setAttribute('data-original-trade-id',savedTradeId);
+      if(isUnalloc){
+        sel.style.borderColor='var(--red)';
+        sel.style.color='var(--red)';
+        sel.style.background='var(--red-bg)';
+      }
       sel.innerHTML=tradeOptions;
-      sel.value=item.tradeId;
+      sel.value=displayTradeId;
       sel.onchange=function(){
-        scheduleMarkChange(this.getAttribute('data-item-ref'),this.value);
+        var ref=this.getAttribute('data-item-ref');
+        var original=this.getAttribute('data-original-trade-id');
+        scheduleMarkChange(ref,this.value,original);
         var nc=TRADE_COLOURS[this.value]||{text:'#9BA3BF'};
         this.previousSibling.style.background=nc.text;
         var isU=this.value==='unallocated';
@@ -1428,63 +1584,32 @@ function renderScheduleView(){
         this.style.background=isU?'var(--red-bg)':'#fff';
       };
       tc.appendChild(sel);
-      row.appendChild(tc);
-      sheet.appendChild(row);
+      sheet.appendChild(tc);
     });
   });
 
   sheetWrap.appendChild(sheet);
+  sheetWrap.scrollLeft=0;
   wrap.appendChild(sheetWrap);
 
   // Change bar
   var bar=document.createElement('div');
   bar.id='schedule-change-bar';
-  var pending=Object.keys(scheduleChanges).length;
+  bar.className='schedule-change-bar';
+  var pending=getSchedulePendingCount();
   bar.style.cssText='padding:9px 18px;background:var(--amber-bg);border-top:1px solid rgba(196,123,0,.3);flex-shrink:0;display:'+(pending>0?'flex':'none')+';align-items:center;gap:12px';
-  bar.innerHTML='<span style="font-size:13px;font-weight:600;color:var(--amber)">'+pending+' change'+(pending===1?'':'s')+' pending</span>'+
+  bar.innerHTML='<span data-schedule-pending-count style="font-size:13px;font-weight:600;color:var(--amber)">'+pending+' change'+(pending===1?'':'s')+' pending</span>'+
     '<span style="font-size:12px;color:var(--amber)">Changes will update trade documents when applied</span>'+
     '<div style="flex:1"></div>'+
-    '<button class="btn btn-secondary btn-sm" onclick="resetScheduleChanges()">Discard</button>'+
-    '<button class="btn btn-primary btn-sm" style="background:var(--green)" onclick="applyScheduleAllocations()">&#10003; Apply Changes</button>';
+    '<button class="btn btn-secondary btn-sm" data-schedule-discard disabled onclick="resetScheduleChanges()">Discard</button>'+
+    '<button class="btn btn-primary btn-sm" data-schedule-apply style="background:var(--green)" disabled onclick="applyScheduleAllocations()">&#10003; Apply Changes</button>';
   wrap.appendChild(bar);
   panel.appendChild(wrap);
+  updateScheduleChangeUi();
 }
 
-function scheduleMarkChange(ref,newTradeId){
-  scheduleChanges[ref]=newTradeId;
-  var bar=el('schedule-change-bar');
-  if(bar){
-    var c=Object.keys(scheduleChanges).length;
-    bar.style.display='flex';
-    bar.querySelector('span').textContent=c+' change'+(c===1?'':'s')+' pending';
-  }
-}
-
-function resetScheduleChanges(){
-  scheduleChanges={};
-  renderScheduleView();
-}
-
-function applyScheduleAllocations(){
-  var count=Object.keys(scheduleChanges).length;
-  if(!count){alert('No changes to apply.');return;}
-  Object.keys(scheduleChanges).forEach(function(ref){
-    var newTradeId=scheduleChanges[ref];
-    var foundItem=null;
-    splitTrades.forEach(function(t){
-      var idx=(t.items||[]).findIndex(function(i){return i.ref===ref;});
-      if(idx>-1&&!foundItem){foundItem=t.items.splice(idx,1)[0];t.lineCount=t.items.length;}
-    });
-    if(foundItem){
-      var toTrade=splitTrades.find(function(t){return t.id===newTradeId;});
-      if(toTrade){toTrade.items.push(foundItem);toTrade.lineCount=toTrade.items.length;}
-    }
-  });
-  scheduleChanges={};
-  renderSplitTradeList();
-  if(splitActiveTrade)renderSplitPreview(splitActiveTrade);
-  renderScheduleView();
-}
+window.resetScheduleChanges = resetScheduleChanges;
+window.applyScheduleAllocations = applyScheduleAllocations;
 
 // ── SUPPORTING FILES (SPEC & DRAWINGS) ───────────────────
 var supportingFiles = { spec: [], dwg: [] };
@@ -1821,6 +1946,274 @@ function renderCompliancePanel() {
   liveDiv.innerHTML = html;
   panel.appendChild(liveDiv);
 }
+// ── CREATE WORKBOOK ───────────────────────────────────────
+var wbTemplateFile_ = null;
+
+function ensureWbTemplateErrorEl(){
+  var errEl = el('wb-template-error');
+  if(errEl) return errEl;
+  var areaEl = el('wb-template-area');
+  if(!areaEl || !areaEl.parentNode) return null;
+  errEl = document.createElement('div');
+  errEl.id = 'wb-template-error';
+  areaEl.parentNode.insertBefore(errEl, areaEl.nextSibling);
+  return errEl;
+}
+
+function resetWbTemplateDropZoneStyle(){
+  var dropZone = el('wb-template-drop-zone');
+  if(!dropZone) return;
+  dropZone.classList.remove('wb-template-drop-error');
+}
+
+function markWbTemplateDropZoneError(){
+  var dropZone = el('wb-template-drop-zone');
+  if(!dropZone) return;
+  dropZone.classList.add('wb-template-drop-error');
+}
+
+function showWbTemplateError(message){
+  var errEl = ensureWbTemplateErrorEl();
+  if(!errEl) return;
+  errEl.innerHTML = '&#10007; '+esc(message || 'Invalid template file.');
+  errEl.style.display = 'block';
+  markWbTemplateDropZoneError();
+}
+
+function clearWbTemplateError(){
+  var errEl = el('wb-template-error');
+  if(errEl){
+    errEl.textContent = '';
+    errEl.style.display = 'none';
+  }
+  resetWbTemplateDropZoneStyle();
+}
+
+function validateWbTemplateFileLocal(f){
+  if(!f) return 'Template file is required.';
+  var name = (f.name || '').trim();
+  if(!name) return 'Template file name is missing.';
+  var dot = name.lastIndexOf('.');
+  var ext = dot >= 0 ? name.slice(dot).toLowerCase() : '';
+  if(ext !== '.xlsx') return 'Template must be an Excel workbook (.xlsx).';
+  if(!f.size) return 'Template file is empty.';
+  if(f.size > 25 * 1024 * 1024) return 'Template file is too large (max 25 MB).';
+  var mime = (f.type || '').toLowerCase();
+  if(mime && mime !== 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' && mime !== 'application/octet-stream' && mime !== 'application/zip'){
+    return 'Template must be a valid .xlsx Excel file.';
+  }
+  return null;
+}
+
+async function validateWbTemplateFile(f){
+  var localError = validateWbTemplateFileLocal(f);
+  if(localError) throw new Error(localError);
+  if(f.size < 4) throw new Error('Template file is not a valid .xlsx workbook.');
+  var header = new Uint8Array(await f.slice(0, 4).arrayBuffer());
+  if(header[0] !== 0x50 || header[1] !== 0x4b){
+    throw new Error('Template file does not appear to be a valid .xlsx workbook.');
+  }
+  if(typeof window.validateSowWorkbookTemplate === 'function'){
+    await window.validateSowWorkbookTemplate(f);
+  }
+}
+
+function rejectWbTemplate(message){
+  wbTemplateFile_ = null;
+  var inputEl = el('wb-template-input');
+  var pillEl = el('wb-template-pill');
+  var areaEl = el('wb-template-area');
+  if(inputEl) inputEl.value = '';
+  if(pillEl) pillEl.style.display = 'none';
+  if(areaEl) areaEl.style.display = 'block';
+  showWbTemplateError(message);
+}
+
+function wbTemplateFile(event){
+  var input = event && event.target;
+  var f = input && input.files && input.files[0];
+  if(f) void setWbTemplate(f);
+  else if(input) input.value = '';
+}
+function wbTemplateDrop(event){
+  event.preventDefault();
+  event.stopPropagation();
+  resetWbTemplateDropZoneStyle();
+  var files = event.dataTransfer && event.dataTransfer.files;
+  var f = files && files[0];
+  if(!f){
+    showWbTemplateError('No file was dropped.');
+    return;
+  }
+  if(files.length > 1){
+    showWbTemplateError('Please drop only one template file.');
+    return;
+  }
+  void setWbTemplate(f);
+}
+async function setWbTemplate(f){
+  clearWbTemplateError();
+  try {
+    await validateWbTemplateFile(f);
+  } catch(e) {
+    rejectWbTemplate(e && e.message ? e.message : 'Invalid template file.');
+    return;
+  }
+  wbTemplateFile_ = f;
+  var nameEl = el('wb-template-name');
+  var pillEl = el('wb-template-pill');
+  var areaEl = el('wb-template-area');
+  if(nameEl) nameEl.textContent = f.name;
+  if(pillEl) pillEl.style.display = 'block';
+  if(areaEl) areaEl.style.display = 'none';
+}
+function clearWbTemplate(){
+  wbTemplateFile_ = null;
+  clearWbTemplateError();
+  var pillEl = el('wb-template-pill');
+  var areaEl = el('wb-template-area');
+  var inputEl = el('wb-template-input');
+  if(pillEl) pillEl.style.display = 'none';
+  if(areaEl) areaEl.style.display = 'block';
+  if(inputEl) inputEl.value = '';
+}
+
+function initWorkbookTemplateControls(){
+  var areaEl = el('wb-template-area');
+  var inputEl = el('wb-template-input');
+  var dropZone = el('wb-template-drop-zone');
+  var changeBtn = el('wb-template-change');
+  if(!areaEl || !inputEl || !dropZone) return;
+  if(areaEl.dataset.sowWbBound === '1') return;
+  areaEl.dataset.sowWbBound = '1';
+
+  dropZone.addEventListener('click', function(){
+    inputEl.click();
+  });
+  inputEl.addEventListener('change', wbTemplateFile);
+  dropZone.addEventListener('dragover', function(event){
+    event.preventDefault();
+    dropZone.classList.remove('wb-template-drop-error');
+    dropZone.style.borderColor = 'var(--green)';
+    dropZone.style.background = 'var(--green-bg)';
+  });
+  dropZone.addEventListener('dragleave', function(event){
+    event.preventDefault();
+    if(!dropZone.classList.contains('wb-template-drop-error')){
+      dropZone.style.borderColor = '';
+      dropZone.style.background = '';
+    }
+  });
+  dropZone.addEventListener('drop', wbTemplateDrop);
+  if(changeBtn) changeBtn.addEventListener('click', clearWbTemplate);
+}
+
+window.wbTemplateFile = wbTemplateFile;
+window.wbTemplateDrop = wbTemplateDrop;
+window.clearWbTemplate = clearWbTemplate;
+
+function renderWorkbookPanel(){
+  var listEl = el('wb-trades-list');
+  if(listEl){
+    var trades = splitTrades.filter(function(t){ return t.id !== 'unallocated'; });
+    listEl.innerHTML = trades.map(function(t){
+      var col = TRADE_COLOURS[t.id]||{bg:'#F0F0F5',text:'#4A5272'};
+      var count = t.lineCount != null ? t.lineCount : (t.items || []).length;
+      return '<span style="display:inline-flex;align-items:center;gap:5px;padding:4px 10px;border-radius:12px;font-size:12px;font-weight:600;background:'+col.bg+';color:'+col.text+';border:1px solid '+col.text+'22">'+
+        esc(t.label)+
+        '<span style="font-size:10.5px;opacity:.7">'+count+'</span>'+
+      '</span>';
+    }).join('');
+  }
+  var compCount = el('wb-comp-count');
+  if(compCount){
+    var n = splitTrades.filter(function(t){ return t.id !== 'unallocated'; }).length;
+    compCount.textContent = n+' tab'+(n===1?'':'s');
+  }
+  var psumsCount = el('wb-psums-count');
+  if(psumsCount){
+    var psCount = 0;
+    splitTrades.forEach(function(t){
+      (t.items||[]).forEach(function(item){
+        if(item.desc && item.desc.toLowerCase().indexOf('provisional sum') > -1) psCount++;
+      });
+    });
+    psumsCount.textContent = psCount > 0 ? psCount+' item'+(psCount===1?'':'s')+' found' : 'P.SUMS tab';
+  }
+}
+
+function buildWorkbookIncludeSelection(){
+  var keys = ['wb-include-summary','wb-include-sow','wb-include-comps','wb-include-psums','wb-include-sc','wb-include-links'];
+  var checked = keys.filter(function(id){
+    var cb = el(id);
+    return cb && cb.checked;
+  });
+  if(!checked.length) return null;
+  if(checked.length === keys.length) return undefined;
+  return checked;
+}
+
+function triggerWorkbookDownload(blob, filename){
+  triggerSowFileDownload(blob, filename);
+}
+
+async function runCreateWorkbook(){
+  if(!splitTrades.length){
+    alert('Run the AI Trade Split first to generate trade documents.');
+    return;
+  }
+  if(!sowProjectJobId){
+    window.dispatchEvent(new CustomEvent('sow-needs-project'));
+    alert('Select a project before creating the workbook.');
+    return;
+  }
+  var include = buildWorkbookIncludeSelection();
+  if(include === null){
+    var statusEmpty = el('wb-status');
+    if(statusEmpty) statusEmpty.innerHTML = '<span style="color:var(--red)">&#10007; Select at least one workbook section to include.</span>';
+    return;
+  }
+  if(!wbTemplateFile_){
+    var statusTpl = el('wb-status');
+    if(statusTpl) statusTpl.innerHTML = '<span style="color:var(--red)">&#10007; Please upload a DCK Tender Workbook template (.xlsx).</span>';
+    showWbTemplateError('Please upload a DCK Tender Workbook template (.xlsx) before creating the workbook.');
+    var areaEl = el('wb-template-area');
+    if(areaEl) areaEl.style.display = 'block';
+    var pillEl = el('wb-template-pill');
+    if(pillEl) pillEl.style.display = 'none';
+    return;
+  }
+  var btn = el('wb-create-btn');
+  var status = el('wb-status');
+  if(!btn) return;
+  btn.disabled = true;
+  btn.innerHTML = '<span style="animation:spin .8s linear infinite;display:inline-block">&#8635;</span> Building workbook…';
+  if(status) status.textContent = '';
+
+  try {
+    if(typeof window.submitSowWorkbook !== 'function'){
+      throw new Error('Workbook API is not available. Please refresh the page.');
+    }
+    await validateWbTemplateFile(wbTemplateFile_);
+    if(status) status.textContent = 'Generating workbook…';
+    var request = { include: include, template: wbTemplateFile_ };
+    var result = await window.submitSowWorkbook(sowProjectJobId, request);
+    triggerWorkbookDownload(result.blob, result.filename);
+    btn.disabled = false;
+    btn.innerHTML = '<span>&#128202;</span> Create &amp; Download Tender Workbook';
+    if(status) status.innerHTML = '<span style="color:var(--green)">&#10003; Workbook downloaded</span>';
+  } catch(e) {
+    btn.disabled = false;
+    btn.innerHTML = '<span>&#128202;</span> Create &amp; Download Tender Workbook';
+    if(status) status.innerHTML = '<span style="color:var(--red)">&#10007; '+esc(e && e.message ? e.message : 'Workbook generation failed')+'</span>';
+  }
+}
+window.downloadAllExcel = downloadAllExcel;
+window.downloadTradeExcel = downloadTradeExcel;
+window.exportSharedItems = exportSharedItems;
+window.exportFullSchedule = exportFullSchedule;
+window.runCreateWorkbook = runCreateWorkbook;
+
 var revFile = null;
 var revisionResults = null;
 
@@ -2226,6 +2619,7 @@ resetSplit = function(){
   // Clear supporting files
   supportingFiles = {spec:[], dwg:[]};
   complianceResults = null;
+  clearWbTemplate();
   renderSupportingFilesList();
   updateCheckBtn();
   updateSec2Status();
@@ -2256,6 +2650,7 @@ window.refreshSowEngineDom = function(){
   updateSplitRunBtnState();
   renderSowFoundFilesList();
   updateSowEmsSectionStatus();
+  initWorkbookTemplateControls();
 };
 
 function confirmAllocation(ref){
