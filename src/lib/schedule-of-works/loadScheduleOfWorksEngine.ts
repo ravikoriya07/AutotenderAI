@@ -11,13 +11,14 @@ import type {
   SowAllocationsResponse,
 } from "@/services/sowService";
 
-const ENGINE_VERSION = "9";
+const ENGINE_VERSION = "11";
 const ENGINE_SRC = `/schedule-of-works/engine.js?v=${ENGINE_VERSION}`;
 const LOADED_FLAG = `__sowEngineLoaded_${ENGINE_VERSION}`;
 
 export type SowProjectContext = {
   jobId: string;
   projectName?: string;
+  clientName?: string;
 };
 
 export type { SowFoundFile, SowSplitRequest, SowTradeSplitOptions };

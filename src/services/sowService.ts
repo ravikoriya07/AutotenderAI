@@ -19,6 +19,8 @@ export type SowFindResponse = {
   status: string;
   job_id: string;
   found_files?: SowFoundFile[];
+  project_name?: string;
+  client?: string;
 };
 
 export type SowTradeSplitMethod = "nbs" | "headings" | "ai";
@@ -38,6 +40,37 @@ export const SOW_TRADE_SPLIT_DEFAULTS: SowTradeSplitOptions = {
 export type SowSplitSupportingFiles = {
   specifications?: File[];
   drawings?: File[];
+  /** Optional revised schedule for comparison (POST split only). */
+  revised_file?: File;
+};
+
+export type SowRevisionDiffItem = {
+  desc?: string;
+  qty?: number | string;
+  unit?: string;
+};
+
+export type SowRevisionDiffChange = {
+  ref?: string;
+  status?: string;
+  category?: string;
+  change_type?: string;
+  change_summary?: string;
+  old_item?: SowRevisionDiffItem;
+  new_item?: SowRevisionDiffItem;
+};
+
+export type SowRevisionDiff = {
+  summary?: {
+    new_items?: number;
+    amended_items?: number;
+    deleted_items?: number;
+    unchanged_items?: number;
+  };
+  changes?: SowRevisionDiffChange[];
+  revision_ref?: string;
+  revision_title?: string;
+  revision_date?: string;
 };
 
 export type SowSplitExistingRequest = SowTradeSplitOptions &
@@ -212,6 +245,7 @@ export type SowSplitResponse = {
     trade_documents?: SowTradeDocument[];
     full_schedule?: SowFullScheduleItem[];
     shared_items?: SowSharedItem[];
+    revision_diff?: SowRevisionDiff;
   };
 };
 
@@ -347,6 +381,9 @@ export async function submitSowSplit(
 
   appendOptionalSplitFiles(formData, request.specifications, "specifications");
   appendOptionalSplitFiles(formData, request.drawings, "drawings");
+  if (request.revised_file) {
+    formData.append("revised_file", request.revised_file);
+  }
 
   const token = getAuthToken();
   const res = await fetch(

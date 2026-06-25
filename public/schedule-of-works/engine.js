@@ -244,9 +244,13 @@ function updateSplitRunBtnState(){
 
 window.setSowProjectContext = function(ctx){
   sowProjectJobId = (ctx && ctx.jobId) ? String(ctx.jobId).trim() : '';
-  if(ctx && ctx.projectName){
-    var nameEl = el('split-proj-name');
-    if(nameEl) nameEl.value = ctx.projectName;
+  var nameEl = el('split-proj-name');
+  var clientEl = el('split-client');
+  if(nameEl){
+    nameEl.value = (ctx && ctx.projectName) ? String(ctx.projectName) : '';
+  }
+  if(clientEl){
+    clientEl.value = (ctx && ctx.clientName) ? String(ctx.clientName) : '';
   }
   updateSplitRunBtnState();
 };
@@ -591,8 +595,99 @@ function applySowSplitResponse(response){
   var shared = Array.isArray(tabs.shared_items) ? tabs.shared_items : [];
   SHARED_ITEMS = shared.map(normalizeSharedItem).filter(function(i){ return i && i.ref; });
 
+  applyRevisionDiffFromResponse(tabs.revision_diff);
+
   splitActiveTrade = splitTrades[0] ? splitTrades[0].id : null;
   return true;
+}
+
+function normalizeRevisionStatus(status){
+  var s = String(status || '').trim().toLowerCase();
+  if(s === 'new' || s === 'added') return 'new';
+  if(s === 'amended' || s === 'modified' || s === 'changed') return 'amended';
+  if(s === 'deleted' || s === 'removed') return 'deleted';
+  if(s === 'unchanged') return 'unchanged';
+  return s || 'unchanged';
+}
+
+function normalizeApiRevisionDiff(apiDiff){
+  if(!apiDiff || typeof apiDiff !== 'object') return null;
+  var summary = apiDiff.summary || {};
+  var changes = Array.isArray(apiDiff.changes) ? apiDiff.changes : [];
+  var newCount = summary.new_items != null ? summary.new_items : (summary.new || 0);
+  var amendedCount = summary.amended_items != null ? summary.amended_items : (summary.amended || 0);
+  var deletedCount = summary.deleted_items != null ? summary.deleted_items : (summary.deleted || 0);
+  var unchangedCount = summary.unchanged_items != null ? summary.unchanged_items : (summary.unchanged || 0);
+
+  return {
+    revisionRef: apiDiff.revision_ref || apiDiff.revisionRef || null,
+    revisionTitle: apiDiff.revision_title || apiDiff.revisionTitle || apiDiff.title || null,
+    revisionDate: apiDiff.revision_date || apiDiff.revisionDate || null,
+    summary: {
+      new: newCount,
+      amended: amendedCount,
+      deleted: deletedCount,
+      unchanged: unchangedCount,
+      total: newCount + amendedCount + deletedCount + unchangedCount
+    },
+    changes: changes.map(function(c){
+      var oldItem = c.old_item || {};
+      var newItem = c.new_item || {};
+      var changeType = normalizeRevisionStatus(c.status || c.changeType);
+      return {
+        changeType: changeType,
+        ref: c.ref || '',
+        tradeId: c.trade_id || c.tradeId || '',
+        tradeLabel: c.trade || c.trade_label || c.tradeLabel || '',
+        section: c.category || c.section || '',
+        changeNotes: c.change_summary || c.changeNotes || '',
+        changeTypeLabel: c.change_type || c.changeTypeLabel || '',
+        currentDesc: oldItem.desc != null ? oldItem.desc : (c.currentDesc != null ? c.currentDesc : null),
+        currentQty: oldItem.qty != null ? oldItem.qty : (c.currentQty != null ? c.currentQty : null),
+        currentUnit: oldItem.unit || c.currentUnit || null,
+        revisedDesc: newItem.desc != null ? newItem.desc : (c.revisedDesc != null ? c.revisedDesc : null),
+        revisedQty: newItem.qty != null ? newItem.qty : (c.revisedQty != null ? c.revisedQty : null),
+        revisedUnit: newItem.unit || c.revisedUnit || null
+      };
+    })
+  };
+}
+
+function applyRevisionDiffFromResponse(apiDiff){
+  if(!apiDiff){
+    revisionResults = null;
+    updateRevisionBadge();
+    return;
+  }
+  var normalized = normalizeApiRevisionDiff(apiDiff);
+  revisionResults = normalized;
+  updateRevisionBadge();
+}
+
+function updateRevisionBadge(){
+  var badge = el('revision-count-badge');
+  if(!badge) return;
+  if(!revisionResults || !revisionResults.summary){
+    badge.style.display = 'none';
+    return;
+  }
+  var s = revisionResults.summary;
+  var changed = (s.new || 0) + (s.amended || 0) + (s.deleted || 0);
+  if(changed > 0){
+    badge.style.display = 'inline';
+    badge.textContent = changed + ' change' + (changed === 1 ? '' : 's');
+  } else {
+    badge.style.display = 'none';
+  }
+}
+
+function clearRevisionResults(){
+  revisionResults = null;
+  updateRevisionBadge();
+  var revLive = document.getElementById('revision-live-results');
+  if(revLive) revLive.remove();
+  var revEx = el('revision-example');
+  if(revEx) revEx.style.display = 'block';
 }
 
 function clearSplitResultsOnly(){
@@ -616,6 +711,7 @@ function clearSplitResultsOnly(){
     badge.style.display = 'none';
   }
   setWorkbookTabVisible(false);
+  clearRevisionResults();
 }
 
 function beginSplitProcessing(label){
@@ -693,6 +789,26 @@ async function runSplit(){
   beginSplitProcessing('Processing: '+source.label);
   startSplitStepAnimation();
 
+  var request = buildSplitRequest(source);
+  if(revFile){
+    request.revised_file = revFile;
+  }
+
+  try {
+    if(typeof window.submitSowSplit !== 'function'){
+      throw new Error('Split service is not ready. Please refresh the page.');
+    }
+    var response = await window.submitSowSplit(sowProjectJobId, request);
+    console.log(response);
+    completeSplitProcessingSteps();
+    handleSowSplitResponseResult(response);
+    return;
+  } catch(e) {
+    failSplitProcessing(e && e.message ? e.message : 'Trade split failed. Please try again.');
+  }
+}
+
+function buildSplitRequest(source){
   var splitOptions = getSowTradeSplitOptions();
   var request = {
     type: source.type,
@@ -711,19 +827,7 @@ async function runSplit(){
   if(supportingFiles.dwg.length){
     request.drawings = supportingFiles.dwg.slice();
   }
-
-  try {
-    if(typeof window.submitSowSplit !== 'function'){
-      throw new Error('Split service is not ready. Please refresh the page.');
-    }
-    var response = await window.submitSowSplit(sowProjectJobId, request);
-    console.log(response);
-    completeSplitProcessingSteps();
-    handleSowSplitResponseResult(response);
-    return;
-  } catch(e) {
-    failSplitProcessing(e && e.message ? e.message : 'Trade split failed. Please try again.');
-  }
+  return request;
 }
 
 window.runLoadSavedSowSplit = async function(jobId, signal){
@@ -796,7 +900,13 @@ function showSplitResults(){
   updateSplitResultSummary();
   renderSplitTradeList();
   renderSplitPreview(splitActiveTrade);
-  switchResultTab('schedule');
+  if(revisionResults){
+    updateRevisionBadge();
+    switchResultTab('revision');
+  } else {
+    switchResultTab('schedule');
+  }
+  updateRevBtn();
 }
 
 function renderSplitTradeList(){
@@ -1357,6 +1467,7 @@ function switchResultTab(tab){
   if(tab==='shared')renderSharedItems();
   if(tab==='schedule')renderScheduleView();
   if(tab==='workbook')renderWorkbookPanel();
+  if(tab==='revision')renderRevisionPanel();
 }
 
 // ── MAKE ALLOC BTN HELPER ─────────────────────────────────
@@ -2251,23 +2362,37 @@ function clearRevFile(){
 function updateRevBtn(){
   var btn = el('rev-compare-btn');
   if(!btn) return;
-  // Can compare if we have a new file AND either existing splitTrades or an original file
-  btn.disabled = !(revFile && splitTrades.length > 0);
+  var source = getSowSplitSource();
+  btn.disabled = !(revFile && splitTrades.length > 0 && source && sowProjectJobId);
 }
 
 async function runRevisionCompare(){
-  if(!revFile){ alert('Please upload a revised schedule first.'); return; }
-  if(!splitTrades.length){ alert('Run the AI Trade Split first so there is a current schedule to compare against.'); return; }
+  if(!revFile){
+    alert('Please upload a revised schedule first.');
+    return;
+  }
+  if(!splitTrades.length){
+    alert('Run the AI Trade Split first so there is a current schedule to compare against.');
+    return;
+  }
+  if(!sowProjectJobId){
+    window.dispatchEvent(new CustomEvent('sow-needs-project'));
+    alert('Select a project before comparing revisions.');
+    return;
+  }
+  var source = getSowSplitSource();
+  if(!source){
+    alert('Please ensure the original schedule source is still available in Step 1.');
+    return;
+  }
 
   var btn = el('rev-compare-btn');
   btn.disabled = true;
   btn.innerHTML = '<span style="animation:spin .8s linear infinite;display:inline-block">&#8635;</span> Comparing...';
 
-  // Switch to revision tab and show loading state
   el('split-empty').style.display = 'none';
   el('split-results').style.display = 'flex';
   switchResultTab('revision');
-  // Hide example, show loading state
   var revEx = el('revision-example');
   if(revEx) revEx.style.display = 'none';
   var prevLive = el('revision-panel').querySelector('#revision-live-results');
@@ -2277,102 +2402,34 @@ async function runRevisionCompare(){
   loadDiv.innerHTML =
     '<div style="padding:40px;text-align:center;color:var(--text-light)">'+
     '<div style="font-size:32px;margin-bottom:12px;animation:spin 1s linear infinite;display:inline-block">&#8635;</div>'+
-    '<div style="font-size:14px;font-weight:600;margin-bottom:6px">AI is comparing revisions...</div>'+
+    '<div style="font-size:14px;font-weight:600;margin-bottom:6px">Comparing revisions...</div>'+
     '<div style="font-size:12.5px;color:var(--text-hint)">Identifying new, amended and deleted items against the current schedule</div>'+
     '</div>';
   el('revision-panel').appendChild(loadDiv);
 
   try {
-    // Serialise current schedule as structured text for the AI
-    var currentScheduleText = 'CURRENT SCHEDULE OF WORKS (already parsed):\n\n';
-    splitTrades.forEach(function(t){
-      if(!t.items || !t.items.length) return;
-      currentScheduleText += '=== '+t.label+' ('+t.id+') ===\n';
-      t.items.forEach(function(item){
-        currentScheduleText += 'REF:'+item.ref+' | SECTION:'+item.section+' | QTY:'+item.qty+' '+item.unit+' | DESC:'+item.desc+'\n';
-      });
-      currentScheduleText += '\n';
-    });
-
-    // Read new file
-    var newPrepared = await prepareFileContent(revFile);
-
-    // Build message content
-    var msgContent = [];
-    msgContent.push({type:'text', text: currentScheduleText});
-    if(newPrepared.type === 'pdf'){
-      msgContent.push({type:'document', source:{type:'base64', media_type:'application/pdf', data:newPrepared.content}, title:'Revised Schedule'});
-    } else if(newPrepared.type === 'image'){
-      msgContent.push({type:'image', source:{type:'base64', media_type:newPrepared.mediaType, data:newPrepared.content}});
-    } else {
-      msgContent.push({type:'text', text:'REVISED SCHEDULE (new version):\n\n'+newPrepared.content.substring(0,60000)});
+    if(typeof window.submitSowSplit !== 'function'){
+      throw new Error('Split service is not ready. Please refresh the page.');
     }
-    msgContent.push({type:'text', text:'Compare the current schedule against the revised schedule. Return only the JSON diff object as specified.'});
-
-    var systemPrompt =
-      'You are a construction document analyst. Compare a current schedule of works against a revised version issued without tracked changes.\n\n'+
-      'Return ONLY a JSON object:\n'+
-      '{\n'+
-      '  "revisionRef": "string — revision number or date if identifiable from the document, else null",\n'+
-      '  "summary": {"total": N, "new": N, "amended": N, "deleted": N, "unchanged": N},\n'+
-      '  "changes": [\n'+
-      '    {\n'+
-      '      "changeType": "new|amended|deleted|unchanged",\n'+
-      '      "ref": "item ref",\n'+
-      '      "tradeId": "trade id from current schedule, or best guess for new items",\n'+
-      '      "tradeLabel": "trade label",\n'+
-      '      "section": "section heading",\n'+
-      '      "currentDesc": "current description or null if new",\n'+
-      '      "currentQty": number or null,\n'+
-      '      "currentUnit": "unit or null",\n'+
-      '      "revisedDesc": "revised description or null if deleted",\n'+
-      '      "revisedQty": number or null,\n'+
-      '      "revisedUnit": "unit or null",\n'+
-      '      "changeNotes": "brief plain-English summary of what changed, e.g. Qty increased 6nr to 9nr, or Description extended to include fire rating"\n'+
-      '    }\n'+
-      '  ]\n'+
-      '}\n\n'+
-      'Rules:\n'+
-      '- Include ALL items — new, amended, deleted AND unchanged.\n'+
-      '- For "amended": populate both current* and revised* fields.\n'+
-      '- For "new": currentDesc/currentQty/currentUnit = null.\n'+
-      '- For "deleted": revisedDesc/revisedQty/revisedUnit = null.\n'+
-      '- changeNotes should be concise (max 15 words) and highlight the key difference.\n'+
-      '- Return ONLY the raw JSON. No markdown, no explanation.';
-
-    var resp = await fetch('https://api.anthropic.com/v1/messages',{
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({
-        model:'claude-sonnet-4-20250514',
-        max_tokens:8000,
-        system: systemPrompt,
-        messages:[{role:'user', content:msgContent}]
-      })
-    });
-
-    if(!resp.ok) throw new Error('API error '+resp.status);
-    var data = await resp.json();
-    var raw = data.content.filter(function(b){return b.type==='text';}).map(function(b){return b.text;}).join('').trim();
-    raw = raw.replace(/^```json\s*/,'').replace(/^```\s*/,'').replace(/\s*```$/,'').trim();
-    revisionResults = JSON.parse(raw);
-
-    // Auto-update splitTrades with the revised items
-    applyRevisionToTrades(revisionResults);
-
+    var request = buildSplitRequest(source);
+    request.revised_file = revFile;
+    var response = await window.submitSowSplit(sowProjectJobId, request);
+    if(!applySowSplitResponse(response)){
+      throw new Error('Revision compare did not return trade documents.');
+    }
+    updateSplitResultSummary();
+    renderSplitTradeList();
+    if(splitActiveTrade) renderSplitPreview(splitActiveTrade);
+    updateSharedCountBadge();
+    setWorkbookTabVisible(true);
     renderRevisionPanel();
-
-    // Update badge
-    var changed = (revisionResults.summary.new||0) + (revisionResults.summary.amended||0) + (revisionResults.summary.deleted||0);
-    var badge = el('revision-count-badge');
-    if(badge && changed > 0){ badge.style.display='inline'; badge.textContent=changed+' change'+(changed===1?'':'s'); }
-
+    switchResultTab('revision');
   } catch(e) {
     var errPrev = el('revision-panel').querySelector('#revision-live-results');
     if(errPrev) errPrev.remove();
     var errDiv2 = document.createElement('div');
     errDiv2.id = 'revision-live-results';
-    errDiv2.innerHTML = '<div style="padding:32px;background:var(--red-bg);border:1px solid rgba(196,43,28,.2);border-radius:8px;color:var(--red)"><strong>Comparison failed:</strong> '+esc(e.message)+'</div>';
+    errDiv2.innerHTML = '<div style="padding:32px;background:var(--red-bg);border:1px solid rgba(196,43,28,.2);border-radius:8px;color:var(--red)"><strong>Comparison failed:</strong> '+esc(e && e.message ? e.message : 'Please try again.')+'</div>';
     el('revision-panel').appendChild(errDiv2);
   }
 
@@ -2381,160 +2438,137 @@ async function runRevisionCompare(){
   updateRevBtn();
 }
 
-function applyRevisionToTrades(results){
-  if(!results || !results.changes) return;
-  results.changes.forEach(function(change){
-    if(change.changeType === 'unchanged') return;
-
-    if(change.changeType === 'deleted'){
-      // Remove item from its trade
-      splitTrades.forEach(function(t){
-        var idx = t.items.findIndex(function(i){return i.ref===change.ref;});
-        if(idx > -1){ t.items.splice(idx,1); t.lineCount=t.items.length; }
-      });
-      return;
-    }
-
-    if(change.changeType === 'amended'){
-      // Update the item in place
-      var found = false;
-      splitTrades.forEach(function(t){
-        var item = t.items.find(function(i){return i.ref===change.ref;});
-        if(item){
-          item.desc = change.revisedDesc || item.desc;
-          item.qty  = change.revisedQty  != null ? change.revisedQty : item.qty;
-          item.unit = change.revisedUnit || item.unit;
-          item.revised = true;
-          item.changeNotes = change.changeNotes;
-          found = true;
-        }
-      });
-      return;
-    }
-
-    if(change.changeType === 'new'){
-      // Add to the matching trade, or unallocated
-      var targetTrade = splitTrades.find(function(t){return t.id===change.tradeId;});
-      if(!targetTrade) targetTrade = splitTrades.find(function(t){return t.id==='unallocated';});
-      if(!targetTrade){
-        // Create a minimal unallocated bucket
-        targetTrade = {id:'unallocated',label:'To Be Allocated',nbs:[],items:[],lineCount:0,unallocated:true};
-        splitTrades.push(targetTrade);
-      }
-      targetTrade.items.push({
-        ref: change.ref,
-        desc: change.revisedDesc || '',
-        qty: change.revisedQty || 1,
-        unit: change.revisedUnit || 'item',
-        section: change.section || targetTrade.label,
-        isNew: true,
-        changeNotes: change.changeNotes
-      });
-      targetTrade.lineCount = targetTrade.items.length;
-    }
-  });
-
-  // Refresh trade list if results are showing
-  if(el('split-results').style.display !== 'none'){
-    renderSplitTradeList();
-    if(splitActiveTrade) renderSplitPreview(splitActiveTrade);
-  }
+function revisionQtyDelta(oldQty, newQty){
+  var o = parseFloat(oldQty);
+  var n = parseFloat(newQty);
+  if(isNaN(o) || isNaN(n) || o === n) return '';
+  var d = n - o;
+  return (d > 0 ? '+' : '') + (Number.isInteger(d) ? d : d.toFixed(2));
 }
+
+function revisionQtySummary(change){
+  var parts = [];
+  if(change.currentQty != null && change.currentQty !== ''){
+    parts.push(String(change.currentQty) + (change.currentUnit ? ' '+change.currentUnit : ''));
+  }
+  if(change.revisedQty != null && change.revisedQty !== ''){
+    parts.push(String(change.revisedQty) + (change.revisedUnit ? ' '+change.revisedUnit : ''));
+  }
+  if(parts.length === 2) return parts[0] + ' \u2192 ' + parts[1];
+  return parts.join(' ');
+}
+
 
 function renderRevisionPanel(){
   var panel = el('revision-panel');
-  if(!panel || !revisionResults) return;
-  // Hide example
+  if(!panel) return;
   var ex = el('revision-example');
+  if(!revisionResults){
+    if(ex) ex.style.display = 'block';
+    var emptyPrev = panel.querySelector('#revision-live-results');
+    if(emptyPrev) emptyPrev.remove();
+    return;
+  }
   if(ex) ex.style.display = 'none';
+
   var r = revisionResults;
   var s = r.summary || {};
   var changes = r.changes || [];
+  var newCount = s.new != null ? s.new : changes.filter(function(c){return c.changeType==='new';}).length;
+  var amendedCount = s.amended != null ? s.amended : changes.filter(function(c){return c.changeType==='amended';}).length;
+  var deletedCount = s.deleted != null ? s.deleted : changes.filter(function(c){return c.changeType==='deleted';}).length;
+  var unchangedCount = s.unchanged != null ? s.unchanged : changes.filter(function(c){return c.changeType==='unchanged';}).length;
 
-  var newItems      = changes.filter(function(c){return c.changeType==='new';});
-  var amendedItems  = changes.filter(function(c){return c.changeType==='amended';});
-  var deletedItems  = changes.filter(function(c){return c.changeType==='deleted';});
-  var unchangedItems= changes.filter(function(c){return c.changeType==='unchanged';});
+  var newItems = changes.filter(function(c){return c.changeType==='new';});
+  var amendedItems = changes.filter(function(c){return c.changeType==='amended';});
+  var deletedItems = changes.filter(function(c){return c.changeType==='deleted';});
 
+  var titleText = r.revisionTitle || (r.revisionRef ? 'Revision '+r.revisionRef : 'Revision Comparison');
   var html = '';
 
-  // Header banner
-  html += '<div style="background:var(--white);border:1px solid var(--border);border-radius:8px;padding:16px 20px;margin-bottom:20px;display:flex;align-items:flex-start;gap:16px">'+
-    '<div style="font-size:28px">&#128260;</div>'+
-    '<div style="flex:1">'+
-      '<div style="font-size:15px;font-weight:700;color:var(--text)">Revision Comparison'+(r.revisionRef?' — <span style="color:var(--purple)">'+esc(r.revisionRef)+'</span>':'')+'</div>'+
-      '<div style="font-size:12.5px;color:var(--text-light);margin-top:3px">Trade documents have been automatically updated. Review the changes below.</div>'+
+  html += '<div style="background:var(--white);border:1px solid var(--border);border-radius:8px;padding:16px 20px;margin-bottom:20px;display:flex;align-items:flex-start;gap:16px;flex-wrap:wrap">'+
+    '<div style="font-size:28px;line-height:1">&#128260;</div>'+
+    '<div style="flex:1;min-width:200px">'+
+      '<div style="font-size:16px;font-weight:700;color:var(--text)">'+esc(titleText)+'</div>'+
+      '<div style="font-size:12.5px;color:var(--text-light);margin-top:4px;line-height:1.5">Trade documents have been automatically updated from the revised schedule. Review the changes below.</div>'+
     '</div>'+
+    (r.revisionDate ? '<span style="background:var(--purple-bg);color:var(--purple);border:1px solid rgba(91,61,168,.2);padding:4px 12px;border-radius:12px;font-size:11.5px;font-weight:700;white-space:nowrap">'+esc(r.revisionRef || 'Rev')+' issued '+esc(r.revisionDate)+'</span>' : '')+
     '<button class="btn btn-secondary btn-sm" onclick="downloadRevisionReport()">&#8681; Export Report</button>'+
   '</div>';
 
-  // Summary cards
   html += '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:22px">';
   [
-    {label:'New Items',    count:newItems.length,      color:'var(--green)',  bg:'var(--green-bg)',  icon:'&#43;'},
-    {label:'Amended',      count:amendedItems.length,  color:'var(--amber)',  bg:'var(--amber-bg)',  icon:'&#9998;'},
-    {label:'Deleted',      count:deletedItems.length,  color:'var(--red)',    bg:'var(--red-bg)',    icon:'&#8722;'},
-    {label:'Unchanged',    count:unchangedItems.length,color:'var(--text-hint)',bg:'var(--bg)',      icon:'&#8776;'},
+    {label:'New Items', count:newCount, color:'var(--green)', bg:'var(--green-bg)', prefix:'+'},
+    {label:'Amended', count:amendedCount, color:'var(--amber)', bg:'var(--amber-bg)', prefix:''},
+    {label:'Deleted', count:deletedCount, color:'var(--red)', bg:'var(--red-bg)', prefix:'\u2212'},
+    {label:'Unchanged', count:unchangedCount, color:'var(--text-hint)', bg:'var(--bg)', prefix:'\u2248'}
   ].forEach(function(c){
-    html += '<div style="background:'+c.bg+';border:1px solid '+c.color+'33;border-radius:8px;padding:13px 14px;text-align:center">'+
-      '<div style="font-size:20px;font-weight:800;color:'+c.color+'">'+c.icon+'</div>'+
-      '<div style="font-size:22px;font-weight:700;color:'+c.color+';margin:2px 0">'+c.count+'</div>'+
-      '<div style="font-size:11px;color:'+c.color+';font-weight:600">'+c.label+'</div>'+
+    html += '<div style="background:'+c.bg+';border:1px solid '+c.color+'33;border-radius:8px;padding:14px 12px;text-align:center">'+
+      '<div style="font-size:24px;font-weight:800;color:'+c.color+';line-height:1.1">'+(c.prefix ? c.prefix+' ' : '')+c.count+'</div>'+
+      '<div style="font-size:11px;color:'+c.color+';font-weight:600;margin-top:4px">'+c.label+'</div>'+
     '</div>';
   });
   html += '</div>';
 
-  // Render each change group
-  function renderGroup(items, type, label, borderColor, bgColor, iconHtml){
+  function renderChangeBadge(change, borderColor, bgColor){
+    var label = change.changeTypeLabel || change.changeNotes || '';
+    if(!label){
+      if(change.changeType === 'new') label = 'New item';
+      else if(change.changeType === 'deleted') label = 'Deleted';
+      else if(change.changeType === 'amended') label = 'Amended';
+    }
+    return '<span style="font-size:10.5px;font-weight:700;padding:2px 8px;border-radius:10px;background:'+bgColor+';color:'+borderColor+';border:1px solid '+borderColor+'44;display:inline-flex;align-items:center;gap:4px">'+
+      (change.changeType === 'amended' ? '&#9998; ' : '')+esc(label)+
+    '</span>';
+  }
+
+  function renderGroup(items, type, label, borderColor, bgColor){
     if(!items.length) return '';
     var out = '<div style="margin-bottom:22px">';
-    out += '<div style="font-size:13px;font-weight:700;color:var(--text);margin-bottom:10px;display:flex;align-items:center;gap:8px">'+
-      '<span style="background:'+bgColor+';color:'+borderColor+';border:1px solid '+borderColor+'44;padding:2px 9px;border-radius:10px;font-size:11px">'+iconHtml+'</span>'+
-      label+
-      '<span style="font-size:12px;font-weight:400;color:var(--text-light)">'+items.length+' item'+(items.length===1?'':'s')+'</span>'+
+    out += '<div style="font-size:13px;font-weight:700;color:var(--text);margin-bottom:10px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">'+
+      '<span style="background:'+bgColor+';color:'+borderColor+';border:1px solid '+borderColor+'44;padding:2px 9px;border-radius:10px;font-size:11px;font-weight:700">'+esc(label)+'</span>'+
+      '<span style="font-size:12px;font-weight:400;color:var(--text-light)">'+items.length+' item'+(items.length===1?'':'s')+' changed</span>'+
     '</div>';
 
     items.forEach(function(change){
-      var tradeColor = TRADE_COLOURS[change.tradeId] || {text:'#9BA3BF',bg:'#F0F0F5'};
-      out += '<div style="background:var(--white);border:1px solid var(--border);border-left:4px solid '+borderColor+';border-radius:6px;margin-bottom:8px;overflow:hidden">';
+      var meta = [];
+      if(change.tradeLabel || change.tradeId) meta.push(esc(change.tradeLabel || change.tradeId));
+      if(change.section) meta.push(esc(change.section));
+      var qtyLine = revisionQtySummary(change);
+      var delta = revisionQtyDelta(change.currentQty, change.revisedQty);
 
-      // Item header row
-      out += '<div style="padding:10px 14px;display:flex;align-items:flex-start;gap:10px;background:'+bgColor+'22">'+
-        '<span style="font-size:11px;font-weight:700;color:var(--navy);background:#fff;border:1px solid var(--border);padding:2px 7px;border-radius:4px;flex-shrink:0;margin-top:1px">'+esc(change.ref||'—')+'</span>'+
-        '<div style="flex:1">'+
-          '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">'+
-            '<span style="font-size:10.5px;font-weight:700;padding:1px 7px;border-radius:10px;background:'+tradeColor.bg+';color:'+tradeColor.text+';border:1px solid '+tradeColor.text+'33">'+esc(change.tradeLabel||change.tradeId||'Unallocated')+'</span>'+
-            (change.section ? '<span style="font-size:10.5px;color:var(--text-hint)">'+esc(change.section)+'</span>' : '')+
-          '</div>'+
-          (change.changeNotes ? '<div style="font-size:11.5px;color:'+borderColor+';margin-top:5px;font-weight:600">'+esc(change.changeNotes)+'</div>' : '')+
+      out += '<div style="background:var(--white);border:1px solid var(--border);border-left:4px solid '+borderColor+';border-radius:6px;margin-bottom:10px;overflow:hidden">';
+
+      out += '<div style="padding:10px 14px;display:flex;align-items:flex-start;gap:10px;background:'+bgColor+'18;flex-wrap:wrap">'+
+        '<span style="font-size:11px;font-weight:700;color:var(--navy);background:#fff;border:1px solid var(--border);padding:2px 7px;border-radius:4px;flex-shrink:0">'+esc(change.ref||'\u2014')+'</span>'+
+        '<div style="flex:1;min-width:180px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">'+
+          renderChangeBadge(change, borderColor, bgColor)+
+          (meta.length ? '<span style="font-size:11px;color:var(--text-hint)">'+meta.join(' \u00b7 ')+'</span>' : '')+
         '</div>'+
+        (qtyLine ? '<span style="font-size:11.5px;font-weight:600;color:'+borderColor+';white-space:nowrap">'+esc(qtyLine)+'</span>' : '')+
       '</div>';
 
-      // Diff content
       if(type === 'new'){
-        out += '<div style="padding:10px 14px">'+
+        out += '<div style="padding:12px 14px">'+
           '<div style="font-size:12.5px;color:var(--text);line-height:1.5">'+esc(change.revisedDesc||'')+'</div>'+
-          (change.revisedQty != null ? '<div style="font-size:11.5px;color:var(--text-mid);margin-top:4px">Qty: <strong>'+change.revisedQty+' '+esc(change.revisedUnit||'')+'</strong></div>' : '')+
+          (change.revisedQty != null && change.revisedQty !== '' ? '<div style="display:inline-block;margin-top:8px;padding:4px 10px;border-radius:4px;background:var(--green-bg);border:1px solid rgba(16,124,16,.25);font-size:11.5px;font-weight:700;color:var(--green)">'+esc(change.revisedQty)+' '+esc(change.revisedUnit||'')+'</div>' : '')+
         '</div>';
       } else if(type === 'deleted'){
-        out += '<div style="padding:10px 14px">'+
+        out += '<div style="padding:12px 14px">'+
           '<div style="font-size:12.5px;color:var(--text-hint);text-decoration:line-through;line-height:1.5">'+esc(change.currentDesc||'')+'</div>'+
-          (change.currentQty != null ? '<div style="font-size:11.5px;color:var(--text-hint);margin-top:4px;text-decoration:line-through">Qty: '+change.currentQty+' '+esc(change.currentUnit||'')+'</div>' : '')+
+          (change.currentQty != null && change.currentQty !== '' ? '<div style="display:inline-block;margin-top:8px;padding:4px 10px;border-radius:4px;background:var(--red-bg);border:1px solid rgba(196,43,28,.25);font-size:11.5px;font-weight:700;color:var(--red);text-decoration:line-through">'+esc(change.currentQty)+' '+esc(change.currentUnit||'')+'</div>' : '')+
         '</div>';
       } else if(type === 'amended'){
-        // Side-by-side before / after
         out += '<div style="display:grid;grid-template-columns:1fr 1fr;border-top:1px solid var(--border)">';
-        // Before
-        out += '<div style="padding:10px 14px;border-right:1px solid var(--border);background:#FFF8F8">'+
-          '<div style="font-size:10px;font-weight:700;color:var(--red);text-transform:uppercase;letter-spacing:.05em;margin-bottom:5px">Before</div>'+
-          '<div style="font-size:12px;color:var(--text);line-height:1.5">'+esc(change.currentDesc||'')+'</div>'+
-          (change.currentQty != null ? '<div style="font-size:11px;color:var(--text-mid);margin-top:4px">'+change.currentQty+' '+esc(change.currentUnit||'')+'</div>' : '')+
+        out += '<div style="padding:12px 14px;border-right:1px solid var(--border);background:#FFF8F0">'+
+          '<div style="font-size:10px;font-weight:700;color:#C47B00;text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px">Rev A \u2014 Original</div>'+
+          '<div style="font-size:12px;color:var(--text);line-height:1.5">'+esc(change.currentDesc||'\u2014')+'</div>'+
+          (change.currentQty != null && change.currentQty !== '' ? '<div style="display:inline-block;margin-top:10px;padding:5px 12px;border-radius:4px;background:#fff;border:1.5px solid #C47B00;font-size:12px;font-weight:700;color:#C47B00">'+esc(change.currentQty)+' '+esc(change.currentUnit||'')+'</div>' : '')+
         '</div>';
-        // After
-        out += '<div style="padding:10px 14px;background:#F5FBF5">'+
-          '<div style="font-size:10px;font-weight:700;color:var(--green);text-transform:uppercase;letter-spacing:.05em;margin-bottom:5px">After</div>'+
-          '<div style="font-size:12px;color:var(--text);line-height:1.5">'+esc(change.revisedDesc||'')+'</div>'+
-          (change.revisedQty != null ? '<div style="font-size:11px;color:var(--text-mid);margin-top:4px">'+change.revisedQty+' '+esc(change.revisedUnit||'')+'</div>' : '')+
+        out += '<div style="padding:12px 14px;background:#F2FAF2">'+
+          '<div style="font-size:10px;font-weight:700;color:var(--green);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px">Rev B \u2014 Revised</div>'+
+          '<div style="font-size:12px;color:var(--text);line-height:1.5">'+esc(change.revisedDesc||'\u2014')+'</div>'+
+          (change.revisedQty != null && change.revisedQty !== '' ? '<div style="display:inline-block;margin-top:10px;padding:5px 12px;border-radius:4px;background:#fff;border:1.5px solid var(--green);font-size:12px;font-weight:700;color:var(--green)">'+esc(change.revisedQty)+' '+esc(change.revisedUnit||'')+(delta ? ' <span style="opacity:.85">'+esc(delta)+'</span>' : '')+'</div>' : '')+
         '</div>';
         out += '</div>';
       }
@@ -2545,27 +2579,9 @@ function renderRevisionPanel(){
     return out;
   }
 
-  if(newItems.length)     html += renderGroup(newItems,     'new',      'New Items',     'var(--green)', 'var(--green-bg)', '+ New');
-  if(amendedItems.length) html += renderGroup(amendedItems, 'amended',  'Amended Items', 'var(--amber)', 'var(--amber-bg)', '&#9998; Amended');
-  if(deletedItems.length) html += renderGroup(deletedItems, 'deleted',  'Deleted Items', 'var(--red)',   'var(--red-bg)',   '&#8722; Deleted');
-
-  // Unchanged — collapsible summary
-  if(unchangedItems.length){
-    html += '<details style="background:var(--white);border:1px solid var(--border);border-radius:7px;overflow:hidden">'+
-      '<summary style="padding:12px 16px;font-size:13px;font-weight:600;color:var(--text-hint);cursor:pointer;list-style:none;display:flex;align-items:center;gap:8px">'+
-        '&#8776; '+unchangedItems.length+' Unchanged Items'+
-        '<span style="font-size:11.5px;font-weight:400;color:var(--text-hint);margin-left:auto">No changes detected</span>'+
-      '</summary>'+
-      '<div style="border-top:1px solid var(--border)">'+
-      unchangedItems.map(function(c,i){
-        return '<div style="display:flex;align-items:center;gap:10px;padding:8px 14px;background:'+(i%2?'#F8F9FC':'#fff')+';border-bottom:1px solid #F0F2F6;font-size:12px">'+
-          '<span style="font-weight:700;color:var(--navy);min-width:50px">'+esc(c.ref||'')+'</span>'+
-          '<span style="color:var(--text-mid);flex:1">'+esc(c.currentDesc||c.revisedDesc||'')+'</span>'+
-          '<span style="color:var(--text-hint);font-size:11px">'+esc(c.tradeLabel||'')+'</span>'+
-        '</div>';
-      }).join('')+
-      '</div></details>';
-  }
+  if(newItems.length) html += renderGroup(newItems, 'new', 'New', 'var(--green)', 'var(--green-bg)');
+  if(amendedItems.length) html += renderGroup(amendedItems, 'amended', 'Amended', 'var(--amber)', 'var(--amber-bg)');
+  if(deletedItems.length) html += renderGroup(deletedItems, 'deleted', 'Deleted', 'var(--red)', 'var(--red-bg)');
 
   if(!newItems.length && !amendedItems.length && !deletedItems.length){
     html += '<div style="background:var(--green-bg);border:1px solid rgba(16,124,16,.2);border-radius:8px;padding:24px;text-align:center">'+
@@ -2629,16 +2645,8 @@ resetSplit = function(){
   var ex = el('compliance-example');
   if(ex) ex.style.display='block';
   // Clear revision state — restore example
-  revFile = null; revisionResults = null;
-  var rp = el('rev-file-pill'); if(rp) rp.style.display='none';
-  var ru = el('rev-upload-area'); if(ru) ru.style.display='block';
-  el('sec5-num').className = 'section-num optional';
-  el('sec5-status').textContent = 'optional';
-  var rb = el('revision-count-badge'); if(rb) rb.style.display='none';
-  var revLive = document.getElementById('revision-live-results');
-  if(revLive) revLive.remove();
-  var revEx2 = el('revision-example');
-  if(revEx2) revEx2.style.display = 'block';
+  clearRevFile();
+  clearRevisionResults();
   var revbtn = el('rev-compare-btn'); if(revbtn) revbtn.disabled=true;
 };
 

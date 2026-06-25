@@ -32,17 +32,42 @@ import "./schedule-of-works.css";
 export function ScheduleOfWorksView() {
   const sowHostRef = useRef<HTMLDivElement>(null);
   const sowHtmlMountedRef = useRef(false);
-  const pendingSowFilesRef = useRef<{ loading: boolean; files: SowFoundFile[] }>({
+  const pendingSowFilesRef = useRef<{
+    loading: boolean;
+    files: SowFoundFile[];
+    projectName?: string;
+    clientName?: string;
+  }>({
     loading: false,
     files: [],
   });
   const [engineError, setEngineError] = useState<string | null>(null);
   const [engineReady, setEngineReady] = useState(false);
+  const engineReadyRef = useRef(false);
   const {
     selectedProjectJobId,
     completedStepProjects,
     setNeedsProjectHighlight,
   } = useResearchProject();
+  const completedStepProjectsRef = useRef(completedStepProjects);
+  engineReadyRef.current = engineReady;
+  completedStepProjectsRef.current = completedStepProjects;
+
+  function applyPendingSowFindToEngine(jobId: string) {
+    const pending = pendingSowFilesRef.current;
+    const project = completedStepProjectsRef.current.find(
+      (p) => p.job_id === jobId
+    );
+    setSowFoundFilesLoading(pending.loading);
+    if (!pending.loading) {
+      setSowFoundFiles(pending.files);
+    }
+    setSowProjectContext({
+      jobId,
+      projectName: pending.projectName ?? project?.project_name,
+      clientName: pending.clientName,
+    });
+  }
 
   useEffect(() => {
     const host = sowHostRef.current;
@@ -86,11 +111,7 @@ export function ScheduleOfWorksView() {
     if (!engineReady) return;
 
     const jobId = selectedProjectJobId.trim();
-    const project = completedStepProjects.find((p) => p.job_id === jobId);
-    setSowProjectContext({
-      jobId,
-      projectName: project?.project_name,
-    });
+    applyPendingSowFindToEngine(jobId);
   }, [engineReady, selectedProjectJobId, completedStepProjects]);
 
   useEffect(() => {
@@ -135,28 +156,17 @@ export function ScheduleOfWorksView() {
   }, [engineReady]);
 
   useEffect(() => {
-    if (!engineReady) return;
-
-    const pending = pendingSowFilesRef.current;
-    setSowFoundFilesLoading(pending.loading);
-    if (!pending.loading) {
-      setSowFoundFiles(pending.files);
-    }
-  }, [engineReady]);
-
-  useEffect(() => {
     const jobId = selectedProjectJobId.trim();
     if (!jobId) {
       pendingSowFilesRef.current = { loading: false, files: [] };
-      if (engineReady) {
-        setSowFoundFilesLoading(false);
-        setSowFoundFiles([]);
+      if (engineReadyRef.current) {
+        applyPendingSowFindToEngine("");
       }
       return;
     }
 
     pendingSowFilesRef.current = { loading: true, files: [] };
-    if (engineReady) {
+    if (engineReadyRef.current) {
       setSowFoundFilesLoading(true);
     }
 
@@ -170,16 +180,22 @@ export function ScheduleOfWorksView() {
           response.status === "success" && Array.isArray(response.found_files)
             ? response.found_files
             : [];
-        pendingSowFilesRef.current = { loading: false, files };
-        if (engineReady) {
-          setSowFoundFilesLoading(false);
-          setSowFoundFiles(files);
+        const projectName = response.project_name?.trim() || undefined;
+        const clientName = response.client?.trim() || undefined;
+        pendingSowFilesRef.current = {
+          loading: false,
+          files,
+          projectName,
+          clientName,
+        };
+        if (engineReadyRef.current) {
+          applyPendingSowFindToEngine(jobId);
         }
       } catch (err) {
         if (controller.signal.aborted) return;
         console.error("[schedule-of-works] GET /sow/find failed", err);
         pendingSowFilesRef.current = { loading: false, files: [] };
-        if (engineReady) {
+        if (engineReadyRef.current) {
           setSowFoundFilesLoading(false);
           setSowFoundFiles([]);
         }
@@ -187,7 +203,7 @@ export function ScheduleOfWorksView() {
     })();
 
     return () => controller.abort();
-  }, [selectedProjectJobId, engineReady]);
+  }, [selectedProjectJobId]);
 
   useEffect(() => {
     if (!engineReady) return;
