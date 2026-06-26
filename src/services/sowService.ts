@@ -252,7 +252,10 @@ export type SowSplitResponse = {
 export type SowTradeDocument = {
   id: string;
   label: string;
+  /** NBS work-section codes (API may send `code` instead). */
   nbs?: string[];
+  code?: string[];
+  group?: string | null;
   section?: string;
   lineCount?: number;
   items?: SowTradeLineItem[];

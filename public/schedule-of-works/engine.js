@@ -519,10 +519,14 @@ function normalizeSowSplitTrades(response){
 function normalizeTradeDocument(trade){
   if(!trade) return null;
   var items = Array.isArray(trade.items) ? trade.items : [];
+  var codes = [];
+  if(Array.isArray(trade.nbs) && trade.nbs.length) codes = trade.nbs;
+  else if(Array.isArray(trade.code) && trade.code.length) codes = trade.code;
+  else if(typeof trade.code === 'string' && trade.code) codes = [trade.code];
   return {
     id: trade.id || '',
-    label: trade.label || trade.id || 'Trade',
-    nbs: Array.isArray(trade.nbs) ? trade.nbs : [],
+    label: trade.label || trade.trade_name || trade.id || 'Trade',
+    nbs: codes,
     section: trade.section || trade.label || '',
     lineCount: trade.lineCount != null ? trade.lineCount : items.length,
     items: items,
@@ -916,23 +920,25 @@ function renderSplitTradeList(){
     var isActive=t.id===splitActiveTrade;
     var isUnalloc=t.id==='unallocated';
     var isGeneral=t.id==='general';
-    var col=TRADE_COLOURS[t.id]||{bg:'#F0F0F5',border:'#9BA3BF',text:'#4A5272'};
     var btn=document.createElement('button');
+    btn.type='button';
     btn.setAttribute('data-trade-id',t.id);
-    var borderL=isActive?'var(--navy)':(isUnalloc?'var(--red)':isGeneral?'var(--text-hint)':'transparent');
-    btn.style.cssText='width:100%;padding:10px 14px;text-align:left;background:'+(isActive?'var(--navy-lt)':'transparent')+';border:none;border-left:3px solid '+borderL+';cursor:pointer;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--border);font-family:DM Sans,sans-serif';
+    btn.className='split-trade-item'+
+      (isActive?' split-trade-item--active':'')+
+      (isUnalloc?' split-trade-item--unalloc':'')+
+      (isGeneral?' split-trade-item--general':'');
+    var prefix=isUnalloc?'&#9888; ':isGeneral?'&#9685; ':'';
     var nbsBadges=t.nbs&&t.nbs.length?t.nbs.map(function(n){
-      return '<span style="background:var(--purple-bg);color:var(--purple);padding:1px 5px;border-radius:8px;font-size:10px;font-weight:600;margin-right:3px">'+n+'</span>';
+      return '<span class="split-trade-item__tag">'+esc(n)+'</span>';
     }).join(''):'';
-    var labelStyle='font-size:12.5px;font-weight:'+(isActive?'600':'400')+';color:'+(isUnalloc?'var(--red)':isActive?'var(--navy)':'var(--text-mid)')+'';
-    var countStyle='font-size:11px;color:'+(isUnalloc&&t.lineCount>0?'var(--red)':'var(--text-hint)')+';font-weight:'+(isUnalloc&&t.lineCount>0?'600':'400')+'';
-    btn.innerHTML='<div style="flex:1;min-width:0">'+
-      '<div style="'+labelStyle+'">'+(isUnalloc?'&#9888; ':isGeneral?'&#9685; ':'')+esc(t.label)+'</div>'+
-      '<div style="font-size:11px;color:var(--text-hint);margin-top:2px">'+nbsBadges+'</div>'+
-    '</div>'+
-    '<div style="text-align:right;flex-shrink:0;margin-left:8px">'+
-      '<div style="'+countStyle+'">'+t.lineCount+' items</div>'+
-    '</div>';
+    var tagsRow=nbsBadges?'<div class="split-trade-item__tags">'+nbsBadges+'</div>':'';
+    var countClass='split-trade-item__count'+(isUnalloc&&t.lineCount>0?' split-trade-item__count--warn':'');
+    btn.innerHTML=
+      '<div class="split-trade-item__main">'+
+        '<div class="split-trade-item__label">'+prefix+esc(t.label)+'</div>'+
+        tagsRow+
+      '</div>'+
+      '<div class="'+countClass+'">'+t.lineCount+' items</div>';
     btn.onclick=function(){selectSplitTrade(this.getAttribute('data-trade-id'));};
     container.appendChild(btn);
   });
