@@ -181,6 +181,17 @@ export type BidLibraryJobStatus = {
   error?: string;
 };
 
+/** Request body for `POST /bid/library/score/{seq}` — question name → score. */
+export type BidLibraryScoreRequest = Record<string, number>;
+
+/** Response from `POST /bid/library/score/{seq}`. */
+export type BidLibraryScoreResponse = {
+  seq: number;
+  new_average_score: number;
+  updated: boolean;
+  message: string;
+};
+
 /** Response from `PUT /bid/drafts/{draft_id}`. */
 export type BidDraftUpdateResponse = {
   id: string;

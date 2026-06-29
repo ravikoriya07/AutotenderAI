@@ -18,10 +18,12 @@ import type { PastBid } from "@/lib/bid-writing/types";
 import {
   fetchBidLibraryJobStatus,
   fetchPastBids,
+  submitBidLibraryScores,
   updateFrameworkStatus,
   uploadBidLibraryZip,
 } from "@/lib/bid-writing/bidWritingApi";
 import { Modal } from "@/components/ui/Modal";
+import { Button } from "@/components/ui/Button";
 import { toast } from "react-toastify";
 
 type GroupFilter = "all" | "won" | "lost" | "other";
@@ -64,6 +66,71 @@ function scoreBarBg(score: number | null) {
   if (score >= 60) return "bg-primary";
   if (score >= 40) return "bg-amber-500";
   return "bg-muted-foreground/40";
+}
+
+const MAX_QUALITY_SCORE = 100;
+
+type SubmittedQuestionScore = {
+  question: string;
+  score: number;
+  displayScore: string;
+};
+
+/** Allow digits and a single optional decimal while typing (e.g. 65, 65.5). */
+function sanitizeQualityScoreInput(raw: string): string {
+  let next = raw.replace(/[^\d.]/g, "");
+  const dotIndex = next.indexOf(".");
+  if (dotIndex !== -1) {
+    const intPart = next.slice(0, dotIndex);
+    const decPart = next.slice(dotIndex + 1).replace(/\./g, "").slice(0, 1);
+    next = decPart.length > 0 ? `${intPart}.${decPart}` : `${intPart}.`;
+  }
+  if (next.startsWith(".")) next = `0${next}`;
+  if (next.length > 0 && !next.endsWith(".")) {
+    const parsed = Number(next);
+    if (Number.isFinite(parsed) && parsed > MAX_QUALITY_SCORE) {
+      return String(MAX_QUALITY_SCORE);
+    }
+  }
+  return next;
+}
+
+function validateQualityScoreInput(
+  raw: string
+): { ok: true; value: number; displayScore: string } | { ok: false; message: string } {
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return { ok: false, message: "Enter a score" };
+  }
+  if (!/^\d+(\.\d+)?$/.test(trimmed)) {
+    return { ok: false, message: "Enter a valid number (e.g. 65 or 65.5)" };
+  }
+  const value = Number(trimmed);
+  if (!Number.isFinite(value)) {
+    return { ok: false, message: "Enter a valid number" };
+  }
+  if (value < 0) {
+    return { ok: false, message: "Minimum score is 0" };
+  }
+  if (value > MAX_QUALITY_SCORE) {
+    return { ok: false, message: "Maximum score is 100" };
+  }
+  const displayScore = Number.isInteger(value) ? String(value) : value.toFixed(1);
+  return { ok: true, value, displayScore };
+}
+
+function qualityTierFromScore(score: number): PastBid["quality_tier"] {
+  if (score >= 60) return "high_quality";
+  if (score >= 40) return "medium_quality";
+  return "other";
+}
+
+function applyQualityScoreToBid(bid: PastBid, newAverageScore: number): PastBid {
+  return {
+    ...bid,
+    quality_score_pct: newAverageScore,
+    quality_tier: qualityTierFromScore(newAverageScore),
+  };
 }
 
 function outcomeBadge(group: PastBid["group"], outcome: string) {
@@ -295,6 +362,15 @@ export function PastBidLibraryView({ showInnerNav = true }: PastBidLibraryViewPr
     },
     [frameworkBids, frameworkLoading]
   );
+
+  const handleQualityScoresSubmitted = useCallback((seq: number, newAverageScore: number) => {
+    setBids((prev) =>
+      prev.map((b) => (b.seq === seq ? applyQualityScoreToBid(b, newAverageScore) : b))
+    );
+    setDrawerBid((prev) =>
+      prev?.seq === seq ? applyQualityScoreToBid(prev, newAverageScore) : prev
+    );
+  }, []);
 
   const filtered = useMemo(() => {
     let list = bids;
@@ -867,6 +943,7 @@ export function PastBidLibraryView({ showInnerNav = true }: PastBidLibraryViewPr
                 isFramework={frameworkBids.has(drawerBid.seq)}
                 isToggling={frameworkLoading.has(drawerBid.seq)}
                 onToggleFramework={() => void toggleFramework(drawerBid.seq)}
+                onScoresSubmitted={handleQualityScoresSubmitted}
               />
             </div>
           </>
@@ -883,12 +960,110 @@ function DetailBody({
   isFramework,
   isToggling,
   onToggleFramework,
+  onScoresSubmitted,
 }: {
   bid: PastBid;
   isFramework: boolean;
   isToggling: boolean;
   onToggleFramework: () => void;
+  onScoresSubmitted: (seq: number, newAverageScore: number) => void;
 }) {
+  const questions = bid.questions ?? [];
+  const [questionScores, setQuestionScores] = useState<Record<number, string>>({});
+  const [questionErrors, setQuestionErrors] = useState<Record<number, string>>({});
+  const [submittedScores, setSubmittedScores] = useState<SubmittedQuestionScore[] | null>(
+    null
+  );
+  const [submittingScores, setSubmittingScores] = useState(false);
+
+  useEffect(() => {
+    setQuestionScores({});
+    setQuestionErrors({});
+    setSubmittedScores(null);
+  }, [bid.seq]);
+
+  const updateQuestionScore = (index: number, raw: string) => {
+    const sanitized = sanitizeQualityScoreInput(raw);
+    setQuestionScores((prev) => ({ ...prev, [index]: sanitized }));
+    setQuestionErrors((prev) => {
+      if (!prev[index]) return prev;
+      const next = { ...prev };
+      delete next[index];
+      return next;
+    });
+  };
+
+  const validateQuestionAtIndex = (index: number, raw: string): string | null => {
+    const normalized = raw.endsWith(".") ? raw.slice(0, -1) : raw;
+    if (normalized !== raw) {
+      setQuestionScores((prev) => ({ ...prev, [index]: normalized }));
+    }
+    const result = validateQualityScoreInput(normalized);
+    if (!result.ok) return result.message;
+    return null;
+  };
+
+  const handleQuestionBlur = (index: number) => {
+    const raw = questionScores[index] ?? "";
+    if (!raw.trim()) return;
+    const message = validateQuestionAtIndex(index, raw);
+    if (message) {
+      setQuestionErrors((prev) => ({ ...prev, [index]: message }));
+    }
+  };
+
+  const handleSubmitScores = () => {
+    if (questions.length === 0 || submittingScores) return;
+
+    const nextErrors: Record<number, string> = {};
+    const nextSubmitted: SubmittedQuestionScore[] = [];
+
+    questions.forEach((question, index) => {
+      const raw = (questionScores[index] ?? "").trim();
+      const normalized = raw.endsWith(".") ? raw.slice(0, -1) : raw;
+      const result = validateQualityScoreInput(normalized);
+      if (!result.ok) {
+        nextErrors[index] = result.message;
+        return;
+      }
+      nextSubmitted.push({
+        question,
+        score: result.value,
+        displayScore: result.displayScore,
+      });
+    });
+
+    if (Object.keys(nextErrors).length > 0) {
+      setQuestionErrors(nextErrors);
+      toast.error("Please fix the highlighted scores before submitting.");
+      return;
+    }
+
+    const payload = Object.fromEntries(
+      nextSubmitted.map((entry) => [entry.question, entry.score])
+    );
+
+    setSubmittingScores(true);
+    void submitBidLibraryScores(bid.seq, payload)
+      .then((result) => {
+        setQuestionErrors({});
+        setSubmittedScores(nextSubmitted);
+        onScoresSubmitted(result.seq, result.new_average_score);
+        toast.success(result.message?.trim() || "Quality score successfully updated");
+      })
+      .catch((err) => {
+        console.error("[PastBidLibrary] Failed to submit quality scores:", err);
+        const msg =
+          err instanceof Error && err.message.trim()
+            ? err.message.trim()
+            : "Failed to submit quality scores. Please try again.";
+        toast.error(msg);
+      })
+      .finally(() => {
+        setSubmittingScores(false);
+      });
+  };
+
   const sc = bid.quality_score_pct;
   const tierLabel =
     bid.quality_tier === "high_quality"
@@ -965,7 +1140,7 @@ function DetailBody({
       </div>
 
       {/* Detail fields */}
-      <dl className="space-y-3.5">
+      <dl className="grid grid-cols-2 gap-x-4 gap-y-4">
         <DetailField label="Outcome" value={bid.outcome || "—"} />
         <DetailField label="Submitted" value={formatDate(bid.submitted)} />
         <DetailField label="Bid Type" value={bid.bid_type || "—"} />
@@ -986,20 +1161,106 @@ function DetailBody({
         <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
           Quality Questions
         </p>
-        <div className="mt-2 flex flex-wrap gap-1.5">
-          {(bid.questions ?? []).length === 0 ? (
+        <div className="mt-2 space-y-2">
+          {questions.length === 0 ? (
             <span className="text-sm text-muted-foreground">—</span>
           ) : (
-            bid.questions!.map((q) => (
-              <span
-                key={q}
-                className="rounded-full border border-border bg-muted px-2.5 py-0.5 text-xs font-medium text-foreground"
-              >
-                {q}
-              </span>
-            ))
+            questions.map((q, index) => {
+              const error = questionErrors[index];
+              return (
+                <div key={`${q}-${index}`}>
+                  <div
+                    className={cn(
+                      "flex items-center justify-between gap-3 rounded-lg border bg-muted/20 px-3 py-2.5",
+                      error ? "border-destructive/50" : "border-border"
+                    )}
+                  >
+                    <label
+                      htmlFor={`question-score-${bid.seq}-${index}`}
+                      className="min-w-0 flex-1 text-sm font-medium leading-snug text-foreground"
+                    >
+                      {q}
+                    </label>
+                    <div className="flex shrink-0 items-center gap-1.5">
+                      <input
+                        id={`question-score-${bid.seq}-${index}`}
+                        type="text"
+                        inputMode="decimal"
+                        autoComplete="off"
+                        placeholder="—"
+                        value={questionScores[index] ?? ""}
+                        onChange={(e) => updateQuestionScore(index, e.target.value)}
+                        onBlur={() => handleQuestionBlur(index)}
+                        aria-invalid={Boolean(error)}
+                        aria-describedby={
+                          error ? `question-score-error-${bid.seq}-${index}` : undefined
+                        }
+                        className={cn(
+                          "h-8 w-[4.5rem] rounded-md border bg-background px-2 text-right text-sm tabular-nums text-foreground",
+                          "placeholder:text-muted-foreground/60",
+                          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-1",
+                          error
+                            ? "border-destructive focus-visible:ring-destructive/30"
+                            : "border-border focus-visible:ring-primary/30"
+                        )}
+                        aria-label={`Score for ${q}`}
+                      />
+                      <span className="text-xs font-medium text-muted-foreground">%</span>
+                    </div>
+                  </div>
+                  {error ? (
+                    <p
+                      id={`question-score-error-${bid.seq}-${index}`}
+                      className="mt-1 px-1 text-xs text-destructive"
+                      role="alert"
+                    >
+                      {error}
+                    </p>
+                  ) : null}
+                </div>
+              );
+            })
           )}
         </div>
+
+        {questions.length > 0 ? (
+          <Button
+            type="button"
+            className="mt-3 w-full"
+            disabled={submittingScores}
+            onClick={handleSubmitScores}
+          >
+            {submittingScores ? (
+              <>
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden />
+                Submitting…
+              </>
+            ) : (
+              "Submit scores"
+            )}
+          </Button>
+        ) : null}
+
+        {submittedScores && submittedScores.length > 0 ? (
+          <div className="mt-4">
+            <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+              Submitted question scores
+            </p>
+            <ul className="mt-2 space-y-2">
+              {submittedScores.map((entry, index) => (
+                <li
+                  key={`${entry.question}-${index}`}
+                  className="flex items-center justify-between gap-3 rounded-lg border border-border bg-background px-3 py-2.5"
+                >
+                  <span className="min-w-0 flex-1 text-sm text-foreground">{entry.question}</span>
+                  <span className="shrink-0 text-sm font-semibold tabular-nums text-primary">
+                    {entry.displayScore}%
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
       </div>
 
       {/* Notes */}
@@ -1030,11 +1291,13 @@ function DetailBody({
 
 function DetailField({ label, value }: { label: string; value: string }) {
   return (
-    <div>
+    <div className="min-w-0">
       <dt className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
         {label}
       </dt>
-      <dd className="mt-0.5 text-sm text-foreground">{value}</dd>
+      <dd className="mt-0.5 text-sm leading-snug text-foreground [overflow-wrap:anywhere]">
+        {value}
+      </dd>
     </div>
   );
 }

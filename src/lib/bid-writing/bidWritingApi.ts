@@ -3,6 +3,7 @@
  *
  * Flask endpoints:
  * - GET  /bid/library/metadata      — Past Bid Library rows
+ * - POST /bid/library/score/{seq}   — Submit per-question quality scores
  * - POST /bid/framework/{seq}       — Toggle framework status for a bid
  * - GET  /api/folders               — Qdrant folder counts for filters
  * - GET  /bid/client/projects       — Client doc ingestion projects
@@ -41,6 +42,7 @@ import type {
   BidExportRequest,
   BidLibraryIngestResponse,
   BidLibraryJobStatus,
+  BidLibraryScoreResponse,
   BidMessageExportRequest,
   BidSessionDetail,
   BidSessionSummary,
@@ -60,11 +62,45 @@ const API_BASE_URL = (process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://91.199.227
   ""
 );
 
+/** Coalesce concurrent metadata fetches (e.g. React Strict Mode double-mount in dev). */
+let inFlightPastBids: Promise<PastBid[]> | null = null;
+
 export async function fetchPastBids(): Promise<PastBid[]> {
-  const response = await apiClient.get<PastBid[]>("/bid/library/metadata", {
-    skipGlobalLoader: true,
-  } as object);
-  return Array.isArray(response.data) ? response.data : [];
+  if (inFlightPastBids) return inFlightPastBids;
+
+  inFlightPastBids = (async () => {
+    try {
+      const response = await apiClient.get<PastBid[]>("/bid/library/metadata", {
+        skipGlobalLoader: true,
+      } as object);
+      return Array.isArray(response.data) ? response.data : [];
+    } finally {
+      inFlightPastBids = null;
+    }
+  })();
+
+  return inFlightPastBids;
+}
+
+/** POST /bid/library/score/{seq} — submit per-question scores; backend updates quality_score_pct. */
+export async function submitBidLibraryScores(
+  seq: number,
+  scores: Record<string, number>
+): Promise<BidLibraryScoreResponse> {
+  const response = await apiClient.post<BidLibraryScoreResponse>(
+    `/bid/library/score/${seq}`,
+    scores,
+    { skipGlobalLoader: true } as object
+  );
+  const data = response.data;
+  if (
+    !data ||
+    typeof data.seq !== "number" ||
+    typeof data.new_average_score !== "number"
+  ) {
+    throw new Error("Invalid score update response");
+  }
+  return data;
 }
 
 /**
