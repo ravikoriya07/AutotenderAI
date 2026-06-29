@@ -89,6 +89,8 @@ export type BidSessionApiMessage = {
   content: string;
   message_id?: string;
   ts?: string;
+  sources?: Record<string, string> | null;
+  web_sources?: unknown[] | null;
 };
 
 /** Request body for `POST /bid/drafts`. */

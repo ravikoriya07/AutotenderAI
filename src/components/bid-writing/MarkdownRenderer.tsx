@@ -131,8 +131,6 @@ const markdownComponents: Components = {
 function createMarkdownComponents(
   sourceLabelBySeq?: ReadonlyMap<number, string>
 ): Components {
-  if (!sourceLabelBySeq?.size) return markdownComponents;
-
   const inj = (children: ReactNode) => injectSourceReferences(children, sourceLabelBySeq);
 
   return {

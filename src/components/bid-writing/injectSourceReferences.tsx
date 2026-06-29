@@ -8,44 +8,39 @@ import {
   type ReactElement,
   type ReactNode,
 } from "react";
-import {
-  parseSourceReferenceSeqs,
-  resolveSourceLabels,
-  SOURCE_REFERENCE_PATTERN,
-} from "@/lib/bid-writing/sourceReferences";
+import { findCitationRefMatches } from "@/lib/bid-writing/sourceReferences";
 import { SourceReferenceBadge } from "@/components/bid-writing/SourceReferenceBadge";
 
-function splitTextWithSourceRefs(
+function splitTextWithCitationRefs(
   text: string,
-  sourceLabelBySeq: ReadonlyMap<number, string>,
+  sourceLabelBySeq: ReadonlyMap<number, string> | undefined,
   keyPrefix: string
 ): ReactNode[] {
-  const parts: ReactNode[] = [];
-  const re = new RegExp(SOURCE_REFERENCE_PATTERN.source, "g");
-  let lastIndex = 0;
-  let match: RegExpExecArray | null;
-  let partIndex = 0;
+  const matches = findCitationRefMatches(text, sourceLabelBySeq);
+  if (matches.length === 0) return [text];
 
-  while ((match = re.exec(text)) !== null) {
-    if (match.index > lastIndex) {
-      parts.push(text.slice(lastIndex, match.index));
+  const parts: ReactNode[] = [];
+  let lastIndex = 0;
+
+  matches.forEach((hit, partIndex) => {
+    if (hit.index > lastIndex) {
+      parts.push(text.slice(lastIndex, hit.index));
     }
-    const seqs = parseSourceReferenceSeqs(match[1]);
     parts.push(
       <SourceReferenceBadge
-        key={`${keyPrefix}-${match.index}-${partIndex++}`}
-        displayText={match[0]}
-        labels={resolveSourceLabels(seqs, sourceLabelBySeq)}
+        key={`${keyPrefix}-${hit.index}-${partIndex}`}
+        displayText={hit.displayText}
+        labels={hit.labels}
       />
     );
-    lastIndex = match.index + match[0].length;
-  }
+    lastIndex = hit.index + hit.length;
+  });
 
   if (lastIndex < text.length) {
     parts.push(text.slice(lastIndex));
   }
 
-  return parts.length > 0 ? parts : [text];
+  return parts;
 }
 
 type ElementWithChildren = ReactElement<{ children?: ReactNode; className?: string }>;
@@ -65,11 +60,10 @@ export function injectSourceReferences(
   sourceLabelBySeq?: ReadonlyMap<number, string>,
   keyPrefix = "src"
 ): ReactNode {
-  if (!sourceLabelBySeq || sourceLabelBySeq.size === 0) return children;
   if (children == null || typeof children === "boolean") return children;
 
   if (typeof children === "string") {
-    const parts = splitTextWithSourceRefs(children, sourceLabelBySeq, keyPrefix);
+    const parts = splitTextWithCitationRefs(children, sourceLabelBySeq, keyPrefix);
     if (parts.length === 1 && typeof parts[0] === "string") return parts[0];
     return <>{parts}</>;
   }

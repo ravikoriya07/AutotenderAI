@@ -48,8 +48,15 @@ function inlineMarkdownToHtml(
   s = s.replace(/`([^`]+)`/g, "<code class=\"rounded-md bg-muted px-1.5 py-0.5 font-mono text-[0.85em]\">$1</code>");
 
   s = s.replace(/\[\s*SOURCE\s+ID\s*:\s*([^\]]+?)\s*\]/gi, (_, ids: string) => {
-    const display = `[SOURCE ID: ${ids.trim()}]`;
-    return citationBadgeHtml(display, [display]);
+    const seqs = parseSourceReferenceSeqs(ids);
+    const labels = resolveSourceLabels(seqs, sourceLabelBySeq);
+    const display =
+      seqs.length === 1
+        ? `[${seqs[0]}]`
+        : seqs.length > 1
+          ? `[${seqs.join(", ")}]`
+          : `[SOURCE ID: ${ids.trim()}]`;
+    return citationBadgeHtml(display, labels);
   });
   s = s.replace(/\[\s*WEB\s*\]/gi, () => citationBadgeHtml("[WEB]", ["Web source"]));
   s = s.replace(/\[\s*(\d+(?:\s*,\s*\d+)*)\s*\]/g, (match, inner: string) => {

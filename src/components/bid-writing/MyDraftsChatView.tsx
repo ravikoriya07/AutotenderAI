@@ -36,7 +36,12 @@ import { toast } from "react-toastify";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/Button";
 import { MarkdownRenderer } from "@/components/bid-writing/MarkdownRenderer";
-import { buildSourceLabelMapFromLibrary } from "@/lib/bid-writing/sourceReferences";
+import {
+  buildSourceLabelMapFromLibrary,
+  sourceLabelMapFromRecord,
+  sourcesRecordFromUnknown,
+} from "@/lib/bid-writing/sourceReferences";
+import { sanitizeCitationMarkdown } from "@/lib/bid-writing/draftEditableMarkdown";
 import type {
   BidChatRequestBody,
   ChatSession,
@@ -656,6 +661,8 @@ export function MyDraftsChatView({
         role: m.role as "user" | "assistant",
         content: typeof m.content === "string" ? m.content : "",
         message_id: typeof m.message_id === "string" ? m.message_id : undefined,
+        sources: m.sources ?? undefined,
+        web_sources: m.web_sources ?? undefined,
       }));
   }
 
@@ -1573,11 +1580,24 @@ export function MyDraftsChatView({
                     ) : (
                       /* AI message — no card/border, full-width clean text */
                       <div className="min-w-0 flex-1">
-                        <MarkdownRenderer
-                          content={m.content}
-                          className="text-sm leading-relaxed text-foreground"
-                          sourceLabelBySeq={sourceLabelBySeq}
-                        />
+                        {(() => {
+                          const messageSources = sourcesRecordFromUnknown(m.sources);
+                          const messageSourceLabelBySeq = sourceLabelMapFromRecord(
+                            messageSources,
+                            sourceLabelBySeq
+                          );
+                          const assistantContent = sanitizeCitationMarkdown(
+                            m.content,
+                            messageSourceLabelBySeq ?? sourceLabelBySeq
+                          );
+                          return (
+                            <MarkdownRenderer
+                              content={assistantContent}
+                              className="text-sm leading-relaxed text-foreground"
+                              sourceLabelBySeq={messageSourceLabelBySeq ?? sourceLabelBySeq}
+                            />
+                          );
+                        })()}
                         {!m.streaming && (
                           <div className="mt-2 flex flex-wrap items-center gap-1.5 pt-1">
                             <button
