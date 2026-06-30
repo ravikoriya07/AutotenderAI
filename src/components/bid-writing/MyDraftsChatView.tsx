@@ -126,6 +126,7 @@ type RecentChatRow = {
 
 // ─── UI preference persistence ────────────────────────────────────────────────
 const CHAT_UI_PREFS_KEY = "autotender_chat_ui_prefs_v1";
+const CHAT_SIDEBAR_OPEN_KEY = "autotender_chat_sidebar_open_v1";
 
 type ChatUiPrefs = {
   filterPreset: FilterPresetId;
@@ -135,6 +136,26 @@ type ChatUiPrefs = {
   clientProjectName?: string | null;
   customSeqs: number[];
 };
+
+function loadChatSidebarOpenPref(): boolean {
+  if (typeof window === "undefined") return true;
+  try {
+    const raw = localStorage.getItem(CHAT_SIDEBAR_OPEN_KEY);
+    if (raw === "0") return false;
+  } catch {
+    // ignore
+  }
+  return true;
+}
+
+function saveChatSidebarOpenPref(open: boolean) {
+  if (typeof window === "undefined") return;
+  try {
+    localStorage.setItem(CHAT_SIDEBAR_OPEN_KEY, open ? "1" : "0");
+  } catch {
+    // ignore quota errors
+  }
+}
 
 function loadChatUiPrefs(): ChatUiPrefs | null {
   if (typeof window === "undefined") return null;
@@ -192,7 +213,14 @@ export function MyDraftsChatView({
   const router = useRouter();
   const searchParams = useSearchParams();
 
-  const [chatSidebarOpen, setChatSidebarOpen] = useState(false);
+  const [chatSidebarOpen, setChatSidebarOpenState] = useState(() => loadChatSidebarOpenPref());
+  const setChatSidebarOpen = useCallback((value: boolean | ((prev: boolean) => boolean)) => {
+    setChatSidebarOpenState((prev) => {
+      const next = typeof value === "function" ? value(prev) : value;
+      saveChatSidebarOpenPref(next);
+      return next;
+    });
+  }, []);
   const [chatInput, setChatInput] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -703,7 +731,6 @@ export function MyDraftsChatView({
     setStreamStatusText(null);
     setBidChatStreaming(false);
     setExportMenuIndex(null);
-    setChatSidebarOpen(false);
 
     // Always sync URL so the session survives a refresh
     pushSessionToUrl(row.id);
@@ -1325,7 +1352,6 @@ export function MyDraftsChatView({
             <Link
               href="/my-drafts"
               prefetch
-              onClick={() => setChatSidebarOpen(false)}
               className="mt-3 flex w-full items-center gap-2 rounded-lg border border-border bg-background px-3 py-2.5 text-left text-sm text-foreground transition-colors hover:bg-muted"
             >
               <FileText className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
@@ -1340,7 +1366,6 @@ export function MyDraftsChatView({
             <Link
               href="/past-bid-library"
               className="mt-2 flex w-full items-center gap-2 rounded-lg border border-border bg-background px-3 py-2.5 text-sm text-foreground transition-colors hover:bg-muted"
-              onClick={() => setChatSidebarOpen(false)}
             >
               <Library className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
               Bid Library
