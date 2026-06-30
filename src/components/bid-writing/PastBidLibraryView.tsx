@@ -119,17 +119,69 @@ function validateQualityScoreInput(
   return { ok: true, value, displayScore };
 }
 
+function formatStoredScoreForInput(score: number): string {
+  if (!Number.isFinite(score)) return "";
+  if (score === 0) return "0";
+  return Number.isInteger(score) ? String(score) : score.toFixed(1);
+}
+
+function formatStoredScoreDisplay(score: number): string {
+  if (!Number.isFinite(score)) return "0";
+  if (score === 0) return "0";
+  return Number.isInteger(score) ? String(score) : score.toFixed(1);
+}
+
+function buildQuestionScoreInputs(
+  questions: string[],
+  questionScores?: Record<string, number> | null
+): Record<number, string> {
+  const out: Record<number, string> = {};
+  questions.forEach((question, index) => {
+    const raw = questionScores?.[question];
+    if (typeof raw === "number" && Number.isFinite(raw)) {
+      out[index] = formatStoredScoreForInput(raw);
+    }
+  });
+  return out;
+}
+
+function buildSubmittedScoresFromApi(
+  questions: string[],
+  questionScores?: Record<string, number> | null
+): SubmittedQuestionScore[] | null {
+  if (!questionScores) return null;
+  const entries = questions.flatMap((question) => {
+    const raw = questionScores[question];
+    if (typeof raw !== "number" || !Number.isFinite(raw)) return [];
+    return [
+      {
+        question,
+        score: raw,
+        displayScore: formatStoredScoreDisplay(raw),
+      },
+    ];
+  });
+  return entries.length > 0 ? entries : null;
+}
+
 function qualityTierFromScore(score: number): PastBid["quality_tier"] {
   if (score >= 60) return "high_quality";
   if (score >= 40) return "medium_quality";
   return "other";
 }
 
-function applyQualityScoreToBid(bid: PastBid, newAverageScore: number): PastBid {
+function applyQualityScoreToBid(
+  bid: PastBid,
+  newAverageScore: number,
+  questionScores?: Record<string, number>
+): PastBid {
   return {
     ...bid,
     quality_score_pct: newAverageScore,
     quality_tier: qualityTierFromScore(newAverageScore),
+    question_scores: questionScores
+      ? { ...(bid.question_scores ?? {}), ...questionScores }
+      : bid.question_scores,
   };
 }
 
@@ -363,14 +415,21 @@ export function PastBidLibraryView({ showInnerNav = true }: PastBidLibraryViewPr
     [frameworkBids, frameworkLoading]
   );
 
-  const handleQualityScoresSubmitted = useCallback((seq: number, newAverageScore: number) => {
-    setBids((prev) =>
-      prev.map((b) => (b.seq === seq ? applyQualityScoreToBid(b, newAverageScore) : b))
-    );
-    setDrawerBid((prev) =>
-      prev?.seq === seq ? applyQualityScoreToBid(prev, newAverageScore) : prev
-    );
-  }, []);
+  const handleQualityScoresSubmitted = useCallback(
+    (seq: number, newAverageScore: number, questionScores: Record<string, number>) => {
+      setBids((prev) =>
+        prev.map((b) =>
+          b.seq === seq ? applyQualityScoreToBid(b, newAverageScore, questionScores) : b
+        )
+      );
+      setDrawerBid((prev) =>
+        prev?.seq === seq
+          ? applyQualityScoreToBid(prev, newAverageScore, questionScores)
+          : prev
+      );
+    },
+    []
+  );
 
   const filtered = useMemo(() => {
     let list = bids;
@@ -966,20 +1025,27 @@ function DetailBody({
   isFramework: boolean;
   isToggling: boolean;
   onToggleFramework: () => void;
-  onScoresSubmitted: (seq: number, newAverageScore: number) => void;
+  onScoresSubmitted: (
+    seq: number,
+    newAverageScore: number,
+    questionScores: Record<string, number>
+  ) => void;
 }) {
   const questions = bid.questions ?? [];
-  const [questionScores, setQuestionScores] = useState<Record<number, string>>({});
+  const [questionScores, setQuestionScores] = useState<Record<number, string>>(() =>
+    buildQuestionScoreInputs(questions, bid.question_scores)
+  );
   const [questionErrors, setQuestionErrors] = useState<Record<number, string>>({});
   const [submittedScores, setSubmittedScores] = useState<SubmittedQuestionScore[] | null>(
-    null
+    () => buildSubmittedScoresFromApi(questions, bid.question_scores)
   );
   const [submittingScores, setSubmittingScores] = useState(false);
 
   useEffect(() => {
-    setQuestionScores({});
+    const qs = bid.questions ?? [];
+    setQuestionScores(buildQuestionScoreInputs(qs, bid.question_scores));
     setQuestionErrors({});
-    setSubmittedScores(null);
+    setSubmittedScores(buildSubmittedScoresFromApi(qs, bid.question_scores));
   }, [bid.seq]);
 
   const updateQuestionScore = (index: number, raw: string) => {
@@ -1048,7 +1114,7 @@ function DetailBody({
       .then((result) => {
         setQuestionErrors({});
         setSubmittedScores(nextSubmitted);
-        onScoresSubmitted(result.seq, result.new_average_score);
+        onScoresSubmitted(result.seq, result.new_average_score, payload);
         toast.success(result.message?.trim() || "Quality score successfully updated");
       })
       .catch((err) => {

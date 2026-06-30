@@ -10,9 +10,12 @@ export type PastBid = {
   submitted: string;
   bid_type: string;
   price_quality_split?: string;
+  quality_weight_pct?: number;
   value_gbp?: number;
   is_framework?: boolean;
   questions?: string[];
+  /** Per-question quality scores keyed by question label. */
+  question_scores?: Record<string, number>;
   outcome_notes?: string;
 };
 
