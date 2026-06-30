@@ -16,7 +16,7 @@ export type CompletedStepStat = {
   projects?: CompletedStepProject[];
 };
 
-const CACHE_TTL_MS = 2 * 60 * 1000;
+const CACHE_TTL_MS = 30 * 1000; // 30s — short enough that background-processed jobs appear quickly
 
 type StepsCacheEntry = {
   data: CompletedStepStat[];

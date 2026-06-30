@@ -11,7 +11,7 @@ import type {
   SowAllocationsResponse,
 } from "@/services/sowService";
 
-const ENGINE_VERSION = "12";
+const ENGINE_VERSION = "15";
 const ENGINE_SRC = `/schedule-of-works/engine.js?v=${ENGINE_VERSION}`;
 const LOADED_FLAG = `__sowEngineLoaded_${ENGINE_VERSION}`;
 
@@ -66,6 +66,16 @@ export function loadScheduleOfWorksEngine(): Promise<void> {
   });
 
   return loadPromise;
+}
+
+export function resetSowModuleForProjectSwitch(): void {
+  if (typeof window === "undefined") return;
+  const bridge = (
+    window as Window & {
+      resetSowModuleForProjectSwitch?: () => void;
+    }
+  ).resetSowModuleForProjectSwitch;
+  bridge?.();
 }
 
 export function setSowProjectContext(ctx: SowProjectContext): void {

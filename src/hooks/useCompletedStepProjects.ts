@@ -29,10 +29,20 @@ export function useCompletedStepProjects(options?: UseCompletedStepProjectsOptio
     function onCatalogRefresh() {
       setRefreshToken((t) => t + 1);
     }
+    // Re-fetch when the user returns to the tab — catches jobs processed in the
+    // background (upload pipeline) that don't fire requestProjectCatalogRefresh.
+    function onVisibilityChange() {
+      if (document.visibilityState === "visible") {
+        setRefreshToken((t) => t + 1);
+      }
+    }
     if (typeof window === "undefined") return;
     window.addEventListener(PROJECT_CATALOG_REFRESH_EVENT, onCatalogRefresh);
-    return () =>
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
       window.removeEventListener(PROJECT_CATALOG_REFRESH_EVENT, onCatalogRefresh);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
   }, []);
 
   useEffect(() => {

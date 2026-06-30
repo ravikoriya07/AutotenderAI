@@ -242,8 +242,89 @@ function updateSplitRunBtnState(){
   }
 }
 
+function removeComplianceTransient(){
+  ['compliance-live-results','compliance-empty-state','compliance-loading'].forEach(function(id){
+    var node = el(id);
+    if(node) node.remove();
+  });
+}
+
+function sowTabEmptyStateHtml(icon, title, message){
+  return '<div style="background:var(--white);border:1px solid var(--border);border-radius:8px;padding:40px 28px;text-align:center;color:var(--text-light)">'+
+    '<div style="font-size:36px;opacity:.25;margin-bottom:12px">'+icon+'</div>'+
+    '<div style="font-size:15px;font-weight:700;color:var(--text-mid);margin-bottom:6px">'+esc(title)+'</div>'+
+    '<div style="font-size:13px;line-height:1.55;max-width:420px;margin:0 auto">'+message+'</div>'+
+  '</div>';
+}
+
+function clearComplianceResults(){
+  complianceResults = null;
+  var badge = el('compliance-count-badge');
+  if(badge) badge.style.display = 'none';
+  renderComplianceView();
+}
+
+function resetSowSection1UploadUi(){
+  splitFile = null;
+  if(el('split-file-pill')) el('split-file-pill').style.display = 'none';
+  if(el('sow-upload-area')) el('sow-upload-area').style.display = 'block';
+  if(el('sec1-ems-notice')) el('sec1-ems-notice').style.display = 'flex';
+  var convertSection = el('convert-section');
+  if(convertSection) convertSection.style.display = 'none';
+  var convertStatus = el('convert-status');
+  if(convertStatus) convertStatus.textContent = '';
+  if(el('sec1-status')) el('sec1-status').textContent = '';
+  if(el('sec1-num')) el('sec1-num').className = 'section-num done';
+}
+
+function resetSowModuleForProjectSwitch(){
+  window.cancelLoadSavedSowSplit();
+
+  resetSowSection1UploadUi();
+
+  supportingFiles = { spec: [], dwg: [] };
+  renderSupportingFilesList();
+  updateSec2Status();
+  updateCheckBtn();
+
+  if(typeof clearRevFile === 'function') clearRevFile();
+
+  clearSplitResultsOnly();
+  clearComplianceResults();
+
+  var tradeList = el('split-trade-list');
+  if(tradeList) tradeList.innerHTML = '';
+  var previewPanel = el('split-preview-panel');
+  if(previewPanel){
+    previewPanel.innerHTML =
+      '<div style="padding:40px;text-align:center;color:var(--text-light)">No trade documents yet. Run AI Trade Split for this project.</div>';
+  }
+
+  if(typeof clearWbTemplate === 'function') clearWbTemplate();
+
+  scheduleChanges = {};
+  scheduleApplying = false;
+  updateScheduleChangeUi();
+
+  sowSplitValidationMsg = '';
+  clearSplitValidation();
+
+  renderScheduleView();
+  renderSharedItems();
+  switchResultTab('schedule');
+}
+
+var sowBoundProjectJobId = '';
+
+window.resetSowModuleForProjectSwitch = resetSowModuleForProjectSwitch;
+
 window.setSowProjectContext = function(ctx){
-  sowProjectJobId = (ctx && ctx.jobId) ? String(ctx.jobId).trim() : '';
+  var newJobId = (ctx && ctx.jobId) ? String(ctx.jobId).trim() : '';
+  if(newJobId !== sowBoundProjectJobId){
+    resetSowModuleForProjectSwitch();
+    sowBoundProjectJobId = newJobId;
+  }
+  sowProjectJobId = newJobId;
   var nameEl = el('split-proj-name');
   var clientEl = el('split-client');
   if(nameEl){
@@ -601,6 +682,21 @@ function applySowSplitResponse(response){
 
   applyRevisionDiffFromResponse(tabs.revision_diff);
 
+  // Wire backend compliance into the engine's compliance panel.
+  // When tabs.compliance is present (set by the inline compliance check in POST /sow/split),
+  // adapt it to the engine's complianceResults shape and render the panel immediately —
+  // no need for the user to re-upload files in Section 2.
+  // The Section-2 manual check flow remains active and will override this if the user runs it.
+  if (tabs.compliance) {
+    var adapted = _adaptBackendCompliance(tabs.compliance);
+    if (adapted) {
+      complianceResults = adapted;
+      if (typeof renderCompliancePanel === 'function') renderCompliancePanel();
+    }
+  } else if (typeof renderComplianceView === 'function') {
+    renderComplianceView();
+  }
+
   splitActiveTrade = splitTrades[0] ? splitTrades[0].id : null;
   return true;
 }
@@ -802,7 +898,9 @@ async function runSplit(){
     if(typeof window.submitSowSplit !== 'function'){
       throw new Error('Split service is not ready. Please refresh the page.');
     }
-    var response = await window.submitSowSplit(sowProjectJobId, request);
+    var requestJobId = sowProjectJobId;
+    var response = await window.submitSowSplit(requestJobId, request);
+    if(requestJobId !== sowProjectJobId) return;
     console.log(response);
     completeSplitProcessingSteps();
     handleSowSplitResponseResult(response);
@@ -844,6 +942,10 @@ window.runLoadSavedSowSplit = async function(jobId, signal){
     return;
   }
 
+  if(trimmed !== sowProjectJobId){
+    return;
+  }
+
   beginSplitProcessing('Loading saved trade split…');
   startSplitStepAnimationFast();
 
@@ -854,6 +956,7 @@ window.runLoadSavedSowSplit = async function(jobId, signal){
     var response = await window.fetchSavedSowSplit(trimmed, signal);
     if(signal && signal.aborted) return;
     if(gen !== sowSplitLoadGeneration) return;
+    if(trimmed !== sowProjectJobId) return;
 
     console.log('[schedule-of-works] GET /sow/split', response);
     completeSplitProcessingSteps();
@@ -1474,6 +1577,7 @@ function switchResultTab(tab){
   if(tab==='schedule')renderScheduleView();
   if(tab==='workbook')renderWorkbookPanel();
   if(tab==='revision')renderRevisionPanel();
+  if(tab==='compliance')renderComplianceView();
 }
 
 // ── MAKE ALLOC BTN HELPER ─────────────────────────────────
@@ -1558,7 +1662,9 @@ async function applyScheduleAllocations(){
     if(typeof window.patchSowAllocations!=='function'){
       throw new Error('Allocation API is not available. Please refresh the page.');
     }
-    var response=await window.patchSowAllocations(sowProjectJobId,{changes:changes});
+    var requestJobId = sowProjectJobId;
+    var response=await window.patchSowAllocations(requestJobId,{changes:changes});
+    if(requestJobId !== sowProjectJobId) return;
     applyAllocationResponse(response);
   } catch(e) {
     alert(e && e.message ? e.message : 'Failed to apply allocation changes.');
@@ -1842,6 +1948,45 @@ async function runConvertToExcel() {
   }
 }
 
+// ── BACKEND COMPLIANCE ADAPTER ────────────────────────────
+// Maps tabs.compliance from the split API response into the engine's
+// complianceResults shape so renderCompliancePanel() renders real backend data.
+// The engine's own Section-2 file-upload flow (runComplianceCheck) is kept
+// unchanged below — this is an additional path, not a replacement.
+function _adaptBackendCompliance(bc) {
+  if (!bc || typeof bc !== 'object') return null;
+  var summary = bc.summary || {};
+  var byType  = bc.by_type  || {};
+
+  function mapIssue(iss) {
+    var label  = iss.nbs_code ? '[' + iss.nbs_code + '] ' + (iss.work_type || '') : (iss.work_type || '');
+    var clause = iss.item || iss.clause || '';
+    return {
+      name:           label + (clause ? ' — ' + clause : ''),
+      description:    iss.description || '',
+      severity:       (iss.severity || 'medium').toLowerCase(),
+      recommendation: ''
+    };
+  }
+
+  var missingFromSow = (byType.missing_from_sow  || []).map(mapIssue);
+  var orphanedInSow  = (byType.missing_from_spec || []).map(mapIssue);
+
+  return {
+    summary: {
+      sowItems:        summary.specs_checked    || 0,
+      specSections:    summary.specs_checked    || 0,
+      drawingRefs:     0,
+      missingFromSow:  summary.missing_from_sow  || missingFromSow.length,
+      orphanedInSow:   summary.missing_from_spec || orphanedInSow.length,
+      crossReferenced: 0
+    },
+    missingFromSow:  missingFromSow,
+    orphanedInSow:   orphanedInSow,
+    crossReferenced: []
+  };
+}
+
 // ── COMPLIANCE CHECK ──────────────────────────────────────
 var complianceResults = null;
 
@@ -1858,11 +2003,20 @@ async function runComplianceCheck() {
   el('split-empty').style.display='none';
   el('split-results').style.display='flex';
   switchResultTab('compliance');
-  el('compliance-panel').innerHTML = '<div style="padding:40px;text-align:center;color:var(--text-light)">'+
-    '<div style="font-size:32px;margin-bottom:12px;animation:spin 1s linear infinite;display:inline-block">&#8635;</div>'+
-    '<div style="font-size:14px;font-weight:600;margin-bottom:6px">AI is cross-referencing documents...</div>'+
-    '<div style="font-size:12.5px;color:var(--text-hint)">Comparing schedule of works against specification and drawing registers</div>'+
-    '</div>';
+  var compliancePanel = el('compliance-panel');
+  if(compliancePanel){
+    removeComplianceTransient();
+    var complianceExample = el('compliance-example');
+    if(complianceExample) complianceExample.style.display = 'none';
+    var loadDiv = document.createElement('div');
+    loadDiv.id = 'compliance-loading';
+    loadDiv.innerHTML = '<div style="padding:40px;text-align:center;color:var(--text-light)">'+
+      '<div style="font-size:32px;margin-bottom:12px;animation:spin 1s linear infinite;display:inline-block">&#8635;</div>'+
+      '<div style="font-size:14px;font-weight:600;margin-bottom:6px">AI is cross-referencing documents...</div>'+
+      '<div style="font-size:12.5px;color:var(--text-hint)">Comparing schedule of works against specification and drawing registers</div>'+
+      '</div>';
+    compliancePanel.appendChild(loadDiv);
+  }
 
   // Show result toolbar (minimal) if not already
   el('split-result-title').textContent = 'Compliance Check';
@@ -1932,8 +2086,15 @@ async function runComplianceCheck() {
     if(badge && total > 0){ badge.style.display='inline'; badge.textContent=total; }
 
   } catch(e) {
-    el('compliance-panel').innerHTML = '<div style="padding:32px;background:var(--red-bg);border:1px solid rgba(196,43,28,.2);border-radius:8px;color:var(--red)">'+
-      '<strong>Check failed:</strong> '+esc(e.message)+'. Please ensure your documents are readable and try again.</div>';
+    var errPanel = el('compliance-panel');
+    if(errPanel){
+      removeComplianceTransient();
+      var errDiv = document.createElement('div');
+      errDiv.id = 'compliance-empty-state';
+      errDiv.innerHTML = '<div style="padding:32px;background:var(--red-bg);border:1px solid rgba(196,43,28,.2);border-radius:8px;color:var(--red)">'+
+        '<strong>Check failed:</strong> '+esc(e.message)+'. Please ensure your documents are readable and try again.</div>';
+      errPanel.appendChild(errDiv);
+    }
   }
 
   btn.disabled = false;
@@ -1941,9 +2102,46 @@ async function runComplianceCheck() {
   updateCheckBtn();
 }
 
+function renderComplianceView(){
+  var panel = el('compliance-panel');
+  if(!panel) return;
+  if(complianceResults){
+    removeComplianceTransient();
+    renderCompliancePanel();
+    return;
+  }
+  removeComplianceTransient();
+  var ex = el('compliance-example');
+  if(splitTrades.length){
+    if(ex) ex.style.display = 'none';
+    var wrap = document.createElement('div');
+    wrap.id = 'compliance-empty-state';
+    wrap.innerHTML = sowTabEmptyStateHtml(
+      '&#128203;',
+      'No compliance records found',
+      'No compliance check results were returned for this project. Upload specification and drawing schedules in Section 2 and run a live check, or re-run AI Trade Split if compliance should be included automatically.'
+    );
+    panel.appendChild(wrap);
+    return;
+  }
+  if(ex){
+    ex.style.display = 'block';
+  } else {
+    var fallback = document.createElement('div');
+    fallback.id = 'compliance-empty-state';
+    fallback.innerHTML = sowTabEmptyStateHtml(
+      '&#128203;',
+      'No compliance data yet',
+      'Run AI Trade Split for this project, then use Section 2 to upload supporting documents and run a compliance check.'
+    );
+    panel.appendChild(fallback);
+  }
+}
+
 function renderCompliancePanel() {
   var panel = el('compliance-panel');
   if(!panel || !complianceResults) return;
+  removeComplianceTransient();
   // Hide example state
   var ex = el('compliance-example');
   if(ex) ex.style.display='none';
@@ -2470,11 +2668,27 @@ function renderRevisionPanel(){
   if(!panel) return;
   var ex = el('revision-example');
   if(!revisionResults){
-    if(ex) ex.style.display = 'block';
     var emptyPrev = panel.querySelector('#revision-live-results');
     if(emptyPrev) emptyPrev.remove();
+    var emptyState = panel.querySelector('#revision-empty-state');
+    if(emptyState) emptyState.remove();
+    if(splitTrades.length){
+      if(ex) ex.style.display = 'none';
+      var wrap = document.createElement('div');
+      wrap.id = 'revision-empty-state';
+      wrap.innerHTML = sowTabEmptyStateHtml(
+        '&#128260;',
+        'No revision comparison available',
+        'No revision diff was returned for this project. Upload a revised schedule in Section 3 and run a comparison, or re-run AI Trade Split if a revision should be included automatically.'
+      );
+      panel.appendChild(wrap);
+    } else if(ex){
+      ex.style.display = 'block';
+    }
     return;
   }
+  var emptyState = panel.querySelector('#revision-empty-state');
+  if(emptyState) emptyState.remove();
   if(ex) ex.style.display = 'none';
 
   var r = revisionResults;
@@ -2645,11 +2859,10 @@ resetSplit = function(){
   renderSupportingFilesList();
   updateCheckBtn();
   updateSec2Status();
-  // Clear compliance badge and panel — restore example state
+  // Clear compliance badge and panel — restore empty/example state
   var badge = el('compliance-count-badge');
   if(badge){ badge.style.display='none'; }
-  var ex = el('compliance-example');
-  if(ex) ex.style.display='block';
+  renderComplianceView();
   // Clear revision state — restore example
   clearRevFile();
   clearRevisionResults();

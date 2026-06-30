@@ -44,6 +44,7 @@ export function ScheduleOfWorksView() {
   const [engineError, setEngineError] = useState<string | null>(null);
   const [engineReady, setEngineReady] = useState(false);
   const engineReadyRef = useRef(false);
+  const lastProjectJobIdRef = useRef("");
   const {
     selectedProjectJobId,
     completedStepProjects,
@@ -108,6 +109,24 @@ export function ScheduleOfWorksView() {
   }, [engineReady, setNeedsProjectHighlight]);
 
   useEffect(() => {
+    const jobId = selectedProjectJobId.trim();
+    if (jobId === lastProjectJobIdRef.current) return;
+
+    lastProjectJobIdRef.current = jobId;
+    pendingSowFilesRef.current = { loading: Boolean(jobId), files: [] };
+
+    if (engineReadyRef.current) {
+      setSowFoundFilesLoading(Boolean(jobId));
+      setSowFoundFiles([]);
+      setSowProjectContext({
+        jobId,
+        projectName: completedStepProjectsRef.current.find((p) => p.job_id === jobId)
+          ?.project_name,
+      });
+    }
+  }, [selectedProjectJobId]);
+
+  useEffect(() => {
     if (!engineReady) return;
 
     const jobId = selectedProjectJobId.trim();
@@ -163,11 +182,6 @@ export function ScheduleOfWorksView() {
         applyPendingSowFindToEngine("");
       }
       return;
-    }
-
-    pendingSowFilesRef.current = { loading: true, files: [] };
-    if (engineReadyRef.current) {
-      setSowFoundFilesLoading(true);
     }
 
     const controller = new AbortController();
