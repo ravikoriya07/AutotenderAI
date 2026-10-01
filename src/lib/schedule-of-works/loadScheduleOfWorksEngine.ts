@@ -11,7 +11,7 @@ import type {
   SowAllocationsResponse,
 } from "@/services/sowService";
 
-const ENGINE_VERSION = "15";
+const ENGINE_VERSION = "16";
 const ENGINE_SRC = `/schedule-of-works/engine.js?v=${ENGINE_VERSION}`;
 const LOADED_FLAG = `__sowEngineLoaded_${ENGINE_VERSION}`;
 
@@ -78,14 +78,30 @@ export function resetSowModuleForProjectSwitch(): void {
   bridge?.();
 }
 
-export function setSowProjectContext(ctx: SowProjectContext): void {
+export function setSowProjectContext(
+  ctx: SowProjectContext,
+  options?: { preserveWork?: boolean }
+): void {
   if (typeof window === "undefined") return;
   const bridge = (
     window as Window & {
-      setSowProjectContext?: (context: SowProjectContext) => void;
+      setSowProjectContext?: (
+        context: SowProjectContext,
+        options?: { preserveWork?: boolean }
+      ) => void;
     }
   ).setSowProjectContext;
-  bridge?.(ctx);
+  bridge?.(ctx, options);
+}
+
+/** Starts the engine trade-split flow already wired to `submitSowSplit`. */
+export function runSowSplit(): void {
+  if (typeof window === "undefined") return;
+  const run = (window as Window & { runSplit?: () => void }).runSplit;
+  if (!run) {
+    throw new Error("Trade split is not ready. Please refresh the page.");
+  }
+  run();
 }
 
 export function setSowFoundFiles(files: SowFoundFile[]): void {

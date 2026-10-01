@@ -1,7 +1,9 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { Loader2 } from "lucide-react";
 import { SOW_BODY_HTML } from "@/components/schedule-of-works/sowBodyHtml";
+import { SowCreateProjectModal } from "@/components/schedule-of-works/SowCreateProjectModal";
 import { useResearchProject } from "@/contexts/ResearchProjectContext";
 import {
   cancelLoadSavedSowSplit,
@@ -13,11 +15,16 @@ import {
   registerSowWorkbookSubmit,
   registerSowWorkbookTemplateValidate,
   runLoadSavedSowSplit,
+  runSowSplit,
   setSowFoundFiles,
   setSowFoundFilesLoading,
   setSowProjectContext,
 } from "@/lib/schedule-of-works/loadScheduleOfWorksEngine";
 import { assertSowWorkbookTemplateContent } from "@/lib/schedule-of-works/validateSowWorkbookTemplate";
+import { requestProjectCatalogRefresh } from "@/lib/projectCatalogRefresh";
+import type { ProjectFormValues } from "@/lib/validations/projectFormSchema";
+import { createProject } from "@/services/projectService";
+import type { CreateProjectResponse } from "@/types/project";
 import {
   downloadSowExport,
   fetchSavedSowSplit,
@@ -43,12 +50,23 @@ export function ScheduleOfWorksView() {
   });
   const [engineError, setEngineError] = useState<string | null>(null);
   const [engineReady, setEngineReady] = useState(false);
+  const [createModalOpen, setCreateModalOpen] = useState(false);
+  const [creatingProject, setCreatingProject] = useState(false);
   const engineReadyRef = useRef(false);
   const lastProjectJobIdRef = useRef("");
+  /**
+   * Job id adopted from the create-project popup. Stays set until the user
+   * picks a different project, so a catalog refresh cannot clear the upload
+   * or start GET /sow/find and saved GET /sow/split mid-run.
+   */
+  const skipProjectSwitchJobIdRef = useRef<string | null>(null);
+  const creatingLockRef = useRef(false);
   const {
     selectedProjectJobId,
     completedStepProjects,
     setNeedsProjectHighlight,
+    setSelectedProjectJobId,
+    pinProject,
   } = useResearchProject();
   const completedStepProjectsRef = useRef(completedStepProjects);
   engineReadyRef.current = engineReady;
@@ -100,17 +118,36 @@ export function ScheduleOfWorksView() {
     };
   }, []);
 
-  useEffect(() => {
-    if (!engineReady) return;
+  function shouldHoldCreatedProject(jobId: string): boolean {
+    const held = skipProjectSwitchJobIdRef.current;
+    if (!held) return false;
+    if (held === jobId) return true;
+    skipProjectSwitchJobIdRef.current = null;
+    return false;
+  }
 
+  useEffect(() => {
     const onNeedsProject = () => setNeedsProjectHighlight(true);
+    const onRequestCreateProject = () => setCreateModalOpen(true);
     window.addEventListener("sow-needs-project", onNeedsProject);
-    return () => window.removeEventListener("sow-needs-project", onNeedsProject);
-  }, [engineReady, setNeedsProjectHighlight]);
+    window.addEventListener("sow-request-create-project", onRequestCreateProject);
+    return () => {
+      window.removeEventListener("sow-needs-project", onNeedsProject);
+      window.removeEventListener(
+        "sow-request-create-project",
+        onRequestCreateProject
+      );
+    };
+  }, [setNeedsProjectHighlight]);
 
   useEffect(() => {
     const jobId = selectedProjectJobId.trim();
     if (jobId === lastProjectJobIdRef.current) return;
+
+    if (shouldHoldCreatedProject(jobId)) {
+      lastProjectJobIdRef.current = jobId;
+      return;
+    }
 
     lastProjectJobIdRef.current = jobId;
     pendingSowFilesRef.current = { loading: Boolean(jobId), files: [] };
@@ -130,6 +167,7 @@ export function ScheduleOfWorksView() {
     if (!engineReady) return;
 
     const jobId = selectedProjectJobId.trim();
+    if (shouldHoldCreatedProject(jobId)) return;
     applyPendingSowFindToEngine(jobId);
   }, [engineReady, selectedProjectJobId, completedStepProjects]);
 
@@ -176,6 +214,8 @@ export function ScheduleOfWorksView() {
 
   useEffect(() => {
     const jobId = selectedProjectJobId.trim();
+    if (shouldHoldCreatedProject(jobId)) return;
+
     if (!jobId) {
       pendingSowFilesRef.current = { loading: false, files: [] };
       if (engineReadyRef.current) {
@@ -219,10 +259,44 @@ export function ScheduleOfWorksView() {
     return () => controller.abort();
   }, [selectedProjectJobId]);
 
+  async function handleCreateProject(values: ProjectFormValues) {
+    if (creatingLockRef.current) return;
+    creatingLockRef.current = true;
+    setCreatingProject(true);
+    try {
+      const opportunity = values.opportunity.trim();
+      const created = await createProject({
+        opportunity,
+        due_date: values.dueDate.trim() ? values.dueDate.trim() : "N/A",
+        status: values.status,
+      });
+      const jobId = jobIdFromCreateResponse(created);
+      if (!jobId) {
+        throw new Error("Project was created but no job id was returned.");
+      }
+
+      pinProject({ job_id: jobId, project_name: opportunity });
+      skipProjectSwitchJobIdRef.current = jobId;
+      setSowProjectContext(
+        { jobId, projectName: opportunity },
+        { preserveWork: true }
+      );
+      setSelectedProjectJobId(jobId);
+      requestProjectCatalogRefresh();
+      runSowSplit();
+      setCreateModalOpen(false);
+    } finally {
+      creatingLockRef.current = false;
+      setCreatingProject(false);
+    }
+  }
+
   useEffect(() => {
     if (!engineReady) return;
 
     const jobId = selectedProjectJobId.trim();
+    if (shouldHoldCreatedProject(jobId)) return;
+
     cancelLoadSavedSowSplit();
 
     if (!jobId) {
@@ -246,6 +320,18 @@ export function ScheduleOfWorksView() {
         className="flex h-full min-h-0 w-full flex-1"
         suppressHydrationWarning
       />
+      {creatingProject ? (
+        <div
+          className="absolute inset-0 z-20 flex items-center justify-center bg-background/80 p-6"
+          role="status"
+          aria-live="polite"
+        >
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+            Creating project and starting trade split…
+          </div>
+        </div>
+      ) : null}
       {engineError ? (
         <div className="absolute inset-0 z-10 flex items-center justify-center bg-background/90 p-6 text-sm text-destructive">
           {engineError}
@@ -259,6 +345,29 @@ export function ScheduleOfWorksView() {
           Loading Schedule of Works…
         </div>
       ) : null}
+      <SowCreateProjectModal
+        open={createModalOpen}
+        submitting={creatingProject}
+        onClose={() => {
+          if (!creatingProject) setCreateModalOpen(false);
+        }}
+        onSubmit={handleCreateProject}
+      />
     </div>
   );
+}
+
+function jobIdFromCreateResponse(data: CreateProjectResponse): string {
+  const record = data as CreateProjectResponse & { job_id?: unknown };
+  const fromJob = record.job_id;
+  const fromProject = record.project?.id;
+  const raw =
+    typeof fromJob === "string"
+      ? fromJob
+      : typeof fromJob === "number"
+        ? String(fromJob)
+        : typeof fromProject === "string"
+          ? fromProject
+          : "";
+  return raw.trim();
 }

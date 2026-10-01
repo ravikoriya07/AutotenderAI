@@ -20,6 +20,11 @@ type ResearchProjectContextValue = {
   /** Shared catalog for header + research/library/QTO (one GET /stats/completed-steps per route). */
   completedStepProjects: CompletedStepProject[];
   completedStepsLoading: boolean;
+  /**
+   * Keeps a just-created project in the Schedule of Works header list until
+   * GET /stats/completed-steps?step_name=initialized includes it.
+   */
+  pinProject: (project: CompletedStepProject) => void;
   /** True when user tried to submit without a project — triggers shake + error ring on the select. */
   needsProjectHighlight: boolean;
   setNeedsProjectHighlight: (v: boolean) => void;
@@ -35,6 +40,7 @@ export function ResearchProjectProvider({
 }) {
   const [selectedProjectJobId, setSelectedProjectJobIdState] = useState("");
   const [needsProjectHighlight, setNeedsProjectHighlight] = useState(false);
+  const [pinnedProjects, setPinnedProjects] = useState<CompletedStepProject[]>([]);
 
   useEffect(() => {
     try {
@@ -75,13 +81,41 @@ export function ResearchProjectProvider({
     onQuantityTakeOffRoute ||
     onScheduleOfWorksRoute;
 
-  const { projects: completedStepProjects, loading: completedStepsLoading } =
+  const catalogStepName = onScheduleOfWorksRoute
+    ? "initialized"
+    : onResearchRoute || onQuantityTakeOffRoute
+      ? "upload_to_neo4j"
+      : undefined;
+
+  const { projects: fetchedProjects, loading: completedStepsLoading } =
     useCompletedStepProjects({
       enabled: needsCompletedStepsCatalog,
-      ...(onResearchRoute || onQuantityTakeOffRoute || onScheduleOfWorksRoute
-        ? { stepName: "upload_to_neo4j" }
-        : {}),
+      ...(catalogStepName ? { stepName: catalogStepName } : {}),
     });
+
+  const pinProject = useCallback((project: CompletedStepProject) => {
+    const jobId = project.job_id.trim();
+    const projectName = project.project_name.trim() || "Unnamed project";
+    if (!jobId) return;
+    setPinnedProjects((prev) => {
+      if (prev.some((item) => item.job_id === jobId)) return prev;
+      return [...prev, { job_id: jobId, project_name: projectName }];
+    });
+  }, []);
+
+  const completedStepProjects = useMemo(() => {
+    if (!onScheduleOfWorksRoute || pinnedProjects.length === 0) {
+      return fetchedProjects;
+    }
+    const seen = new Set(fetchedProjects.map((project) => project.job_id));
+    const extras = pinnedProjects.filter((project) => !seen.has(project.job_id));
+    if (extras.length === 0) return fetchedProjects;
+    return [...fetchedProjects, ...extras].sort((a, b) =>
+      a.project_name.localeCompare(b.project_name, undefined, {
+        sensitivity: "base",
+      })
+    );
+  }, [onScheduleOfWorksRoute, fetchedProjects, pinnedProjects]);
 
   const value = useMemo(
     () => ({
@@ -89,6 +123,7 @@ export function ResearchProjectProvider({
       setSelectedProjectJobId,
       completedStepProjects,
       completedStepsLoading,
+      pinProject,
       needsProjectHighlight,
       setNeedsProjectHighlight,
     }),
@@ -97,6 +132,7 @@ export function ResearchProjectProvider({
       setSelectedProjectJobId,
       completedStepProjects,
       completedStepsLoading,
+      pinProject,
       needsProjectHighlight,
     ]
   );

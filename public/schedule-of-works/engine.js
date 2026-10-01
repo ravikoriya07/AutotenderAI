@@ -219,7 +219,7 @@ window.setSowTradeSplitOptions = setSowTradeSplitOptions;
 function updateSplitRunBtnState(){
   var btn = el('split-run-btn');
   if(!btn) return;
-  btn.disabled = sowSplitProcessing || !sowProjectJobId;
+  btn.disabled = sowSplitProcessing;
   if(sowSplitProcessing){
     btn.textContent = 'Running AI Trade Split…';
   } else {
@@ -236,7 +236,7 @@ function updateSplitRunBtnState(){
     } else {
       hint.textContent = sowProjectJobId
         ? 'AI reads the schedule and identifies trade packages'
-        : 'Select a project in the header to run';
+        : 'No project selected — add one when you run, or pick one in the header';
       hint.style.color = '';
     }
   }
@@ -318,10 +318,11 @@ var sowBoundProjectJobId = '';
 
 window.resetSowModuleForProjectSwitch = resetSowModuleForProjectSwitch;
 
-window.setSowProjectContext = function(ctx){
+window.setSowProjectContext = function(ctx, options){
   var newJobId = (ctx && ctx.jobId) ? String(ctx.jobId).trim() : '';
+  var preserveWork = Boolean(options && options.preserveWork);
   if(newJobId !== sowBoundProjectJobId){
-    resetSowModuleForProjectSwitch();
+    if(!preserveWork) resetSowModuleForProjectSwitch();
     sowBoundProjectJobId = newJobId;
   }
   sowProjectJobId = newJobId;
@@ -874,14 +875,14 @@ function stepError(i,msg){
 }
 
 async function runSplit(){
-  if(!sowProjectJobId){
-    window.dispatchEvent(new CustomEvent('sow-needs-project'));
-    return;
-  }
-
   var source = getSowSplitSource();
   if(!source){
     showSplitValidation('Please select a schedule from EMS or upload a document in Step 1.');
+    return;
+  }
+
+  if(!sowProjectJobId){
+    window.dispatchEvent(new CustomEvent('sow-request-create-project'));
     return;
   }
 
@@ -909,6 +910,8 @@ async function runSplit(){
     failSplitProcessing(e && e.message ? e.message : 'Trade split failed. Please try again.');
   }
 }
+
+window.runSplit = runSplit;
 
 function buildSplitRequest(source){
   var splitOptions = getSowTradeSplitOptions();

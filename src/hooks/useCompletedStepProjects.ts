@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { PROJECT_CATALOG_REFRESH_EVENT } from "@/lib/projectCatalogRefresh";
 import {
   fetchCompletedSteps,
@@ -24,6 +24,8 @@ export function useCompletedStepProjects(options?: UseCompletedStepProjectsOptio
   const [completedSteps, setCompletedSteps] = useState<CompletedStepStat[]>([]);
   const [loading, setLoading] = useState(() => enabled);
   const [refreshToken, setRefreshToken] = useState(0);
+  /** Last query that successfully loaded, so a refresh can keep the dropdown visible. */
+  const loadedQueryRef = useRef<string | null>(null);
 
   useEffect(() => {
     function onCatalogRefresh() {
@@ -49,17 +51,22 @@ export function useCompletedStepProjects(options?: UseCompletedStepProjectsOptio
     if (!enabled) {
       setLoading(false);
       setCompletedSteps([]);
+      loadedQueryRef.current = null;
       return;
     }
+    const queryKey = stepName ?? "";
+    const keepVisibleList = loadedQueryRef.current === queryKey;
     let cancelled = false;
-    setLoading(true);
+    if (!keepVisibleList) setLoading(true);
     void (async () => {
       try {
         /** No AbortSignal: shared in-flight + Strict Mode unmount was cancelling the only GET. */
         const rows = await fetchCompletedSteps({
           ...(stepName ? { stepName } : {}),
         });
-        if (!cancelled) setCompletedSteps(rows);
+        if (cancelled) return;
+        setCompletedSteps(rows);
+        loadedQueryRef.current = queryKey;
       } finally {
         if (!cancelled) setLoading(false);
       }
