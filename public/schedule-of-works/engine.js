@@ -128,6 +128,9 @@ function toggleSowFoundFile(index, checked){
     sowSelectedFileIndex = -1;
   }
   renderSowFoundFilesList();
+  if(splitFile) return;
+  if(checked && sowSelectedFileIndex === index) requestSowSheets();
+  else clearSowSheetPicker();
 }
 
 window.setSowFoundFiles = function(files){
@@ -135,6 +138,7 @@ window.setSowFoundFiles = function(files){
   sowSelectedFileIndex = -1;
   sowFoundFilesLoading = false;
   renderSowFoundFilesList();
+  if(!splitFile) clearSowSheetPicker();
 };
 
 window.setSowFoundFilesLoading = function(loading){
@@ -275,6 +279,7 @@ function resetSowSection1UploadUi(){
   if(convertStatus) convertStatus.textContent = '';
   if(el('sec1-status')) el('sec1-status').textContent = '';
   if(el('sec1-num')) el('sec1-num').className = 'section-num done';
+  clearSowSheetPicker();
 }
 
 function resetSowModuleForProjectSwitch(){
@@ -498,9 +503,10 @@ function setSplitFile(f){
   // Mark section 1 done, then collapse after short delay
   el('sec1-num').className = 'section-num done';
   el('sec1-status').textContent = f.name.length > 18 ? f.name.substring(0,16)+'…' : f.name;
-  setTimeout(function(){ collapseSection('sec1'); }, 800);
+  expandSection('sec1');
 
   updateCheckBtn();
+  requestSowSheets();
 }
 
 function clearSowFile(){
@@ -515,6 +521,7 @@ function clearSowFile(){
   expandSection('sec1');
   updateCheckBtn();
   renderSowFoundFilesList();
+  clearSowSheetPicker();
 }
 
 function showSplitValidation(msg){
@@ -540,6 +547,209 @@ function getSowSplitSource(){
   }
   return null;
 }
+
+var sowSheetOptions = [];
+var sowSelectedSheetIndexes = {};
+var sowSheetsLoading = false;
+var sowSheetsLoaded = false;
+var sowSheetsError = '';
+var sowSheetsRequestId = 0;
+var sowSheetsAbort = null;
+var sowSheetsMenuOpen = false;
+
+function selectedSowSheetIndexes(){
+  return Object.keys(sowSelectedSheetIndexes)
+    .map(function(key){ return Number(key); })
+    .filter(function(index){ return sowSelectedSheetIndexes[index]; })
+    .sort(function(a, b){ return a - b; });
+}
+
+function clearSowSheetPicker(){
+  sowSheetsRequestId += 1;
+  if(sowSheetsAbort){
+    sowSheetsAbort.abort();
+    sowSheetsAbort = null;
+  }
+  sowSheetOptions = [];
+  sowSelectedSheetIndexes = {};
+  sowSheetsLoading = false;
+  sowSheetsLoaded = false;
+  sowSheetsError = '';
+  sowSheetsMenuOpen = false;
+  renderSowSheetPicker();
+}
+
+function sowSheetsReadyForRun(){
+  if(sowSheetsLoading){
+    showSplitValidation('Sheets are still loading. Please wait.');
+    return false;
+  }
+  if(sowSheetsError){
+    showSplitValidation(sowSheetsError);
+    return false;
+  }
+  if(!sowSheetOptions.length){
+    showSplitValidation('No sheets were found for this file.');
+    return false;
+  }
+  if(!selectedSowSheetIndexes().length){
+    showSplitValidation('Select at least one sheet.');
+    return false;
+  }
+  return true;
+}
+
+function updateSowSheetToggleLabel(){
+  var button = el('sow-sheet-toggle');
+  if(!button) return;
+  var selected = sowSheetOptions.filter(function(sheet){
+    return sowSelectedSheetIndexes[sheet.index];
+  });
+  if(!selected.length){
+    button.textContent = 'Select sheets';
+    return;
+  }
+  var names = selected.map(function(sheet){ return sheet.name; });
+  button.textContent = names.length <= 2 ? names.join(', ') : names.length + ' sheets selected';
+}
+
+function renderSowSheetPicker(){
+  var picker = el('sow-sheet-picker');
+  var button = el('sow-sheet-toggle');
+  var menu = el('sow-sheet-menu');
+  var message = el('sow-sheet-message');
+  if(!picker || !button || !menu || !message) return;
+
+  var visible = sowSheetsLoading || sowSheetsLoaded || Boolean(sowSheetsError);
+  picker.style.display = visible ? 'block' : 'none';
+  menu.style.display = sowSheetsMenuOpen && sowSheetOptions.length ? 'block' : 'none';
+  button.disabled = sowSheetsLoading || !sowSheetOptions.length;
+
+  if(sowSheetsLoading){
+    button.textContent = 'Loading sheets…';
+    menu.innerHTML = '';
+    message.textContent = '';
+    message.className = 'sow-sheet-picker__message';
+    return;
+  }
+
+  if(sowSheetsError){
+    button.textContent = 'Select sheets';
+    menu.innerHTML = '';
+    message.textContent = sowSheetsError;
+    message.className = 'sow-sheet-picker__message sow-sheet-picker__message--error';
+    return;
+  }
+
+  message.textContent = sowSheetOptions.length ? '' : 'No sheets were found for this file.';
+  message.className = sowSheetOptions.length
+    ? 'sow-sheet-picker__message'
+    : 'sow-sheet-picker__message sow-sheet-picker__message--error';
+
+  menu.innerHTML = sowSheetOptions.map(function(sheet){
+    var checked = sowSelectedSheetIndexes[sheet.index] ? ' checked' : '';
+    return '<label class="sow-sheet-picker__option">'+
+      '<input type="checkbox" value="'+sheet.index+'"'+checked+'>'+
+      '<span>'+esc(sheet.name)+'</span>'+
+    '</label>';
+  }).join('');
+  updateSowSheetToggleLabel();
+  if(visible) expandSection('sec1');
+}
+
+function toggleSowSheetMenu(event){
+  if(event){
+    event.preventDefault();
+    event.stopPropagation();
+  }
+  if(sowSheetsLoading || !sowSheetOptions.length) return;
+  sowSheetsMenuOpen = !sowSheetsMenuOpen;
+  var menu = el('sow-sheet-menu');
+  if(menu) menu.style.display = sowSheetsMenuOpen ? 'block' : 'none';
+  if(sowSheetsMenuOpen) expandSection('sec1');
+}
+
+function onSowSheetMenuChange(event){
+  var input = event && event.target;
+  if(!input || input.type !== 'checkbox') return;
+  var index = Number(input.value);
+  if(!Number.isFinite(index)) return;
+  if(input.checked) sowSelectedSheetIndexes[index] = true;
+  else delete sowSelectedSheetIndexes[index];
+  updateSowSheetToggleLabel();
+  clearSplitValidation();
+}
+
+function requestSowSheets(){
+  var source = getSowSplitSource();
+  if(!source){
+    clearSowSheetPicker();
+    return;
+  }
+  if(source.type === 'existing' && !sowProjectJobId){
+    sowSheetsLoading = false;
+    sowSheetsError = 'Select a project before loading sheets for an EMS file.';
+    sowSheetOptions = [];
+    sowSelectedSheetIndexes = {};
+    renderSowSheetPicker();
+    return;
+  }
+
+  if(sowSheetsAbort) sowSheetsAbort.abort();
+  var controller = new AbortController();
+  sowSheetsAbort = controller;
+  var requestId = ++sowSheetsRequestId;
+  sowSheetsLoading = true;
+  sowSheetsLoaded = false;
+  sowSheetsError = '';
+  sowSheetOptions = [];
+  sowSelectedSheetIndexes = {};
+  sowSheetsMenuOpen = false;
+  renderSowSheetPicker();
+  expandSection('sec1');
+
+  var request = source.type === 'upload'
+    ? { type: 'upload', file: source.file, jobId: sowProjectJobId || undefined }
+    : { type: 'existing', jobId: sowProjectJobId, filePath: source.file_path };
+
+  if(typeof window.fetchSowSheets !== 'function'){
+    sowSheetsLoading = false;
+    sowSheetsError = 'Sheet service is not ready. Please refresh the page.';
+    renderSowSheetPicker();
+    return;
+  }
+
+  window.fetchSowSheets(request, controller.signal).then(function(response){
+    if(requestId !== sowSheetsRequestId) return;
+    sowSheetsLoading = false;
+    sowSheetsLoaded = true;
+    sowSheetsError = '';
+    var sheets = response && Array.isArray(response.sheets) ? response.sheets : [];
+    sowSheetOptions = sheets.filter(function(sheet){
+      return sheet && sheet.name && Number.isFinite(Number(sheet.index));
+    }).map(function(sheet){
+      return { name: String(sheet.name), index: Number(sheet.index), hidden: Boolean(sheet.hidden) };
+    });
+    renderSowSheetPicker();
+  }).catch(function(err){
+    if(requestId !== sowSheetsRequestId) return;
+    if(err && (err.name === 'AbortError' || err.code === 'ERR_CANCELED')) return;
+    sowSheetsLoading = false;
+    sowSheetsLoaded = true;
+    sowSheetOptions = [];
+    sowSheetsError = err && err.message ? err.message : 'Could not load sheets.';
+    renderSowSheetPicker();
+  });
+}
+
+document.addEventListener('click', function(event){
+  if(!sowSheetsMenuOpen) return;
+  var picker = el('sow-sheet-picker');
+  if(picker && event.target && picker.contains(event.target)) return;
+  sowSheetsMenuOpen = false;
+  var menu = el('sow-sheet-menu');
+  if(menu) menu.style.display = 'none';
+});
 
 function renderSplitProcessingSteps(){
   var steps=[
@@ -881,6 +1091,8 @@ async function runSplit(){
     return;
   }
 
+  if(!sowSheetsReadyForRun()) return;
+
   if(!sowProjectJobId){
     window.dispatchEvent(new CustomEvent('sow-request-create-project'));
     return;
@@ -919,7 +1131,8 @@ function buildSplitRequest(source){
     type: source.type,
     method: splitOptions.method,
     inclPrelims: splitOptions.inclPrelims,
-    inclBwic: splitOptions.inclBwic
+    inclBwic: splitOptions.inclBwic,
+    sheet_indexes: selectedSowSheetIndexes()
   };
   if(source.type === 'existing'){
     request.file_path = source.file_path;
@@ -2592,6 +2805,7 @@ async function runRevisionCompare(){
     alert('Please ensure the original schedule source is still available in Step 1.');
     return;
   }
+  if(!sowSheetsReadyForRun()) return;
 
   var btn = el('rev-compare-btn');
   btn.disabled = true;

@@ -77,15 +77,51 @@ export type SowSplitExistingRequest = SowTradeSplitOptions &
   SowSplitSupportingFiles & {
     type: "existing";
     file_path: string;
+    /** Checked sheet indexes from POST /sow/sheets, sent once as a JSON array. */
+    sheet_indexes: number[];
   };
 
 export type SowSplitUploadRequest = SowTradeSplitOptions &
   SowSplitSupportingFiles & {
     type: "upload";
     file: File;
+    /** Checked sheet indexes from POST /sow/sheets, sent once as a JSON array. */
+    sheet_indexes: number[];
   };
 
 export type SowSplitRequest = SowSplitExistingRequest | SowSplitUploadRequest;
+
+function sowErrorMessage(body: unknown): string | null {
+  if (!body || typeof body !== "object") return null;
+  const data = body as {
+    message?: unknown;
+    error?: unknown;
+    detail?: unknown;
+  };
+  if (typeof data.message === "string" && data.message.trim()) {
+    return data.message.trim();
+  }
+  if (typeof data.error === "string" && data.error.trim()) {
+    return data.error.trim();
+  }
+  if (typeof data.detail === "string" && data.detail.trim()) {
+    return data.detail.trim();
+  }
+  if (Array.isArray(data.detail)) {
+    const parts = data.detail
+      .map((entry) => {
+        if (typeof entry === "string") return entry;
+        if (entry && typeof entry === "object" && "msg" in entry) {
+          const msg = (entry as { msg?: unknown }).msg;
+          return typeof msg === "string" ? msg : "";
+        }
+        return "";
+      })
+      .filter((value) => value.trim().length > 0);
+    if (parts.length > 0) return parts.join("; ");
+  }
+  return null;
+}
 
 function appendOptionalSplitFiles(
   formData: FormData,
@@ -98,16 +134,15 @@ function appendOptionalSplitFiles(
   }
 }
 
-async function parseSowApiError(res: Response): Promise<string> {
-  let detail = `Trade split failed (${res.status})`;
+async function parseSowApiError(
+  res: Response,
+  fallback?: string
+): Promise<string> {
+  let detail = fallback ?? `Trade split failed (${res.status})`;
   try {
     const contentType = res.headers.get("content-type") ?? "";
     if (contentType.includes("application/json")) {
-      const body = (await res.json()) as Record<string, unknown>;
-      const message =
-        (typeof body.message === "string" && body.message) ||
-        (typeof body.error === "string" && body.error) ||
-        (typeof body.detail === "string" && body.detail);
+      const message = sowErrorMessage(await res.json());
       if (message) detail = message;
     } else {
       const text = await res.text();
@@ -134,26 +169,7 @@ async function sowBlobLooksLikeJsonError(blob: Blob): Promise<boolean> {
 async function messageFromSowJsonBlob(blob: Blob): Promise<string | null> {
   try {
     const text = await blob.text();
-    const data = JSON.parse(text) as {
-      message?: string;
-      detail?: string | { msg?: string }[];
-      error?: string;
-    };
-    if (typeof data.message === "string" && data.message.trim()) {
-      return data.message.trim();
-    }
-    if (typeof data.error === "string" && data.error.trim()) {
-      return data.error.trim();
-    }
-    if (typeof data.detail === "string" && data.detail.trim()) {
-      return data.detail.trim();
-    }
-    if (Array.isArray(data.detail)) {
-      const parts = data.detail
-        .map((entry) => (typeof entry === "string" ? entry : entry?.msg))
-        .filter((value): value is string => typeof value === "string" && value.trim().length > 0);
-      if (parts.length > 0) return parts.join("; ");
-    }
+    return sowErrorMessage(JSON.parse(text));
   } catch {
     /* ignore */
   }
@@ -371,6 +387,14 @@ export async function submitSowSplit(
   formData.append("method", request.method);
   formData.append("inclPrelims", String(request.inclPrelims));
   formData.append("inclBwic", String(request.inclBwic));
+
+  const sheetIndexes = request.sheet_indexes
+    .map((index) => Number(index))
+    .filter((index) => Number.isInteger(index) && index >= 0);
+  if (!sheetIndexes.length) {
+    throw new Error("Select at least one sheet.");
+  }
+  formData.append("sheet_indexes", JSON.stringify(sheetIndexes));
 
   if (request.type === "existing") {
     const filePath = request.file_path.trim();
@@ -643,4 +667,108 @@ export async function fetchSowByJobId(
   );
 
   return data;
+}
+
+export type SowSheetItem = {
+  name: string;
+  index: number;
+  hidden: boolean;
+};
+
+export type SowSheetsResponse = {
+  status: string;
+  file_name: string;
+  sheets: SowSheetItem[];
+};
+
+export type SowSheetsRequest =
+  | { type: "upload"; file: File; jobId?: string }
+  | { type: "existing"; jobId: string; filePath: string };
+
+function normalizeSowSheetItem(raw: unknown, fallbackIndex: number): SowSheetItem | null {
+  if (!raw || typeof raw !== "object") return null;
+  const row = raw as Record<string, unknown>;
+  const indexRaw = row.index;
+  const index =
+    typeof indexRaw === "number" && Number.isFinite(indexRaw)
+      ? indexRaw
+      : typeof indexRaw === "string" && indexRaw.trim() !== "" && Number.isFinite(Number(indexRaw))
+        ? Number(indexRaw)
+        : fallbackIndex;
+  const name =
+    typeof row.name === "string" && row.name.trim()
+      ? row.name.trim()
+      : `Sheet ${index}`;
+  return {
+    name,
+    index,
+    hidden: row.hidden === true,
+  };
+}
+
+function normalizeSowSheetsResponse(raw: unknown): SowSheetsResponse {
+  const record =
+    raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  const list = Array.isArray(record.sheets) ? record.sheets : [];
+  return {
+    status: typeof record.status === "string" ? record.status : "",
+    file_name: typeof record.file_name === "string" ? record.file_name : "",
+    sheets: list
+      .map((item, index) => normalizeSowSheetItem(item, index))
+      .filter((item): item is SowSheetItem => item !== null),
+  };
+}
+
+/**
+ * Lists workbook sheets for a schedule file.
+ * POST /sow/sheets (multipart/form-data)
+ */
+export async function fetchSowSheets(
+  request: SowSheetsRequest,
+  signal?: AbortSignal
+): Promise<SowSheetsResponse> {
+  if (!API_BASE_URL) {
+    throw new Error("API base URL is not configured.");
+  }
+
+  const formData = new FormData();
+  formData.append("type", request.type);
+
+  if (request.type === "upload") {
+    formData.append("file", request.file);
+    const jobId = request.jobId?.trim();
+    if (jobId) formData.append("job_id", jobId);
+  } else {
+    const jobId = request.jobId.trim();
+    const filePath = request.filePath.trim();
+    if (!jobId) {
+      throw new Error("A project is required to load sheets for an EMS file.");
+    }
+    if (!filePath) {
+      throw new Error("Selected EMS file path is missing.");
+    }
+    formData.append("job_id", jobId);
+    formData.append("file_path", filePath);
+  }
+
+  const token = getAuthToken();
+  const res = await fetch(`${API_BASE_URL}/sow/sheets`, {
+    method: "POST",
+    headers: {
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: formData,
+    signal,
+  });
+
+  if (!res.ok) {
+    throw new Error(await parseSowApiError(res, `Could not load sheets (${res.status})`));
+  }
+
+  const raw: unknown = await res.json();
+  const normalized = normalizeSowSheetsResponse(raw);
+  if (normalized.status && normalized.status !== "success") {
+    throw new Error("Could not load sheets.");
+  }
+  return normalized;
 }

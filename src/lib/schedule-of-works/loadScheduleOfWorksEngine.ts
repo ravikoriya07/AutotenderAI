@@ -1,5 +1,7 @@
 import type {
   SowFoundFile,
+  SowSheetsRequest,
+  SowSheetsResponse,
   SowSplitRequest,
   SowSplitResponse,
   SowTradeSplitOptions,
@@ -11,7 +13,7 @@ import type {
   SowAllocationsResponse,
 } from "@/services/sowService";
 
-const ENGINE_VERSION = "16";
+const ENGINE_VERSION = "18";
 const ENGINE_SRC = `/schedule-of-works/engine.js?v=${ENGINE_VERSION}`;
 const LOADED_FLAG = `__sowEngineLoaded_${ENGINE_VERSION}`;
 
@@ -149,6 +151,24 @@ export type SowSplitSubmitHandler = (
   request: SowSplitRequest,
   signal?: AbortSignal
 ) => Promise<SowSplitResponse>;
+
+export type SowSheetsFetchHandler = (
+  request: SowSheetsRequest,
+  signal?: AbortSignal
+) => Promise<SowSheetsResponse>;
+
+export function registerSowSheetsFetch(
+  handler: SowSheetsFetchHandler
+): () => void {
+  if (typeof window === "undefined") return () => undefined;
+  const win = window as Window & {
+    fetchSowSheets?: SowSheetsFetchHandler;
+  };
+  win.fetchSowSheets = handler;
+  return () => {
+    delete win.fetchSowSheets;
+  };
+}
 
 export function registerSowSplitSubmit(
   handler: SowSplitSubmitHandler

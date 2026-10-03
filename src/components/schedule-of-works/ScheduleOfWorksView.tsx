@@ -12,6 +12,7 @@ import {
   registerSowDownloadExport,
   registerSowSplitLoad,
   registerSowSplitSubmit,
+  registerSowSheetsFetch,
   registerSowWorkbookSubmit,
   registerSowWorkbookTemplateValidate,
   runLoadSavedSowSplit,
@@ -29,6 +30,7 @@ import {
   downloadSowExport,
   fetchSavedSowSplit,
   fetchSowByJobId,
+  fetchSowSheets,
   patchSowAllocations,
   submitSowSplit,
   submitSowWorkbook,
@@ -175,6 +177,12 @@ export function ScheduleOfWorksView() {
     return registerSowWorkbookTemplateValidate(async (file) => {
       await assertSowWorkbookTemplateContent(file);
     });
+  }, []);
+
+  useEffect(() => {
+    return registerSowSheetsFetch((request, signal) =>
+      fetchSowSheets(request, signal)
+    );
   }, []);
 
   useEffect(() => {
