@@ -295,6 +295,8 @@ export type SowFullScheduleItem = {
   section?: string;
   tradeId?: string;
   tradeLabel?: string;
+  overarching_trade?: string;
+  match_confidence?: string;
 };
 
 export type SowSharedItemTrade = {

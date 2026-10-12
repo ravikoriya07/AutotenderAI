@@ -13,7 +13,7 @@ import type {
   SowAllocationsResponse,
 } from "@/services/sowService";
 
-const ENGINE_VERSION = "18";
+const ENGINE_VERSION = "22";
 const ENGINE_SRC = `/schedule-of-works/engine.js?v=${ENGINE_VERSION}`;
 const LOADED_FLAG = `__sowEngineLoaded_${ENGINE_VERSION}`;
 

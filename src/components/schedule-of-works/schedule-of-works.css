@@ -135,6 +135,49 @@
   white-space: nowrap;
 }
 
+.sow-module #schedule-panel .schedule-confidence-legend {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.sow-module #schedule-panel .schedule-confidence-legend__label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-light);
+}
+
+.sow-module #schedule-panel .schedule-confidence-legend__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-mid);
+  white-space: nowrap;
+}
+
+.sow-module #schedule-panel .schedule-confidence-legend__item::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
+.sow-module #schedule-panel .schedule-confidence-legend__item--high::before {
+  background: var(--green);
+}
+
+.sow-module #schedule-panel .schedule-confidence-legend__item--medium::before {
+  background: #e07a00;
+}
+
+.sow-module #schedule-panel .schedule-confidence-legend__item--low::before {
+  background: var(--red);
+}
+
 .sow-module #schedule-panel .schedule-sheet-wrap {
   flex: 1;
   min-height: 0;
@@ -144,9 +187,9 @@
 
 .sow-module #schedule-panel .schedule-sheet {
   display: grid;
-  grid-template-columns: 36px 64px minmax(140px, 1fr) 52px 56px minmax(170px, 220px);
+  grid-template-columns: 36px 64px minmax(140px, 1fr) 52px 56px minmax(130px, 180px) minmax(170px, 220px);
   width: 100%;
-  min-width: 720px;
+  min-width: 860px;
   font-family: Arial, sans-serif;
   font-size: 12px;
   align-items: stretch;
@@ -213,6 +256,36 @@
   background: #eceef4;
 }
 
+.sow-module #schedule-panel .schedule-cell.schedule-cell--confidence-high,
+.sow-module #schedule-panel .schedule-cell--num.schedule-cell--confidence-high,
+.sow-module #schedule-panel .schedule-cell--num.schedule-cell--alt.schedule-cell--confidence-high {
+  background: #dff6e6;
+}
+
+.sow-module #schedule-panel .schedule-cell.schedule-cell--confidence-medium,
+.sow-module #schedule-panel .schedule-cell--num.schedule-cell--confidence-medium,
+.sow-module #schedule-panel .schedule-cell--num.schedule-cell--alt.schedule-cell--confidence-medium {
+  background: #fff0d6;
+}
+
+.sow-module #schedule-panel .schedule-cell.schedule-cell--confidence-low,
+.sow-module #schedule-panel .schedule-cell--num.schedule-cell--confidence-low,
+.sow-module #schedule-panel .schedule-cell--num.schedule-cell--alt.schedule-cell--confidence-low {
+  background: #fde2df;
+}
+
+.sow-module #schedule-panel .schedule-cell--num.schedule-cell--confidence-high {
+  box-shadow: inset 3px 0 0 var(--green);
+}
+
+.sow-module #schedule-panel .schedule-cell--num.schedule-cell--confidence-medium {
+  box-shadow: inset 3px 0 0 #e07a00;
+}
+
+.sow-module #schedule-panel .schedule-cell--num.schedule-cell--confidence-low {
+  box-shadow: inset 3px 0 0 var(--red);
+}
+
 .sow-module #schedule-panel .schedule-cell--ref {
   justify-content: center;
   font-size: 11px;
@@ -234,6 +307,14 @@
   justify-content: center;
   font-size: 11px;
   color: #666;
+}
+
+.sow-module #schedule-panel .schedule-cell--overarching {
+  font-size: 11px;
+  color: #1a1a2e;
+  line-height: 1.35;
+  white-space: normal;
+  word-break: break-word;
 }
 
 .sow-module #schedule-panel .schedule-cell--trade {

@@ -853,8 +853,16 @@ function normalizeFullScheduleItem(item){
     unit: item.unit || '',
     section: item.section || '',
     tradeId: item.tradeId || '',
-    tradeLabel: item.tradeLabel || ''
+    tradeLabel: item.tradeLabel || '',
+    overarching_trade: item.overarching_trade || item.overarchingTrade || '',
+    match_confidence: normalizeMatchConfidence(item.match_confidence || item.matchConfidence)
   };
+}
+
+function normalizeMatchConfidence(value){
+  var key = String(value || '').trim().toLowerCase();
+  if(key === 'high' || key === 'medium' || key === 'low') return key;
+  return '';
 }
 
 function applySowSplitResponse(response){
@@ -882,7 +890,9 @@ function applySowSplitResponse(response){
           unit: item.unit,
           section: item.section || t.section || t.label,
           tradeId: t.id,
-          tradeLabel: t.label
+          tradeLabel: t.label,
+          overarching_trade: item.overarching_trade || item.overarchingTrade || '',
+          match_confidence: normalizeMatchConfidence(item.match_confidence || item.matchConfidence)
         });
       });
     });
@@ -1894,6 +1904,12 @@ async function applyScheduleAllocations(){
   }
 }
 
+function scheduleCellText(value){
+  if(value == null) return '-';
+  var text = String(value).trim();
+  return text ? text : '-';
+}
+
 function renderScheduleView(){
   var panel=el('schedule-panel');
   if(!panel)return;
@@ -1904,7 +1920,9 @@ function renderScheduleView(){
     splitTrades.forEach(function(t){
       (t.items||[]).forEach(function(item){
         allItems.push({ref:item.ref,desc:item.desc,qty:item.qty,unit:item.unit,
-          section:item.section||t.label,tradeId:t.id,tradeLabel:t.label});
+          section:item.section||t.label,tradeId:t.id,tradeLabel:t.label,
+          overarching_trade:item.overarching_trade||item.overarchingTrade||'',
+          match_confidence:normalizeMatchConfidence(item.match_confidence||item.matchConfidence)});
       });
     });
   }
@@ -1920,6 +1938,7 @@ function renderScheduleView(){
     sections[item.section].push(item);
   });
   var unallocCount=allItems.filter(function(i){return i.tradeId==='unallocated';}).length;
+  var hasMatchConfidence=allItems.some(function(i){return normalizeMatchConfidence(i.match_confidence);});
 
   panel.innerHTML='';
   var wrap=document.createElement('div');
@@ -1933,6 +1952,14 @@ function renderScheduleView(){
     '<span style="font-size:12px;color:var(--text-light);margin-left:10px">'+allItems.length+' items &middot; '+sectionOrder.length+' sections'+
     (unallocCount>0?' &middot; <span style="color:var(--red);font-weight:600">'+unallocCount+' unallocated</span>':'')+
     '</span></div>'+
+    (hasMatchConfidence
+      ? '<div class="schedule-confidence-legend" title="Row colour shows how confident the trade match is">'+
+          '<span class="schedule-confidence-legend__label">Match</span>'+
+          '<span class="schedule-confidence-legend__item schedule-confidence-legend__item--high">High</span>'+
+          '<span class="schedule-confidence-legend__item schedule-confidence-legend__item--medium">Medium</span>'+
+          '<span class="schedule-confidence-legend__item schedule-confidence-legend__item--low">Low</span>'+
+        '</div>'
+      : '')+
     '<div class="schedule-toolbar-hint">Change any dropdown to reassign</div>'+
     '<button class="btn btn-secondary btn-sm" data-schedule-discard disabled onclick="resetScheduleChanges()">Discard</button>'+
     '<button class="btn btn-primary btn-sm" data-schedule-apply style="background:var(--green)" disabled onclick="applyScheduleAllocations()">&#10003; Apply Changes</button>'+
@@ -1945,7 +1972,7 @@ function renderScheduleView(){
   var sheet=document.createElement('div');
   sheet.className='schedule-sheet';
 
-  ['','Ref','Description','Qty','Unit','Trade Allocation'].forEach(function(h){
+  ['','Ref','Description','Qty','Unit','Overarching Trade','Trade Allocation'].forEach(function(h){
     var d=document.createElement('div');
     d.className='schedule-head-cell';
     d.textContent=h;
@@ -1967,35 +1994,44 @@ function renderScheduleView(){
       var displayTradeId=scheduleChanges[item.ref]!=null?scheduleChanges[item.ref]:savedTradeId;
       var col=TRADE_COLOURS[displayTradeId]||{bg:'#F0F0F5',border:'#9BA3BF',text:'#4A5272'};
       var isUnalloc=displayTradeId==='unallocated';
+      var confidence=normalizeMatchConfidence(item.match_confidence);
       var altClass=rowNum%2===0?'':' schedule-cell--alt';
+      var confidenceClass=confidence?' schedule-cell--confidence-'+confidence:'';
+      var rowClass=altClass+confidenceClass;
 
       var n=document.createElement('div');
-      n.className='schedule-cell schedule-cell--num'+altClass;
+      n.className='schedule-cell schedule-cell--num'+rowClass;
       n.textContent=rowNum;
+      if(confidence) n.title='Match confidence: '+confidence.charAt(0).toUpperCase()+confidence.slice(1);
       sheet.appendChild(n);
 
       var r=document.createElement('div');
-      r.className='schedule-cell schedule-cell--ref'+altClass;
-      r.textContent=item.ref;
+      r.className='schedule-cell schedule-cell--ref'+rowClass;
+      r.textContent=scheduleCellText(item.ref);
       sheet.appendChild(r);
 
       var d=document.createElement('div');
-      d.className='schedule-cell schedule-cell--desc'+altClass;
-      d.textContent=item.desc;
+      d.className='schedule-cell schedule-cell--desc'+rowClass;
+      d.textContent=scheduleCellText(item.desc);
       sheet.appendChild(d);
 
       var q=document.createElement('div');
-      q.className='schedule-cell schedule-cell--qty'+altClass;
-      q.textContent=item.qty!=null?item.qty:'';
+      q.className='schedule-cell schedule-cell--qty'+rowClass;
+      q.textContent=scheduleCellText(item.qty);
       sheet.appendChild(q);
 
       var u=document.createElement('div');
-      u.className='schedule-cell schedule-cell--unit'+altClass;
-      u.textContent=item.unit||'';
+      u.className='schedule-cell schedule-cell--unit'+rowClass;
+      u.textContent=scheduleCellText(item.unit);
       sheet.appendChild(u);
 
+      var ot=document.createElement('div');
+      ot.className='schedule-cell schedule-cell--overarching'+rowClass;
+      ot.textContent=scheduleCellText(item.overarching_trade);
+      sheet.appendChild(ot);
+
       var tc=document.createElement('div');
-      tc.className='schedule-cell schedule-cell--trade'+altClass;
+      tc.className='schedule-cell schedule-cell--trade'+rowClass;
       var swatch=document.createElement('div');
       swatch.className='schedule-trade-swatch';
       swatch.style.background=col.text;
