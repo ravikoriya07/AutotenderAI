@@ -55,6 +55,7 @@ var sowSplitLoadGeneration = 0;
 var sowFullSchedule = [];
 var sowSplitResponse = null;
 var SHARED_ITEMS = [];
+var sowSharedItemRemoving = false;
 
 function updateSowEmsSectionStatus(){
   if(splitFile) return;
@@ -289,6 +290,7 @@ function resetSowModuleForProjectSwitch(){
 
   supportingFiles = { spec: [], dwg: [] };
   renderSupportingFilesList();
+  clearSowSupportingDocuments();
   updateSec2Status();
   updateCheckBtn();
 
@@ -826,14 +828,70 @@ function normalizeTradeDocument(trade){
   };
 }
 
+function hiddenSharedStorageKey(){
+  return 'sow-hidden-shared:' + (sowProjectJobId || '');
+}
+
+function readHiddenSharedIds(){
+  try {
+    var raw = sessionStorage.getItem(hiddenSharedStorageKey());
+    var ids = raw ? JSON.parse(raw) : [];
+    return Array.isArray(ids) ? ids : [];
+  } catch (e) {
+    return [];
+  }
+}
+
+function writeHiddenSharedIds(ids){
+  try {
+    sessionStorage.setItem(hiddenSharedStorageKey(), JSON.stringify(ids));
+  } catch (e) {}
+}
+
+function rememberHiddenSharedId(id){
+  if(!id) return;
+  var ids = readHiddenSharedIds();
+  if(ids.indexOf(id) < 0) ids.push(id);
+  writeHiddenSharedIds(ids);
+}
+
+function forgetHiddenSharedId(id){
+  if(!id) return;
+  writeHiddenSharedIds(readHiddenSharedIds().filter(function(saved){ return saved !== id; }));
+}
+
+function isActiveSharedItem(item){
+  if(!item) return false;
+  var flag = item.is_shared;
+  var explicitlyShared = flag === true || String(flag).toLowerCase() === 'true';
+  var explicitlyHidden = flag === false || flag === 0 || String(flag).toLowerCase() === 'false';
+  var trades = Array.isArray(item.trades) ? item.trades : [];
+  var tradeCount = item.trade_count != null && item.trade_count !== '' ? Number(item.trade_count) : null;
+  var onlyOneTrade = trades.length === 1 || (tradeCount != null && !isNaN(tradeCount) && tradeCount < 2);
+  if(explicitlyShared && trades.length >= 2){
+    forgetHiddenSharedId(item.id);
+    return true;
+  }
+  if(explicitlyHidden || onlyOneTrade){
+    rememberHiddenSharedId(item.id);
+    return false;
+  }
+  if(item.id && readHiddenSharedIds().indexOf(item.id) >= 0) return false;
+  return true;
+}
+
 function normalizeSharedItem(item){
   if(!item) return null;
   return {
     id: item.id || '',
     ref: item.ref || '',
     desc: item.desc || '',
+    version: Number.isFinite(Number(item.version)) ? Number(item.version) : 0,
+    is_shared: !(item.is_shared === false || item.is_shared === 0 || String(item.is_shared).toLowerCase() === 'false'),
+    trade_count: item.trade_count != null && item.trade_count !== '' ? Number(item.trade_count) : (Array.isArray(item.trades) ? item.trades.length : 0),
     trades: Array.isArray(item.trades) ? item.trades.map(function(t){
       return {
+        trade_id: t.trade_id || t.tradeId || '',
         trade: t.trade || '',
         nbs: t.nbs || '',
         lead: Boolean(t.lead),
@@ -899,7 +957,7 @@ function applySowSplitResponse(response){
   }
 
   var shared = Array.isArray(tabs.shared_items) ? tabs.shared_items : [];
-  SHARED_ITEMS = shared.map(normalizeSharedItem).filter(function(i){ return i && i.ref; });
+  SHARED_ITEMS = shared.filter(isActiveSharedItem).map(normalizeSharedItem).filter(function(i){ return i && i.ref; });
 
   applyRevisionDiffFromResponse(tabs.revision_diff);
 
@@ -1217,12 +1275,13 @@ function updateSplitResultSummary(){
   if(subEl) subEl.textContent=totalItems+' line items across '+splitTrades.length+' pricing documents';
 }
 
-function updateSharedCountBadge(){
+function updateSharedCountBadge(count){
   var badge=el('shared-count-badge');
   if(!badge) return;
-  badge.textContent=SHARED_ITEMS.length;
-  badge.style.display=SHARED_ITEMS.length>0?'':'none';
-  badge.style.background=SHARED_ITEMS.length>0?'var(--amber-bg)':'var(--bg)';
+  var total = typeof count === 'number' ? count : SHARED_ITEMS.length;
+  badge.textContent=total;
+  badge.style.display=total>0?'':'none';
+  badge.style.background=total>0?'var(--amber-bg)':'var(--bg)';
 }
 
 function showSplitResults(){
@@ -1561,10 +1620,10 @@ function renderSharedItems(){
       '</div>';
 
     var editBtn=document.createElement('button');
-    editBtn.textContent='Edit';
+    editBtn.textContent='Add';
     editBtn.style.cssText='flex-shrink:0;background:transparent;border:1px solid var(--border);border-radius:4px;padding:5px 10px;font-size:12px;font-weight:600;cursor:pointer;color:var(--text-mid);font-family:DM Sans,sans-serif';
     editBtn.setAttribute('data-item-id', item.id);
-    editBtn.onclick=function(){editLeadTrade(this.getAttribute('data-item-id'));};
+    editBtn.onclick=function(){ openAddSharedTrade(item); };
     hdr.appendChild(editBtn);
     card.appendChild(hdr);
 
@@ -1573,14 +1632,33 @@ function renderSharedItems(){
       var col=resolveSharedTradeColor(t.trade);
       var isLead=t.lead;
       var row=document.createElement('div');
-      row.style.cssText='padding:13px 18px;border-bottom:1px solid var(--border);background:'+(isLead?'rgba(196,123,0,.04)':'rgba(15,108,189,.03)')+';border-left:3px solid '+(isLead?'var(--amber)':'var(--blue)');
-      row.innerHTML='<div style="display:flex;align-items:center;gap:8px;margin-bottom:7px">'+
-          '<span style="font-size:11px;font-weight:700;padding:2px 9px;border-radius:10px;background:'+col+'18;color:'+col+';border:1px solid '+col+'28">'+(isLead?'&#9733; LEAD':'SUPPORTING')+'</span>'+
-          '<span style="font-size:13px;font-weight:600;color:var(--text)">'+esc(t.trade)+'</span>'+
-          '<span style="font-size:11px;color:var(--text-hint)">'+esc(t.nbs)+'</span>'+
-        '</div>'+
-        '<div style="font-size:12.5px;color:var(--text-mid);line-height:1.6;margin-bottom:6px"><strong style="color:var(--text)">Scope: </strong>'+esc(t.scope)+'</div>'+
-        '<div style="font-size:11.5px;font-style:italic;color:'+(isLead?'var(--amber)':'var(--blue)')+'">'+esc(t.note)+'</div>';
+      row.className='sow-shared-trade'+(isLead?' sow-shared-trade--lead':'');
+      var top=document.createElement('div');
+      top.className='sow-shared-trade__head'+(isLead?'':' sow-shared-trade__head--delete');
+      top.innerHTML='<span class="sow-shared-trade__badge" style="background:'+col+'18;color:'+col+';border-color:'+col+'28">'+(isLead?'&#9733; LEAD':'SUPPORTING')+'</span>'+
+          '<span class="sow-shared-trade__name">'+esc(t.trade)+'</span>'+
+          '<span class="sow-shared-trade__code">'+esc(t.nbs)+'</span>';
+      row.appendChild(top);
+      if(!isLead){
+        var del=document.createElement('button');
+        del.type='button';
+        del.className='sow-shared-delete';
+        del.setAttribute('aria-label', 'Remove '+t.trade);
+        del.title='Remove';
+        del.innerHTML='<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>';
+        del.onclick=function(){ removeSharedItemTrade(item, t, del); };
+        row.appendChild(del);
+      }
+      var scope=document.createElement('div');
+      scope.style.cssText='font-size:12.5px;color:var(--text-mid);line-height:1.6;margin-bottom:6px';
+      scope.innerHTML='<strong style="color:var(--text)">Scope: </strong>'+esc(t.scope);
+      row.appendChild(scope);
+      if(t.note){
+        var noteLine=document.createElement('div');
+        noteLine.style.cssText='font-size:11.5px;font-style:italic;color:'+(isLead?'var(--amber)':'var(--blue)');
+        noteLine.textContent=t.note;
+        row.appendChild(noteLine);
+      }
 
       // Editable note field
       var noteWrap=document.createElement('div');
@@ -1599,8 +1677,433 @@ function renderSharedItems(){
   });
 }
 
-function editLeadTrade(itemId){
-  alert('In the full version, you can reassign which trade leads and which supports, and override the AI-detected scope split for each trade.');
+function sowDialog(options){
+  if(typeof window.sowDialog === 'function') return window.sowDialog(options);
+  if(options && options.showCancelButton){
+    return Promise.resolve({ isConfirmed: confirm(options.text || options.title || '') });
+  }
+  alert((options && (options.text || options.title)) || '');
+  return Promise.resolve({ isConfirmed: true });
+}
+
+function sharedTradeId(trade){
+  if(trade && trade.trade_id) return String(trade.trade_id);
+  var match = splitTrades.find(function(t){ return t.label === trade.trade; });
+  return match && match.id ? String(match.id) : '';
+}
+
+function applySharedItemPatch(itemId, response){
+  var nextRaw = response && response.shared_item ? response.shared_item : null;
+  var next = nextRaw ? normalizeSharedItem(nextRaw) : null;
+  var active = nextRaw ? isActiveSharedItem(nextRaw) : false;
+  var index = -1;
+  SHARED_ITEMS.forEach(function(item, i){
+    if(item.id === itemId || (next && next.ref && item.ref === next.ref)) index = i;
+  });
+  if(!active){
+    rememberHiddenSharedId(itemId);
+    if(next && next.id) rememberHiddenSharedId(next.id);
+    if(index >= 0) SHARED_ITEMS.splice(index, 1);
+  } else if(next){
+    forgetHiddenSharedId(itemId);
+    if(next.id) forgetHiddenSharedId(next.id);
+    if(index >= 0) SHARED_ITEMS[index] = next;
+    else SHARED_ITEMS.push(next);
+  }
+  if(sowSplitResponse && sowSplitResponse.tabs && Array.isArray(sowSplitResponse.tabs.shared_items)){
+    sowSplitResponse.tabs.shared_items = sowSplitResponse.tabs.shared_items.filter(isActiveSharedItem);
+  }
+  updateSharedCountBadge();
+  renderSharedItems();
+}
+
+async function removeSharedItemTrade(item, trade, button){
+  if(!item || !trade || sowSharedItemRemoving) return;
+  var tradeId = sharedTradeId(trade);
+  if(!tradeId){
+    await sowDialog({
+      title: 'Cannot remove trade',
+      text: 'This trade cannot be removed because its id is missing.',
+      icon: 'error',
+      confirmButtonText: 'OK'
+    });
+    return;
+  }
+  if(!sowProjectJobId){
+    window.dispatchEvent(new CustomEvent('sow-needs-project'));
+    await sowDialog({
+      title: 'Select a project',
+      text: 'Select a project before removing a trade.',
+      icon: 'warning',
+      confirmButtonText: 'OK'
+    });
+    return;
+  }
+  var confirmed = await sowDialog({
+    title: 'Remove trade?',
+    text: 'Remove '+trade.trade+' from '+(item.desc || item.ref || 'this shared item')+'?',
+    icon: 'warning',
+    showCancelButton: true,
+    confirmButtonText: 'Remove',
+    cancelButtonText: 'Cancel'
+  });
+  if(!confirmed || !confirmed.isConfirmed) return;
+
+  var remaining = (item.trades || []).filter(function(t){ return t !== trade; }).map(function(t){
+    return { trade_id: sharedTradeId(t) };
+  }).filter(function(t){ return t.trade_id; });
+  if(!remaining.length){
+    await sowDialog({
+      title: 'Cannot remove trade',
+      text: 'At least one trade must remain.',
+      icon: 'warning',
+      confirmButtonText: 'OK'
+    });
+    return;
+  }
+
+  sowSharedItemRemoving = true;
+  if(button){
+    button.disabled = true;
+    button.classList.add('is-busy');
+    button.setAttribute('aria-label', 'Removing '+trade.trade);
+  }
+  try {
+    if(typeof window.patchSowSharedItem !== 'function'){
+      throw new Error('Shared item service is not ready. Please refresh the page.');
+    }
+    var request = { trades: remaining };
+    if(Number.isFinite(Number(item.version))) request.expected_version = Number(item.version);
+    var response = await window.patchSowSharedItem(sowProjectJobId, item.id, request);
+    applySharedItemPatch(item.id, response);
+  } catch(e) {
+    await sowDialog({
+      title: 'Could not remove trade',
+      text: e && e.message ? e.message : 'Could not remove this trade.',
+      icon: 'error',
+      confirmButtonText: 'OK'
+    });
+    if(button){
+      button.disabled = false;
+      button.classList.remove('is-busy');
+      button.setAttribute('aria-label', 'Remove '+trade.trade);
+    }
+  } finally {
+    sowSharedItemRemoving = false;
+  }
+}
+
+function sharedAddChoices(item){
+  var attached = {};
+  (item.trades || []).forEach(function(trade){
+    var id = sharedTradeId(trade);
+    if(id) attached[id] = true;
+  });
+  return splitTrades.filter(function(trade){
+    if(!trade || !trade.id || trade.unallocated || trade.id === 'unallocated') return false;
+    if(attached[String(trade.id)]) return false;
+    return sharedScopeRows(trade).length > 0;
+  });
+}
+
+function sharedScopeRows(trade){
+  var items = trade && Array.isArray(trade.items) ? trade.items : [];
+  return items.filter(function(row){
+    return String((row && (row.desc || row.description)) || '').trim();
+  });
+}
+
+function sharedTradeChoiceLabel(trade){
+  var codes = Array.isArray(trade.nbs) ? trade.nbs.filter(Boolean).join('/') : '';
+  return codes ? trade.label + ' (' + codes + ')' : (trade.label || trade.id);
+}
+
+function closeAddSharedTrade(){
+  var node = document.getElementById('sow-shared-add-modal');
+  if(node) node.remove();
+  document.removeEventListener('keydown', onAddSharedTradeKey);
+}
+
+function onAddSharedTradeKey(e){
+  if(e.key === 'Escape' && !sowSharedItemRemoving) closeAddSharedTrade();
+}
+
+function createSharedPicker(placeholder){
+  var root = document.createElement('div');
+  root.className = 'sow-shared-add__picker';
+  var button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'sow-shared-add__picker-btn';
+  var label = document.createElement('span');
+  label.className = 'sow-shared-add__picker-label is-placeholder';
+  label.textContent = placeholder;
+  var caret = document.createElement('span');
+  caret.className = 'sow-shared-add__picker-caret';
+  caret.setAttribute('aria-hidden', 'true');
+  caret.textContent = '\u25BE';
+  button.appendChild(label);
+  button.appendChild(caret);
+  var list = document.createElement('div');
+  list.className = 'sow-shared-add__picker-list';
+  list.hidden = true;
+  root.appendChild(button);
+  root.appendChild(list);
+  var state = { value: '', scope: '', disabled: false, placeholder: placeholder, onChange: null };
+  function close(){
+    list.hidden = true;
+    root.classList.remove('is-open');
+  }
+  function open(){
+    if(state.disabled || !list.childElementCount) return;
+    var openPickers = document.querySelectorAll('.sow-shared-add__picker.is-open');
+    Array.prototype.forEach.call(openPickers, function(node){
+      if(node === root) return;
+      node.classList.remove('is-open');
+      var other = node.querySelector('.sow-shared-add__picker-list');
+      if(other) other.hidden = true;
+    });
+    list.hidden = false;
+    root.classList.add('is-open');
+  }
+  button.onclick = function(e){
+    e.stopPropagation();
+    if(list.hidden) open();
+    else close();
+  };
+  return {
+    root: root,
+    close: close,
+    getValue: function(){ return state.value; },
+    getScope: function(){ return state.scope; },
+    setDisabled: function(disabled){
+      state.disabled = disabled;
+      button.disabled = disabled;
+      if(disabled) close();
+    },
+    onChange: function(fn){ state.onChange = fn; },
+    setPlaceholder: function(text){
+      state.placeholder = text;
+      if(!state.value){
+        label.textContent = text;
+        label.classList.add('is-placeholder');
+      }
+    },
+    setOptions: function(options){
+      list.innerHTML = '';
+      state.value = '';
+      state.scope = '';
+      label.textContent = state.placeholder;
+      label.classList.add('is-placeholder');
+      close();
+      options.forEach(function(opt){
+        var row = document.createElement('button');
+        row.type = 'button';
+        row.className = 'sow-shared-add__picker-option';
+        row.textContent = opt.label;
+        row.onclick = function(e){
+          e.stopPropagation();
+          state.value = opt.value;
+          state.scope = opt.scope || '';
+          label.textContent = opt.label;
+          label.classList.remove('is-placeholder');
+          close();
+          if(state.onChange) state.onChange();
+        };
+        list.appendChild(row);
+      });
+    }
+  };
+}
+
+function openAddSharedTrade(item){
+  if(!item || sowSharedItemRemoving) return;
+  closeAddSharedTrade();
+  var choices = sharedAddChoices(item);
+  var modal = document.createElement('div');
+  modal.id = 'sow-shared-add-modal';
+  modal.className = 'sow-shared-add';
+  var panel = document.createElement('div');
+  panel.className = 'sow-shared-add__panel';
+  var title = document.createElement('div');
+  title.className = 'sow-shared-add__title';
+  title.textContent = 'Add trade';
+  var subtitle = document.createElement('p');
+  subtitle.className = 'sow-shared-add__subtitle';
+  subtitle.textContent = (item.ref ? item.ref + ' ' : '') + (item.desc || 'Shared item');
+  panel.appendChild(title);
+  panel.appendChild(subtitle);
+
+  if(!choices.length){
+    var empty = document.createElement('p');
+    empty.className = 'sow-shared-add__empty';
+    empty.textContent = 'No other trades with scope items are available to add.';
+    panel.appendChild(empty);
+  }
+
+  var tradeLabel = document.createElement('label');
+  tradeLabel.className = 'sow-shared-add__label';
+  tradeLabel.textContent = 'Trade';
+  var tradePicker = createSharedPicker('Select a trade');
+  tradePicker.setOptions(choices.map(function(trade, index){
+    return { value: String(index), label: sharedTradeChoiceLabel(trade) };
+  }));
+  tradePicker.setDisabled(!choices.length);
+
+  var scopeLabel = document.createElement('label');
+  scopeLabel.className = 'sow-shared-add__label';
+  scopeLabel.textContent = 'Scope';
+  var scopePicker = createSharedPicker('Select a trade first');
+  scopePicker.setDisabled(true);
+
+  var noteLabel = document.createElement('label');
+  noteLabel.className = 'sow-shared-add__label';
+  noteLabel.textContent = 'Coordination note';
+  var noteInput = document.createElement('input');
+  noteInput.type = 'text';
+  noteInput.className = 'sow-shared-add__control';
+  noteInput.placeholder = 'Optional';
+  noteInput.disabled = !choices.length;
+
+  tradePicker.onChange(function(){
+    var trade = choices[Number(tradePicker.getValue())];
+    scopePicker.setPlaceholder(trade ? 'Select a scope' : 'Select a trade first');
+    scopePicker.setDisabled(!trade);
+    scopePicker.setOptions(trade ? sharedScopeRows(trade).map(function(row, index){
+      var desc = String(row.desc || row.description || '').trim();
+      var ref = row.ref ? String(row.ref) : '';
+      return { value: String(index), label: ref ? ref + ' — ' + desc : desc, scope: desc };
+    }) : []);
+    updateAddSharedTradeSave();
+  });
+  scopePicker.onChange(updateAddSharedTradeSave);
+
+  var actions = document.createElement('div');
+  actions.className = 'sow-shared-add__actions';
+  var cancel = document.createElement('button');
+  cancel.type = 'button';
+  cancel.className = 'sow-shared-add__cancel';
+  cancel.textContent = 'Cancel';
+  cancel.onclick = closeAddSharedTrade;
+  var save = document.createElement('button');
+  save.type = 'button';
+  save.className = 'sow-shared-add__save';
+  save.textContent = 'Save';
+  save.disabled = true;
+  var status = document.createElement('div');
+  status.className = 'sow-shared-add__status';
+  status.hidden = true;
+  var statusSpin = document.createElement('span');
+  statusSpin.className = 'sow-shared-add__spinner';
+  statusSpin.setAttribute('aria-hidden', 'true');
+  var statusText = document.createElement('span');
+  statusText.textContent = 'Saving this trade…';
+  status.appendChild(statusSpin);
+  status.appendChild(statusText);
+  save.onclick = function(){ saveAddedSharedTrade(item, choices, tradePicker, scopePicker, noteInput, save, cancel, status); };
+  actions.appendChild(cancel);
+  actions.appendChild(save);
+
+  function updateAddSharedTradeSave(){
+    save.disabled = !choices[Number(tradePicker.getValue())] || !scopePicker.getScope() || sowSharedItemRemoving;
+  }
+
+  if(choices.length){
+    panel.appendChild(tradeLabel);
+    panel.appendChild(tradePicker.root);
+    panel.appendChild(scopeLabel);
+    panel.appendChild(scopePicker.root);
+    panel.appendChild(noteLabel);
+    panel.appendChild(noteInput);
+  }
+  panel.appendChild(status);
+  panel.appendChild(actions);
+  panel.addEventListener('click', function(){
+    tradePicker.close();
+    scopePicker.close();
+  });
+  modal.appendChild(panel);
+  modal.addEventListener('click', function(e){
+    if(e.target === modal && !sowSharedItemRemoving) closeAddSharedTrade();
+  });
+  document.addEventListener('keydown', onAddSharedTradeKey);
+  document.body.appendChild(modal);
+}
+
+async function saveAddedSharedTrade(item, choices, tradePicker, scopePicker, noteInput, save, cancel, status){
+  if(!item || sowSharedItemRemoving) return;
+  var trade = choices[Number(tradePicker.getValue())];
+  var scope = scopePicker.getScope();
+  var note = noteInput.value.trim();
+  if(!trade || !scope) return;
+  if(!sowProjectJobId){
+    window.dispatchEvent(new CustomEvent('sow-needs-project'));
+    await sowDialog({
+      title: 'Select a project',
+      text: 'Select a project before adding a trade.',
+      icon: 'warning',
+      confirmButtonText: 'OK'
+    });
+    return;
+  }
+  var missingId = (item.trades || []).some(function(row){ return !sharedTradeId(row); });
+  if(missingId){
+    await sowDialog({
+      title: 'Cannot add trade',
+      text: 'An attached trade is missing its id.',
+      icon: 'error',
+      confirmButtonText: 'OK'
+    });
+    return;
+  }
+
+  var trades = (item.trades || []).map(function(row){
+    return { trade_id: sharedTradeId(row) };
+  });
+  var added = { trade_id: String(trade.id), scope: scope };
+  if(note) added.note = note;
+  trades.push(added);
+
+  sowSharedItemRemoving = true;
+  save.disabled = true;
+  save.classList.add('is-saving');
+  save.textContent = '';
+  var saveSpin = document.createElement('span');
+  saveSpin.className = 'sow-shared-add__spinner';
+  saveSpin.setAttribute('aria-hidden', 'true');
+  save.appendChild(saveSpin);
+  save.appendChild(document.createTextNode('Saving…'));
+  cancel.disabled = true;
+  tradePicker.setDisabled(true);
+  scopePicker.setDisabled(true);
+  noteInput.disabled = true;
+  if(status) status.hidden = false;
+  try {
+    if(typeof window.patchSowSharedItem !== 'function'){
+      throw new Error('Shared item service is not ready. Please refresh the page.');
+    }
+    var request = { trades: trades };
+    if(Number.isFinite(Number(item.version))) request.expected_version = Number(item.version);
+    var response = await window.patchSowSharedItem(sowProjectJobId, item.id, request);
+    closeAddSharedTrade();
+    applySharedItemPatch(item.id, response);
+  } catch(e) {
+    await sowDialog({
+      title: 'Could not add trade',
+      text: e && e.message ? e.message : 'Could not add this trade.',
+      icon: 'error',
+      confirmButtonText: 'OK'
+    });
+    save.disabled = false;
+    save.classList.remove('is-saving');
+    save.textContent = 'Save';
+    cancel.disabled = false;
+    tradePicker.setDisabled(false);
+    scopePicker.setDisabled(!tradePicker.getValue());
+    noteInput.disabled = false;
+    if(status) status.hidden = true;
+  } finally {
+    sowSharedItemRemoving = false;
+  }
 }
 
 // Override showSplitResults to also update shared badge and flag items in trade previews
@@ -2088,6 +2591,171 @@ window.applyScheduleAllocations = applyScheduleAllocations;
 
 // ── SUPPORTING FILES (SPEC & DRAWINGS) ───────────────────
 var supportingFiles = { spec: [], dwg: [] };
+var sowSupportingSpecs = [];
+var sowSupportingDrawings = [];
+var sowSupportingDocsLoading = false;
+var sowSupportingDocsReady = false;
+var sowSupportingDocsError = '';
+var sowSupportingDocsModalKind = '';
+
+function sowSupportingDocNames(list){
+  if(!Array.isArray(list)) return [];
+  return list.map(function(item){
+    if(typeof item === 'string') return item.trim();
+    return item && item.file_name ? String(item.file_name).trim() : '';
+  }).filter(Boolean);
+}
+
+function sowSupportingDocsForKind(kind){
+  return kind === 'drawings' ? sowSupportingDrawings : sowSupportingSpecs;
+}
+
+function sowSupportingDocsTitle(kind){
+  return kind === 'drawings' ? 'Drawings' : 'Specifications';
+}
+
+function closeSowSupportingDocsModal(){
+  sowSupportingDocsModalKind = '';
+  var modal = document.getElementById('sow-supporting-docs-modal');
+  if(modal) modal.remove();
+}
+
+function renderSowSupportingDocsModalList(){
+  var list = document.getElementById('sow-supporting-docs-modal-list');
+  var empty = document.getElementById('sow-supporting-docs-modal-empty');
+  var count = document.getElementById('sow-supporting-docs-modal-count');
+  var input = document.getElementById('sow-supporting-docs-modal-search');
+  if(!list || !sowSupportingDocsModalKind) return;
+  var names = sowSupportingDocsForKind(sowSupportingDocsModalKind);
+  var query = input && input.value ? input.value.trim().toLowerCase() : '';
+  var shown = !query ? names : names.filter(function(name){
+    return name.toLowerCase().indexOf(query) !== -1;
+  });
+  list.innerHTML = shown.map(function(name){
+    return '<div class="sow-supporting-modal__item">'+esc(name)+'</div>';
+  }).join('');
+  list.style.display = shown.length ? 'block' : 'none';
+  if(empty){
+    empty.style.display = shown.length ? 'none' : 'block';
+    empty.textContent = names.length
+      ? 'No matching files'
+      : (sowSupportingDocsModalKind === 'drawings' ? 'No drawings' : 'No specifications');
+  }
+  if(count){
+    count.textContent = query && shown.length !== names.length
+      ? shown.length + ' of ' + names.length
+      : names.length + (names.length === 1 ? ' file' : ' files');
+  }
+}
+
+function openSowSupportingDocsModal(kind){
+  if(sowSupportingDocsLoading || !sowSupportingDocsReady) return;
+  closeSowSupportingDocsModal();
+  sowSupportingDocsModalKind = kind === 'drawings' ? 'drawings' : 'specifications';
+  var title = sowSupportingDocsTitle(sowSupportingDocsModalKind);
+  var total = sowSupportingDocsForKind(sowSupportingDocsModalKind).length;
+  var modal = document.createElement('div');
+  modal.id = 'sow-supporting-docs-modal';
+  modal.className = 'sow-supporting-modal';
+  modal.innerHTML =
+    '<div class="sow-supporting-modal__panel" role="dialog" aria-modal="true">'+
+      '<div class="sow-supporting-modal__header">'+
+        '<div class="sow-supporting-modal__title">'+esc(title)+' ('+total+')</div>'+
+        '<button type="button" class="sow-supporting-modal__close" onclick="closeSowSupportingDocsModal()" aria-label="Close">&times;</button>'+
+      '</div>'+
+      '<div class="sow-supporting-modal__body">'+
+        '<input id="sow-supporting-docs-modal-search" class="sow-supporting-modal__search" type="search" placeholder="Search filename" oninput="filterSowSupportingDocsModal()">'+
+        '<div id="sow-supporting-docs-modal-count" class="sow-supporting-modal__count"></div>'+
+        '<div id="sow-supporting-docs-modal-list" class="sow-supporting-modal__list"></div>'+
+        '<div id="sow-supporting-docs-modal-empty" class="sow-supporting-modal__empty" style="display:none"></div>'+
+      '</div>'+
+    '</div>';
+  modal.addEventListener('click', function(event){
+    if(event.target === modal) closeSowSupportingDocsModal();
+  });
+  var host = document.body;
+  host.appendChild(modal);
+  renderSowSupportingDocsModalList();
+  var input = document.getElementById('sow-supporting-docs-modal-search');
+  if(input) input.focus();
+}
+
+window.openSowSupportingDocsModal = openSowSupportingDocsModal;
+window.closeSowSupportingDocsModal = closeSowSupportingDocsModal;
+window.filterSowSupportingDocsModal = renderSowSupportingDocsModalList;
+
+function renderSowSupportingDocuments(){
+  var root = el('sow-supporting-docs');
+  var specBtn = el('sow-supporting-specs-btn');
+  var drawingBtn = el('sow-supporting-drawings-btn');
+  var message = el('sow-supporting-docs-message');
+  if(!root || !specBtn || !drawingBtn || !message) return;
+
+  var visible = sowSupportingDocsLoading || sowSupportingDocsReady || Boolean(sowSupportingDocsError);
+  root.style.display = visible ? 'flex' : 'none';
+  specBtn.disabled = sowSupportingDocsLoading || !sowSupportingDocsReady;
+  drawingBtn.disabled = sowSupportingDocsLoading || !sowSupportingDocsReady;
+  specBtn.textContent = sowSupportingDocsLoading
+    ? 'Specifications'
+    : 'Specifications (' + sowSupportingSpecs.length + ')';
+  drawingBtn.textContent = sowSupportingDocsLoading
+    ? 'Drawings'
+    : 'Drawings (' + sowSupportingDrawings.length + ')';
+
+  if(sowSupportingDocsLoading){
+    message.textContent = 'Loading specifications and drawings\u2026';
+    message.className = 'sow-supporting-docs__message';
+    closeSowSupportingDocsModal();
+    return;
+  }
+
+  message.textContent = sowSupportingDocsError || '';
+  message.className = sowSupportingDocsError
+    ? 'sow-supporting-docs__message sow-supporting-docs__message--error'
+    : 'sow-supporting-docs__message';
+
+  if(sowSupportingDocsModalKind) renderSowSupportingDocsModalList();
+
+  if(sowSupportingDocsReady && !sowSupportingDocsError &&
+    (sowSupportingSpecs.length || sowSupportingDrawings.length)){
+    expandSection('sec2');
+  }
+}
+
+function clearSowSupportingDocuments(){
+  sowSupportingSpecs = [];
+  sowSupportingDrawings = [];
+  sowSupportingDocsLoading = false;
+  sowSupportingDocsReady = false;
+  sowSupportingDocsError = '';
+  closeSowSupportingDocsModal();
+  renderSowSupportingDocuments();
+}
+
+window.clearSowSupportingDocuments = clearSowSupportingDocuments;
+
+window.setSowSupportingDocumentsLoading = function(loading){
+  sowSupportingDocsLoading = Boolean(loading);
+  if(sowSupportingDocsLoading){
+    sowSupportingSpecs = [];
+    sowSupportingDrawings = [];
+    sowSupportingDocsReady = false;
+    sowSupportingDocsError = '';
+  }
+  renderSowSupportingDocuments();
+  updateSec2Status();
+};
+
+window.setSowSupportingDocuments = function(payload){
+  var data = payload || {};
+  sowSupportingDocsLoading = false;
+  sowSupportingDocsReady = true;
+  sowSupportingDocsError = data.error ? String(data.error) : '';
+  sowSupportingSpecs = sowSupportingDocNames(data.specifications);
+  sowSupportingDrawings = sowSupportingDocNames(data.drawings);
+  renderSowSupportingDocuments();
+  updateSec2Status();
+};
 
 function specHandleFile(event, type) {
   var files = Array.from(event.target.files);
@@ -2115,9 +2783,16 @@ function updateSec2Status() {
   var statusEl = el('sec2-status');
   var numEl = el('sec2-num');
   if(!statusEl || !numEl) return;
-  var total = supportingFiles.spec.length + supportingFiles.dwg.length;
+  var uploaded = supportingFiles.spec.length + supportingFiles.dwg.length;
+  var fromProject = sowSupportingSpecs.length + sowSupportingDrawings.length;
+  var total = uploaded + fromProject;
+  if(sowSupportingDocsLoading && !total){
+    statusEl.textContent = 'Loading\u2026';
+    numEl.className = 'section-num optional';
+    return;
+  }
   if(total > 0){
-    statusEl.textContent = total + ' file' + (total===1?'':'s') + ' loaded';
+    statusEl.textContent = total + ' file' + (total===1?'':'s');
     numEl.className = 'section-num done';
   } else {
     statusEl.textContent = 'optional';
@@ -3130,6 +3805,8 @@ window.refreshSowEngineDom = function(){
   updateSplitRunBtnState();
   renderSowFoundFilesList();
   updateSowEmsSectionStatus();
+  renderSowSupportingDocuments();
+  updateSec2Status();
   initWorkbookTemplateControls();
 };
 

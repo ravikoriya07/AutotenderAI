@@ -300,6 +300,7 @@ export type SowFullScheduleItem = {
 };
 
 export type SowSharedItemTrade = {
+  trade_id?: string;
   trade: string;
   nbs?: string;
   lead?: boolean;
@@ -311,6 +312,8 @@ export type SowSharedItem = {
   id: string;
   ref: string;
   desc: string;
+  version?: number;
+  is_shared?: boolean;
   trades?: SowSharedItemTrade[];
 };
 
@@ -508,6 +511,73 @@ export async function patchSowAllocations(
   };
 }
 
+export type SowSharedItemTradeUpdate = {
+  trade_id: string;
+  scope?: string;
+  note?: string;
+};
+
+export type SowSharedItemPatchRequest = {
+  expected_version?: number;
+  trades: SowSharedItemTradeUpdate[];
+};
+
+export type SowSharedItemPatchResponse = {
+  status: string;
+  job_id?: string;
+  active_shared_item_count?: number;
+  shared_item?: SowSharedItem;
+};
+
+/**
+ * Saves the trades that should remain on a shared item.
+ * PATCH /sow/shared-items/:job_id/:item_id
+ */
+export async function patchSowSharedItem(
+  jobId: string,
+  itemId: string,
+  request: SowSharedItemPatchRequest,
+  signal?: AbortSignal
+): Promise<SowSharedItemPatchResponse> {
+  const trimmedJobId = jobId.trim();
+  const trimmedItemId = itemId.trim();
+  if (!trimmedJobId || !trimmedItemId) {
+    throw new Error("Invalid shared item.");
+  }
+  if (!API_BASE_URL) {
+    throw new Error("API base URL is not configured.");
+  }
+  if (!request.trades.length) {
+    throw new Error("At least one trade must remain.");
+  }
+
+  const token = getAuthToken();
+  const res = await fetch(
+    `${API_BASE_URL}/sow/shared-items/${encodeURIComponent(trimmedJobId)}/${encodeURIComponent(trimmedItemId)}`,
+    {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify(request),
+      signal,
+    }
+  );
+
+  if (!res.ok) {
+    throw new Error(await parseSowApiError(res, `Could not update this shared item (${res.status})`));
+  }
+
+  const raw = (await res.json()) as SowSharedItemPatchResponse;
+  return {
+    status: String(raw.status ?? "success"),
+    job_id: raw.job_id,
+    active_shared_item_count: raw.active_shared_item_count,
+    shared_item: raw.shared_item,
+  };
+}
+
 /**
  * Downloads a SOW export file for a split job.
  * GET /sow/download/:job_id
@@ -669,6 +739,83 @@ export async function fetchSowByJobId(
   );
 
   return data;
+}
+
+export type SowSupportingDocumentFile = {
+  file_name: string;
+  file_path: string;
+};
+
+export type SowSupportingDocumentsResponse = {
+  status: string;
+  job_id: string;
+  specifications: SowSupportingDocumentFile[];
+  drawings: SowSupportingDocumentFile[];
+};
+
+function normalizeSupportingDocumentFile(
+  raw: unknown
+): SowSupportingDocumentFile | null {
+  if (!raw || typeof raw !== "object") return null;
+  const row = raw as Record<string, unknown>;
+  const fileName =
+    typeof row.file_name === "string" ? row.file_name.trim() : "";
+  if (!fileName) return null;
+  return {
+    file_name: fileName,
+    file_path: typeof row.file_path === "string" ? row.file_path : "",
+  };
+}
+
+function normalizeSupportingDocumentsResponse(
+  raw: unknown,
+  jobId: string
+): SowSupportingDocumentsResponse {
+  const record =
+    raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  const specifications = Array.isArray(record.specifications)
+    ? record.specifications
+    : [];
+  const drawings = Array.isArray(record.drawings) ? record.drawings : [];
+  return {
+    status: typeof record.status === "string" ? record.status : "",
+    job_id: typeof record.job_id === "string" ? record.job_id : jobId,
+    specifications: specifications
+      .map(normalizeSupportingDocumentFile)
+      .filter((item): item is SowSupportingDocumentFile => item !== null),
+    drawings: drawings
+      .map(normalizeSupportingDocumentFile)
+      .filter((item): item is SowSupportingDocumentFile => item !== null),
+  };
+}
+
+/**
+ * Lists specification and drawing files already stored for a project.
+ * GET /sow/supporting-documents/:job_id
+ */
+export async function fetchSowSupportingDocuments(
+  jobId: string,
+  signal?: AbortSignal
+): Promise<SowSupportingDocumentsResponse> {
+  const trimmed = jobId.trim();
+  if (!trimmed) {
+    throw new Error("Invalid job id.");
+  }
+
+  const config: SowRequestConfig = {
+    skipGlobalLoader: true,
+    ...(signal ? { signal } : {}),
+  };
+
+  const { data } = await apiClient.get<unknown>(
+    `/sow/supporting-documents/${encodeURIComponent(trimmed)}`,
+    config
+  );
+  const normalized = normalizeSupportingDocumentsResponse(data, trimmed);
+  if (normalized.status && normalized.status !== "success") {
+    throw new Error("Could not load specifications and drawings.");
+  }
+  return normalized;
 }
 
 export type SowSheetItem = {
