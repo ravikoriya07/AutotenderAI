@@ -259,7 +259,7 @@ export type SowSplitResponse = {
   status: string;
   tabs?: {
     trade_documents?: SowTradeDocument[];
-    full_schedule?: SowFullScheduleItem[];
+    full_schedule?: SowFullScheduleItem[] | Record<string, SowFullScheduleItem[]>;
     shared_items?: SowSharedItem[];
     revision_diff?: SowRevisionDiff;
   };
@@ -288,11 +288,14 @@ export type SowTradeLineItem = {
 };
 
 export type SowFullScheduleItem = {
+  item_key?: string;
   ref: string;
   desc: string;
   qty?: number | string;
   unit?: string;
   section?: string;
+  source_sheet?: string;
+  source_row?: number;
   tradeId?: string;
   tradeLabel?: string;
   overarching_trade?: string;

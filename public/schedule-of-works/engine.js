@@ -53,6 +53,8 @@ var sowSplitValidationMsg = '';
 var sowSplitStepTimers = null;
 var sowSplitLoadGeneration = 0;
 var sowFullSchedule = [];
+var sowScheduleSheets = [];
+var sowActiveScheduleSheet = '';
 var sowSplitResponse = null;
 var SHARED_ITEMS = [];
 var sowSharedItemRemoving = false;
@@ -902,10 +904,16 @@ function normalizeSharedItem(item){
   };
 }
 
-function normalizeFullScheduleItem(item){
+function normalizeFullScheduleItem(item, sheetName){
   if(!item) return null;
+  var ref = item.ref || '';
+  var itemKey = item.item_key || item.itemKey || '';
+  if(!ref && !itemKey) return null;
+  var sourceSheet = item.source_sheet || item.sourceSheet || sheetName || '';
   return {
-    ref: item.ref || '',
+    ref: ref,
+    item_key: itemKey || ((sourceSheet || 'Full Schedule') + '::' + ref),
+    source_sheet: sourceSheet,
     desc: item.desc || '',
     qty: item.qty != null ? item.qty : '',
     unit: item.unit || '',
@@ -915,6 +923,50 @@ function normalizeFullScheduleItem(item){
     overarching_trade: item.overarching_trade || item.overarchingTrade || '',
     match_confidence: normalizeMatchConfidence(item.match_confidence || item.matchConfidence)
   };
+}
+
+function readFullScheduleSheets(raw){
+  var sheets = [];
+  function rowsFor(list, sheetName){
+    var source = Array.isArray(list) ? list : [];
+    return source.map(function(item){
+      return normalizeFullScheduleItem(item, sheetName);
+    }).filter(function(item){ return item && item.ref; });
+  }
+  if(Array.isArray(raw)){
+    var legacy = rowsFor(raw, 'Full Schedule');
+    if(legacy.length) sheets.push({ name: 'Full Schedule', items: legacy });
+    return sheets;
+  }
+  if(raw && typeof raw === 'object'){
+    Object.keys(raw).forEach(function(name){
+      sheets.push({ name: name, items: rowsFor(raw[name], name) });
+    });
+  }
+  return sheets;
+}
+
+function rememberActiveScheduleSheet(){
+  var names = sowScheduleSheets.map(function(sheet){ return sheet.name; });
+  if(names.indexOf(sowActiveScheduleSheet) < 0){
+    sowActiveScheduleSheet = names.length ? names[0] : '';
+  }
+}
+
+function activeScheduleSheet(){
+  var found = null;
+  sowScheduleSheets.forEach(function(sheet){
+    if(sheet.name === sowActiveScheduleSheet) found = sheet;
+  });
+  return found || sowScheduleSheets[0] || null;
+}
+
+function selectScheduleSheet(name){
+  if(!name || name === sowActiveScheduleSheet) return;
+  var exists = sowScheduleSheets.some(function(sheet){ return sheet.name === name; });
+  if(!exists) return;
+  sowActiveScheduleSheet = name;
+  renderScheduleView();
 }
 
 function normalizeMatchConfidence(value){
@@ -935,13 +987,14 @@ function applySowSplitResponse(response){
 
   splitTrades = tradeDocs.map(normalizeTradeDocument).filter(function(t){ return t && t.id; });
 
-  var fullSched = Array.isArray(tabs.full_schedule) ? tabs.full_schedule : [];
-  sowFullSchedule = fullSched.map(normalizeFullScheduleItem).filter(function(i){ return i && i.ref; });
-
-  if(!sowFullSchedule.length){
+  var rawSchedule = tabs.full_schedule;
+  sowScheduleSheets = readFullScheduleSheets(rawSchedule);
+  var hasSheetEntries = rawSchedule != null && !Array.isArray(rawSchedule) && typeof rawSchedule === 'object' && Object.keys(rawSchedule).length > 0;
+  if(!sowScheduleSheets.length && !hasSheetEntries){
+    var fallback = [];
     splitTrades.forEach(function(t){
       (t.items || []).forEach(function(item){
-        sowFullSchedule.push({
+        fallback.push(normalizeFullScheduleItem({
           ref: item.ref,
           desc: item.desc,
           qty: item.qty,
@@ -950,11 +1003,17 @@ function applySowSplitResponse(response){
           tradeId: t.id,
           tradeLabel: t.label,
           overarching_trade: item.overarching_trade || item.overarchingTrade || '',
-          match_confidence: normalizeMatchConfidence(item.match_confidence || item.matchConfidence)
-        });
+          match_confidence: item.match_confidence || item.matchConfidence,
+          item_key: item.item_key || item.itemKey || ''
+        }, 'Full Schedule'));
       });
     });
+    fallback = fallback.filter(function(item){ return item && item.ref; });
+    if(fallback.length) sowScheduleSheets = [{ name: 'Full Schedule', items: fallback }];
   }
+  rememberActiveScheduleSheet();
+  var activeSheet = activeScheduleSheet();
+  sowFullSchedule = activeSheet ? activeSheet.items.slice() : [];
 
   var shared = Array.isArray(tabs.shared_items) ? tabs.shared_items : [];
   SHARED_ITEMS = shared.filter(isActiveSharedItem).map(normalizeSharedItem).filter(function(i){ return i && i.ref; });
@@ -1073,6 +1132,8 @@ function clearSplitResultsOnly(){
   splitTrades = [];
   splitActiveTrade = null;
   sowFullSchedule = [];
+  sowScheduleSheets = [];
+  sowActiveScheduleSheet = '';
   sowSplitResponse = null;
   SHARED_ITEMS = [];
   scheduleChanges = {};
@@ -1542,6 +1603,8 @@ function sendToEnquiry(){
 function resetSplit(){
   splitFile=null; splitTrades=[]; splitActiveTrade=null;
   sowFullSchedule = [];
+  sowScheduleSheets = [];
+  sowActiveScheduleSheet = '';
   sowSplitResponse = null;
   SHARED_ITEMS = [];
   scheduleChanges = {};
@@ -2346,9 +2409,10 @@ function updateScheduleChangeUi(){
   }
 }
 
-function scheduleMarkChange(ref,newTradeId,originalTradeId){
-  if(newTradeId===originalTradeId) delete scheduleChanges[ref];
-  else scheduleChanges[ref]=newTradeId;
+function scheduleMarkChange(itemKey,newTradeId,originalTradeId){
+  if(!itemKey) return;
+  if(newTradeId===originalTradeId) delete scheduleChanges[itemKey];
+  else scheduleChanges[itemKey]=newTradeId;
   updateScheduleChangeUi();
 }
 
@@ -2416,19 +2480,8 @@ function scheduleCellText(value){
 function renderScheduleView(){
   var panel=el('schedule-panel');
   if(!panel)return;
-  var allItems=[];
-  if(sowFullSchedule.length){
-    allItems = sowFullSchedule.slice();
-  } else {
-    splitTrades.forEach(function(t){
-      (t.items||[]).forEach(function(item){
-        allItems.push({ref:item.ref,desc:item.desc,qty:item.qty,unit:item.unit,
-          section:item.section||t.label,tradeId:t.id,tradeLabel:t.label,
-          overarching_trade:item.overarching_trade||item.overarchingTrade||'',
-          match_confidence:normalizeMatchConfidence(item.match_confidence||item.matchConfidence)});
-      });
-    });
-  }
+  var active = activeScheduleSheet();
+  var allItems = active ? active.items.slice() : [];
   if(!allItems.length){
     panel.innerHTML='<div style="padding:40px;text-align:center;color:var(--text-light)">No schedule items available yet. Run AI Trade Split to populate the full schedule.</div>';
     return;
@@ -2445,7 +2498,37 @@ function renderScheduleView(){
 
   panel.innerHTML='';
   var wrap=document.createElement('div');
-  wrap.style.cssText='display:flex;flex-direction:column;height:100%;overflow:hidden';
+  wrap.style.cssText='display:flex;flex-direction:column;height:100%;width:100%;min-width:0;overflow:hidden';
+
+  if(sowScheduleSheets.length){
+    var sheetBar=document.createElement('div');
+    sheetBar.className='schedule-sheet-tabs';
+    var sheetLabel=document.createElement('span');
+    sheetLabel.className='schedule-sheet-tabs__label';
+    sheetLabel.textContent='Sheet';
+    sheetBar.appendChild(sheetLabel);
+    var sheetScroll=document.createElement('div');
+    sheetScroll.className='schedule-sheet-tabs__scroll';
+    sowScheduleSheets.forEach(function(sheetTab){
+      var tabBtn=document.createElement('button');
+      tabBtn.type='button';
+      tabBtn.className='schedule-sheet-tab'+(sheetTab.name===sowActiveScheduleSheet?' is-active':'');
+      tabBtn.title=sheetTab.name;
+      var name=document.createElement('span');
+      name.className='schedule-sheet-tab__name';
+      name.textContent=sheetTab.name;
+      var count=document.createElement('span');
+      count.className='schedule-sheet-tab__count';
+      count.textContent=String((sheetTab.items||[]).length);
+      tabBtn.appendChild(name);
+      tabBtn.appendChild(count);
+      tabBtn.onclick=function(){ selectScheduleSheet(sheetTab.name); };
+      sheetScroll.appendChild(tabBtn);
+    });
+    sheetBar.appendChild(sheetLabel);
+    sheetBar.appendChild(sheetScroll);
+    wrap.appendChild(sheetBar);
+  }
 
   // Toolbar
   var tb=document.createElement('div');
@@ -2494,7 +2577,7 @@ function renderScheduleView(){
     items.forEach(function(item){
       rowNum++;
       var savedTradeId=item.tradeId;
-      var displayTradeId=scheduleChanges[item.ref]!=null?scheduleChanges[item.ref]:savedTradeId;
+      var displayTradeId=scheduleChanges[item.item_key]!=null?scheduleChanges[item.item_key]:savedTradeId;
       var col=TRADE_COLOURS[displayTradeId]||{bg:'#F0F0F5',border:'#9BA3BF',text:'#4A5272'};
       var isUnalloc=displayTradeId==='unallocated';
       var confidence=normalizeMatchConfidence(item.match_confidence);
@@ -2541,7 +2624,7 @@ function renderScheduleView(){
       tc.appendChild(swatch);
       var sel=document.createElement('select');
       sel.className='schedule-trade-select';
-      sel.setAttribute('data-item-ref',item.ref);
+      sel.setAttribute('data-item-key', item.item_key);
       sel.setAttribute('data-original-trade-id',savedTradeId);
       if(isUnalloc){
         sel.style.borderColor='var(--red)';
@@ -2551,9 +2634,9 @@ function renderScheduleView(){
       sel.innerHTML=tradeOptions;
       sel.value=displayTradeId;
       sel.onchange=function(){
-        var ref=this.getAttribute('data-item-ref');
+        var itemKey=this.getAttribute('data-item-key');
         var original=this.getAttribute('data-original-trade-id');
-        scheduleMarkChange(ref,this.value,original);
+        scheduleMarkChange(itemKey,this.value,original);
         var nc=TRADE_COLOURS[this.value]||{text:'#9BA3BF'};
         this.previousSibling.style.background=nc.text;
         var isU=this.value==='unallocated';
@@ -2583,6 +2666,9 @@ function renderScheduleView(){
     '<button class="btn btn-primary btn-sm" data-schedule-apply style="background:var(--green)" disabled onclick="applyScheduleAllocations()">&#10003; Apply Changes</button>';
   wrap.appendChild(bar);
   panel.appendChild(wrap);
+  var activeSheetBtn=wrap.querySelector('.schedule-sheet-tab.is-active');
+  var sheetScroll=wrap.querySelector('.schedule-sheet-tabs__scroll');
+  if(activeSheetBtn && sheetScroll) sheetScroll.scrollLeft=Math.max(0, activeSheetBtn.offsetLeft-8);
   updateScheduleChangeUi();
 }
 
