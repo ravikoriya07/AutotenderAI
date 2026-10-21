@@ -275,6 +275,8 @@ export type SowTradeDocument = {
   section?: string;
   lineCount?: number;
   items?: SowTradeLineItem[];
+  /** Names for the Full Schedule overarching dropdown. No ids. */
+  overarching_trades?: string[];
   unallocated?: boolean;
 };
 
@@ -453,16 +455,29 @@ export async function submitSowSplit(
 export type SowAllocationChanges = Record<string, string>;
 
 export type SowAllocationsRequest = {
-  changes: SowAllocationChanges;
+  changes?: SowAllocationChanges;
+  overarching_changes?: SowAllocationChanges;
 };
 
 export type SowAllocationsResponse = {
   status: string;
   moved?: string[];
+  overarching_updated?: string[];
   not_found?: string[];
   trade_line_counts?: Record<string, number>;
   tabs?: SowSplitResponse["tabs"];
 };
+
+function nonemptyAllocationMap(
+  map: SowAllocationChanges | undefined
+): SowAllocationChanges | null {
+  if (!map) return null;
+  const entries = Object.entries(map).filter(
+    ([, value]) => String(value ?? "").trim() !== ""
+  );
+  if (!entries.length) return null;
+  return Object.fromEntries(entries);
+}
 
 /**
  * Persists Full Schedule trade re-allocations.
@@ -481,10 +496,15 @@ export async function patchSowAllocations(
     throw new Error("API base URL is not configured.");
   }
 
-  const changes = request.changes ?? {};
-  if (Object.keys(changes).length === 0) {
+  const changes = nonemptyAllocationMap(request.changes);
+  const overarchingChanges = nonemptyAllocationMap(request.overarching_changes);
+  if (!changes && !overarchingChanges) {
     throw new Error("No allocation changes to apply.");
   }
+
+  const body: SowAllocationsRequest = {};
+  if (changes) body.changes = changes;
+  if (overarchingChanges) body.overarching_changes = overarchingChanges;
 
   const token = getAuthToken();
   const res = await fetch(
@@ -495,7 +515,7 @@ export async function patchSowAllocations(
         "Content-Type": "application/json",
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
-      body: JSON.stringify({ changes }),
+      body: JSON.stringify(body),
       signal,
     }
   );
@@ -508,6 +528,7 @@ export async function patchSowAllocations(
   return {
     status: String(raw.status ?? "success"),
     moved: raw.moved,
+    overarching_updated: raw.overarching_updated,
     not_found: raw.not_found,
     trade_line_counts: raw.trade_line_counts,
     tabs: raw.tabs,

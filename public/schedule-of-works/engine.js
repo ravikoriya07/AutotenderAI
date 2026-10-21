@@ -312,6 +312,7 @@ function resetSowModuleForProjectSwitch(){
   if(typeof clearWbTemplate === 'function') clearWbTemplate();
 
   scheduleChanges = {};
+  scheduleOverarchingChanges = {};
   scheduleApplying = false;
   updateScheduleChangeUi();
 
@@ -826,8 +827,20 @@ function normalizeTradeDocument(trade){
     section: trade.section || trade.label || '',
     lineCount: trade.lineCount != null ? trade.lineCount : items.length,
     items: items,
+    overarching_trades: readOverarchingTradeNames(trade),
     unallocated: trade.id === 'unallocated' || Boolean(trade.unallocated)
   };
+}
+
+function readOverarchingTradeNames(trade){
+  var raw = trade && (trade.overarching_trades || trade.overarchingTrades);
+  if(!Array.isArray(raw)) return [];
+  var names = [];
+  raw.forEach(function(name){
+    var text = String(name == null ? '' : name).trim();
+    if(text && names.indexOf(text) < 0) names.push(text);
+  });
+  return names;
 }
 
 function hiddenSharedStorageKey(){
@@ -1006,8 +1019,8 @@ function applySowSplitResponse(response){
           match_confidence: item.match_confidence || item.matchConfidence,
           item_key: item.item_key || item.itemKey || ''
         }, 'Full Schedule'));
+        });
       });
-    });
     fallback = fallback.filter(function(item){ return item && item.ref; });
     if(fallback.length) sowScheduleSheets = [{ name: 'Full Schedule', items: fallback }];
   }
@@ -1137,6 +1150,7 @@ function clearSplitResultsOnly(){
   sowSplitResponse = null;
   SHARED_ITEMS = [];
   scheduleChanges = {};
+  scheduleOverarchingChanges = {};
   var emptyEl = el('split-empty');
   var resultsEl = el('split-results');
   var procEl = el('split-processing');
@@ -1608,6 +1622,7 @@ function resetSplit(){
   sowSplitResponse = null;
   SHARED_ITEMS = [];
   scheduleChanges = {};
+  scheduleOverarchingChanges = {};
   // Restore SOW section
   el('split-file-pill').style.display='none';
   el('sow-upload-area').style.display='block';
@@ -2384,10 +2399,14 @@ function makeAllocBtn(ref,desc){
 
 // ── SCHEDULE VIEW ─────────────────────────────────────────
 var scheduleChanges={};
+var scheduleOverarchingChanges={};
 var scheduleApplying=false;
 
 function getSchedulePendingCount(){
-  return Object.keys(scheduleChanges).length;
+  var keys={};
+  Object.keys(scheduleChanges).forEach(function(key){ keys[key]=true; });
+  Object.keys(scheduleOverarchingChanges).forEach(function(key){ keys[key]=true; });
+  return Object.keys(keys).length;
 }
 
 function updateScheduleChangeUi(){
@@ -2409,16 +2428,117 @@ function updateScheduleChangeUi(){
   }
 }
 
-function scheduleMarkChange(itemKey,newTradeId,originalTradeId){
+function tradeOverarchingChoices(tradeId){
+  var found=null;
+  splitTrades.forEach(function(trade){
+    if(trade && trade.id===tradeId) found=trade;
+  });
+  return found && Array.isArray(found.overarching_trades) ? found.overarching_trades.slice() : [];
+}
+
+function overarchingAfterTradeChange(newTradeId,currentName,originalTradeId,originalName){
+  var choices=tradeOverarchingChoices(newTradeId);
+  if(currentName && choices.indexOf(currentName)>=0) return currentName;
+  if(newTradeId===originalTradeId && originalName && choices.indexOf(originalName)>=0) return originalName;
+  return '';
+}
+
+function scheduleSyncRow(itemKey,tradeId,originalTradeId,overarchingName,originalOverarching){
   if(!itemKey) return;
-  if(newTradeId===originalTradeId) delete scheduleChanges[itemKey];
-  else scheduleChanges[itemKey]=newTradeId;
+  if(tradeId===originalTradeId) delete scheduleChanges[itemKey];
+  else scheduleChanges[itemKey]=tradeId;
+
+  var tradeChanged=tradeId!==originalTradeId;
+  var name=overarchingName||'';
+  var originalName=originalOverarching||'';
+  if(!tradeChanged && (name===originalName || !name)) delete scheduleOverarchingChanges[itemKey];
+  else scheduleOverarchingChanges[itemKey]=name;
   updateScheduleChangeUi();
+}
+
+function scheduleAllocationPayload(){
+  var request={};
+  var changes={};
+  var overarching={};
+  Object.keys(scheduleChanges).forEach(function(key){
+    if(scheduleChanges[key]) changes[key]=scheduleChanges[key];
+  });
+  Object.keys(scheduleOverarchingChanges).forEach(function(key){
+    if(scheduleOverarchingChanges[key]) overarching[key]=scheduleOverarchingChanges[key];
+  });
+  if(Object.keys(changes).length) request.changes=changes;
+  if(Object.keys(overarching).length) request.overarching_changes=overarching;
+  return request;
+}
+
+function fillOverarchingSelect(select,tradeId,selectedName){
+  var choices=tradeOverarchingChoices(tradeId);
+  var selected=selectedName && choices.indexOf(selectedName)>=0 ? selectedName : '';
+  select.innerHTML='';
+  if(!choices.length){
+    var empty=document.createElement('option');
+    empty.value='';
+    empty.textContent='-';
+    select.appendChild(empty);
+    select.value='';
+    select.disabled=true;
+    select.title='';
+    return;
+  }
+  select.disabled=false;
+  if(!selected){
+    var placeholder=document.createElement('option');
+    placeholder.value='';
+    placeholder.textContent='Select';
+    placeholder.disabled=true;
+    placeholder.selected=true;
+    select.appendChild(placeholder);
+  }
+  choices.forEach(function(choiceName){
+    var option=document.createElement('option');
+    option.value=choiceName;
+    option.textContent=choiceName;
+    select.appendChild(option);
+  });
+  select.value=selected;
+  select.title=selected;
+}
+
+function scheduleTradeChanged(select){
+  var itemKey=select.getAttribute('data-item-key');
+  var originalTrade=select.getAttribute('data-original-trade-id')||'';
+  var tradeCell=select.parentElement;
+  var overarchingCell=tradeCell ? tradeCell.previousElementSibling : null;
+  var overarchingSelect=overarchingCell ? overarchingCell.querySelector('select') : null;
+  var originalOverarching=overarchingSelect ? (overarchingSelect.getAttribute('data-original-overarching')||'') : '';
+  var currentName=overarchingSelect ? overarchingSelect.value : '';
+  var nextName=overarchingAfterTradeChange(select.value,currentName,originalTrade,originalOverarching);
+  if(overarchingSelect) fillOverarchingSelect(overarchingSelect,select.value,nextName);
+  scheduleSyncRow(itemKey,select.value,originalTrade,nextName,originalOverarching);
+  var nc=TRADE_COLOURS[select.value]||{text:'#9BA3BF'};
+  if(select.previousSibling) select.previousSibling.style.background=nc.text;
+  var isU=select.value==='unallocated';
+  select.style.borderColor=isU?'var(--red)':'var(--border)';
+  select.style.color=isU?'var(--red)':'var(--text)';
+  select.style.background=isU?'var(--red-bg)':'#fff';
+}
+
+function scheduleOverarchingChanged(select){
+  var itemKey=select.getAttribute('data-item-key');
+  var originalOverarching=select.getAttribute('data-original-overarching')||'';
+  var overarchingCell=select.parentElement;
+  var tradeCell=overarchingCell ? overarchingCell.nextElementSibling : null;
+  var tradeSelect=tradeCell ? tradeCell.querySelector('select') : null;
+  var tradeId=tradeSelect ? tradeSelect.value : '';
+  var originalTrade=tradeSelect ? (tradeSelect.getAttribute('data-original-trade-id')||'') : '';
+  select.title=select.value;
+  scheduleSyncRow(itemKey,tradeId,originalTrade,select.value,originalOverarching);
 }
 
 function resetScheduleChanges(){
   if(!getSchedulePendingCount()) return;
   scheduleChanges={};
+  scheduleOverarchingChanges={};
   renderScheduleView();
 }
 
@@ -2427,6 +2547,7 @@ function applyAllocationResponse(response){
     throw new Error('Allocation update did not return valid split data.');
   }
   scheduleChanges={};
+  scheduleOverarchingChanges={};
   updateSplitResultSummary();
   updateSharedCountBadge();
   renderSplitTradeList();
@@ -2436,9 +2557,9 @@ function applyAllocationResponse(response){
 }
 
 async function applyScheduleAllocations(){
-  var changes=Object.assign({}, scheduleChanges);
-  var count=Object.keys(changes).length;
-  if(!count || scheduleApplying) return;
+  var request=scheduleAllocationPayload();
+  var count=getSchedulePendingCount();
+  if(!count || scheduleApplying || (!request.changes && !request.overarching_changes)) return;
   if(!sowProjectJobId){
     window.dispatchEvent(new CustomEvent('sow-needs-project'));
     alert('Select a project before applying allocation changes.');
@@ -2456,7 +2577,7 @@ async function applyScheduleAllocations(){
       throw new Error('Allocation API is not available. Please refresh the page.');
     }
     var requestJobId = sowProjectJobId;
-    var response=await window.patchSowAllocations(requestJobId,{changes:changes});
+    var response=await window.patchSowAllocations(requestJobId,request);
     if(requestJobId !== sowProjectJobId) return;
     applyAllocationResponse(response);
   } catch(e) {
@@ -2578,6 +2699,10 @@ function renderScheduleView(){
       rowNum++;
       var savedTradeId=item.tradeId;
       var displayTradeId=scheduleChanges[item.item_key]!=null?scheduleChanges[item.item_key]:savedTradeId;
+      var savedOverarching=item.overarching_trade||'';
+      var hasOverarchingEdit=Object.prototype.hasOwnProperty.call(scheduleOverarchingChanges,item.item_key);
+      var displayOverarching=hasOverarchingEdit?scheduleOverarchingChanges[item.item_key]:savedOverarching;
+      if(tradeOverarchingChoices(displayTradeId).indexOf(displayOverarching)<0) displayOverarching='';
       var col=TRADE_COLOURS[displayTradeId]||{bg:'#F0F0F5',border:'#9BA3BF',text:'#4A5272'};
       var isUnalloc=displayTradeId==='unallocated';
       var confidence=normalizeMatchConfidence(item.match_confidence);
@@ -2613,7 +2738,13 @@ function renderScheduleView(){
 
       var ot=document.createElement('div');
       ot.className='schedule-cell schedule-cell--overarching'+rowClass;
-      ot.textContent=scheduleCellText(item.overarching_trade);
+      var otSel=document.createElement('select');
+      otSel.className='schedule-trade-select schedule-overarching-select';
+      otSel.setAttribute('data-item-key', item.item_key);
+      otSel.setAttribute('data-original-overarching', savedOverarching);
+      fillOverarchingSelect(otSel, displayTradeId, displayOverarching);
+      otSel.onchange=function(){ scheduleOverarchingChanged(this); };
+      ot.appendChild(otSel);
       sheet.appendChild(ot);
 
       var tc=document.createElement('div');
@@ -2633,17 +2764,7 @@ function renderScheduleView(){
       }
       sel.innerHTML=tradeOptions;
       sel.value=displayTradeId;
-      sel.onchange=function(){
-        var itemKey=this.getAttribute('data-item-key');
-        var original=this.getAttribute('data-original-trade-id');
-        scheduleMarkChange(itemKey,this.value,original);
-        var nc=TRADE_COLOURS[this.value]||{text:'#9BA3BF'};
-        this.previousSibling.style.background=nc.text;
-        var isU=this.value==='unallocated';
-        this.style.borderColor=isU?'var(--red)':'var(--border)';
-        this.style.color=isU?'var(--red)':'var(--text)';
-        this.style.background=isU?'var(--red-bg)':'#fff';
-      };
+      sel.onchange=function(){ scheduleTradeChanged(this); };
       tc.appendChild(sel);
       sheet.appendChild(tc);
     });

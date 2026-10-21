@@ -272,7 +272,7 @@
 
 .sow-module #schedule-panel .schedule-sheet {
   display: grid;
-  grid-template-columns: 36px 64px minmax(140px, 1fr) 52px 56px minmax(130px, 180px) minmax(170px, 220px);
+  grid-template-columns: 36px 64px minmax(140px, 1fr) 52px 56px minmax(150px, 210px) minmax(170px, 220px);
   width: 100%;
   min-width: 860px;
   font-family: Arial, sans-serif;
@@ -395,11 +395,14 @@
 }
 
 .sow-module #schedule-panel .schedule-cell--overarching {
-  font-size: 11px;
-  color: #1a1a2e;
-  line-height: 1.35;
-  white-space: normal;
-  word-break: break-word;
+  gap: 0;
+  padding: 6px 8px;
+}
+
+.sow-module #schedule-panel .schedule-overarching-select:disabled {
+  color: var(--text-hint);
+  cursor: default;
+  background: #f7f8fb;
 }
 
 .sow-module #schedule-panel .schedule-cell--trade {
