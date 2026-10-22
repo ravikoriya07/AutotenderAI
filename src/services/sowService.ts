@@ -202,7 +202,7 @@ export type SowDownloadType = "trade" | "all" | "shared" | "schedule";
 
 export type SowDownloadRequest = {
   type: SowDownloadType;
-  /** Trade id slug for `type=trade` (e.g. preambles, demolitions). */
+  /** Catalogue trade id, or `overarching:Name` for a pricing document. */
   tradeId?: string;
 };
 
@@ -221,8 +221,12 @@ function fallbackSowDownloadFilename(
       return "Full_Schedule.xlsx";
     case "trade":
     default: {
+      const rawId = tradeId?.trim() || "";
+      const source = rawId.toLowerCase().startsWith("overarching:")
+        ? rawId.slice("overarching:".length)
+        : rawId;
       const safe =
-        tradeId?.replace(/[^\w\s-]+/g, "").trim().replace(/\s+/g, "_") ||
+        source.replace(/[^\w\s-]+/g, "").trim().replace(/\s+/g, "_") ||
         "Trade";
       return `${safe}_Pricing.xlsx`;
     }
@@ -259,6 +263,8 @@ export type SowSplitResponse = {
   status: string;
   tabs?: {
     trade_documents?: SowTradeDocument[];
+    /** Trade Documents tab. Grouped by overarching name, plus catalogue rows set to N/A. */
+    pricing_documents?: SowTradeDocument[];
     full_schedule?: SowFullScheduleItem[] | Record<string, SowFullScheduleItem[]>;
     shared_items?: SowSharedItem[];
     revision_diff?: SowRevisionDiff;
@@ -277,6 +283,10 @@ export type SowTradeDocument = {
   items?: SowTradeLineItem[];
   /** Names for the Full Schedule overarching dropdown. No ids. */
   overarching_trades?: string[];
+  /** Set on a pricing document when the Excel id differs from `id`. */
+  trade_id?: string;
+  download_id?: string;
+  overarching?: string;
   unallocated?: boolean;
 };
 
@@ -358,6 +368,7 @@ export function normalizeSowSplitResponse(
       status: String(record.status ?? "success"),
       tabs: {
         trade_documents: record.trade_documents as SowTradeDocument[],
+        pricing_documents: record.pricing_documents as SowTradeDocument[] | undefined,
         full_schedule: record.full_schedule as SowFullScheduleItem[] | undefined,
         shared_items: record.shared_items as SowSharedItem[] | undefined,
       },
@@ -372,7 +383,11 @@ export function hasSavedSowSplitData(
 ): boolean {
   if (!response) return false;
   const trades = response.tabs?.trade_documents;
-  return Array.isArray(trades) && trades.length > 0;
+  const pricing = response.tabs?.pricing_documents;
+  return (
+    (Array.isArray(trades) && trades.length > 0) ||
+    (Array.isArray(pricing) && pricing.length > 0)
+  );
 }
 
 /**

@@ -1,5 +1,5 @@
 
-var splitFile=null,splitActiveTrade=null,splitTrades=[];
+var splitFile=null,splitActiveTrade=null,splitTrades=[],pricingDocuments=[];
 function el(id){return document.getElementById(id);}
 function esc(s){return s?String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'):''; }
 function escQ(s){return s?String(s).replace(/\\/g,'\\\\').replace(/'/g,"\\'"):''; }
@@ -43,7 +43,8 @@ function openAllocateModal(ref,desc){
 
 var splitFile = null;
 var splitActiveTrade = null;
-var splitTrades = [];   // [{id, label, nbs, items:[{ref,desc,qty,unit}], lineCount}]
+var splitTrades = [];   // catalogue trades for Full Schedule and shared items
+var pricingDocuments = [];   // Trade Documents tab, grouped by overarching name
 var sowProjectJobId = '';
 var sowSplitProcessing = false;
 var sowFoundFiles = [];
@@ -845,6 +846,47 @@ function readOverarchingTradeNames(trade){
   return names;
 }
 
+function isCatalogueTradeLabel(label){
+  return /^[A-Z]{1,4}\d{0,4}\s*[—–-]/.test(String(label || '').trim());
+}
+
+function pricingExcelTradeId(doc, normalized){
+  var downloadId = doc && (doc.download_id || doc.downloadId);
+  if(downloadId) return String(downloadId).trim();
+  var id = String((normalized && normalized.id) || (doc && doc.id) || '').trim();
+  if(id.indexOf('overarching:') === 0) return id;
+  var rawTrade = doc && (doc.trade_id || doc.tradeId);
+  if(rawTrade && String(rawTrade).indexOf('overarching:') === 0) return String(rawTrade).trim();
+  var name = String(doc && (doc.overarching || doc.overarching_trade || doc.overarchingTrade) || '').trim();
+  if(name && name.toUpperCase() !== 'N/A') return 'overarching:' + name;
+  var label = String((normalized && normalized.label) || (doc && (doc.label || doc.trade_name)) || '').trim();
+  if(label && !isCatalogueTradeLabel(label) && id !== 'unallocated' && id !== 'general') return 'overarching:' + label;
+  return id;
+}
+
+function normalizePricingDocument(doc){
+  if(!doc) return null;
+  var base = normalizeTradeDocument(doc);
+  if(!base) return null;
+  if(!base.id){
+    var label = String(doc.label || doc.name || '').trim();
+    base.id = label ? 'overarching:' + label : '';
+    if(label) base.label = label;
+  }
+  base.excelTradeId = pricingExcelTradeId(doc, base);
+  return base.id ? base : null;
+}
+
+function readPricingDocuments(tabs, catalogueTrades){
+  var raw = tabs && tabs.pricing_documents;
+  if(Array.isArray(raw)){
+    return raw.map(normalizePricingDocument).filter(function(doc){ return doc && doc.id; });
+  }
+  return (catalogueTrades || []).map(function(trade){
+    return Object.assign({}, trade, { excelTradeId: trade.id });
+  });
+}
+
 function hiddenSharedStorageKey(){
   return 'sow-hidden-shared:' + (sowProjectJobId || '');
 }
@@ -999,9 +1041,9 @@ function applySowSplitResponse(response){
   var tradeDocs = Array.isArray(tabs.trade_documents) ? tabs.trade_documents : [];
   if(!tradeDocs.length) tradeDocs = normalizeSowSplitTrades(response) || [];
 
-  if(!tradeDocs.length) return false;
-
   splitTrades = tradeDocs.map(normalizeTradeDocument).filter(function(t){ return t && t.id; });
+  pricingDocuments = readPricingDocuments(tabs, splitTrades);
+  if(!splitTrades.length && !pricingDocuments.length) return false;
 
   var rawSchedule = tabs.full_schedule;
   sowScheduleSheets = readFullScheduleSheets(rawSchedule);
@@ -1051,7 +1093,8 @@ function applySowSplitResponse(response){
     renderComplianceView();
   }
 
-  splitActiveTrade = splitTrades[0] ? splitTrades[0].id : null;
+  var activePricing = pricingDocuments.some(function(doc){ return doc.id === splitActiveTrade; });
+  if(!activePricing) splitActiveTrade = pricingDocuments[0] ? pricingDocuments[0].id : null;
   return true;
 }
 
@@ -1146,6 +1189,7 @@ function clearRevisionResults(){
 
 function clearSplitResultsOnly(){
   splitTrades = [];
+  pricingDocuments = [];
   splitActiveTrade = null;
   sowFullSchedule = [];
   sowScheduleSheets = [];
@@ -1346,13 +1390,14 @@ window.cancelLoadSavedSowSplit = function(){
 };
 
 function updateSplitResultSummary(){
-  var totalItems=splitTrades.reduce(function(s,t){
+  var totalItems=pricingDocuments.reduce(function(s,t){
     return s + (t.lineCount != null ? t.lineCount : (t.items || []).length);
   }, 0);
+  var tradeCount=splitTrades.length || pricingDocuments.length;
   var titleEl=el('split-result-title');
   var subEl=el('split-result-sub');
-  if(titleEl) titleEl.textContent=splitTrades.length+' trades identified';
-  if(subEl) subEl.textContent=totalItems+' line items across '+splitTrades.length+' pricing documents';
+  if(titleEl) titleEl.textContent=tradeCount+' trades identified';
+  if(subEl) subEl.textContent=totalItems+' line items across '+pricingDocuments.length+' pricing documents';
 }
 
 function updateSharedCountBadge(count){
@@ -1384,7 +1429,7 @@ function showSplitResults(){
 function renderSplitTradeList(){
   var container=el('split-trade-list');
   container.innerHTML='';
-  splitTrades.forEach(function(t){
+  pricingDocuments.forEach(function(t){
     var isActive=t.id===splitActiveTrade;
     var isUnalloc=t.id==='unallocated';
     var isGeneral=t.id==='general';
@@ -1419,15 +1464,14 @@ function selectSplitTrade(id){
 }
 
 function renderSplitPreview(id){
-  var t=splitTrades.find(function(x){return x.id===id;});
+  var t=pricingDocuments.find(function(x){return x.id===id;});
   if(!t)return;
   var isUnalloc=t.id==='unallocated';
   var isGeneral=t.id==='general';
   var filename=t.label.replace(/[^a-zA-Z0-9 ]/g,'').replace(/\s+/g,'-')+'_Pricing.xlsx';
-  var col=TRADE_COLOURS[t.id]||{bg:'#F0F0F5',border:'#9BA3BF',text:'#4A5272'};
   var nbsBadges=t.nbs&&t.nbs.length
-    ?t.nbs.map(function(n){return '<span class="badge b-purple" style="margin-right:4px">'+n+'</span>';}).join('')
-    :'<span class="badge" style="background:'+col.bg+';color:'+col.text+';border:1px solid '+col.border+'">'+esc(t.label)+'</span>';
+    ?t.nbs.map(function(n){return '<span class="badge b-purple" style="margin-right:4px">'+esc(n)+'</span>';}).join('')+' &middot; '
+    :'';
 
   var headerDiv=document.createElement('div');
   headerDiv.className='flex-b mb16';
@@ -1436,7 +1480,7 @@ function renderSplitPreview(id){
       '<div style="font-size:17px;font-weight:700;color:'+(isUnalloc?'var(--red)':'var(--text)')+'">'+
         (isUnalloc?'&#9888; ':isGeneral?'&#9685; ':'')+esc(t.label)+
       '</div>'+
-      '<div style="font-size:12px;color:var(--text-light);margin-top:3px">'+nbsBadges+' &middot; '+t.lineCount+' items</div>'+
+      '<div style="font-size:12px;color:var(--text-light);margin-top:3px">'+nbsBadges+t.lineCount+' items</div>'+
       (isUnalloc?'<div style="font-size:12px;color:var(--red);margin-top:5px">These items could not be automatically assigned to a trade — use the Allocate button to assign each one manually.</div>':'')+
     '</div>';
 
@@ -1579,7 +1623,7 @@ function withSowDownloadButton(btn, work){
 }
 
 async function runSowDownload(exportType, tradeId, btn){
-  if(!splitTrades.length){
+  if(!splitTrades.length && !pricingDocuments.length){
     alert('Run the AI Trade Split first.');
     return;
   }
@@ -1606,9 +1650,9 @@ async function runSowDownload(exportType, tradeId, btn){
 }
 
 function downloadTradeExcel(id, btn){
-  var t = splitTrades.find(function(x){ return x.id === id; });
+  var t = pricingDocuments.find(function(x){ return x.id === id; });
   if(!t) return;
-  void runSowDownload('trade', t.id, btn || null);
+  void runSowDownload('trade', t.excelTradeId || t.id, btn || null);
 }
 function downloadAllExcel(){
   void runSowDownload('all', null, el('sow-download-all-btn'));
@@ -1620,7 +1664,7 @@ function sendToEnquiry(){
   alert(splitTrades.length+' trade packages sent to Enquiry Generation module. Trades are now available in Module 4.');
 }
 function resetSplit(){
-  splitFile=null; splitTrades=[]; splitActiveTrade=null;
+  splitFile=null; splitTrades=[]; pricingDocuments=[]; splitActiveTrade=null;
   sowFullSchedule = [];
   sowScheduleSheets = [];
   sowActiveScheduleSheet = '';
