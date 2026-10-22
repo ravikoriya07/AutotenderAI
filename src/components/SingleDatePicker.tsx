@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useLayoutEffect } from "react";
+import { createPortal } from "react-dom";
 import { Calendar } from "react-date-range";
 import { enGB } from "date-fns/locale/en-GB";
 import { Calendar as CalendarIcon } from "lucide-react";
@@ -59,6 +60,7 @@ export function SingleDatePicker({
 }: SingleDatePickerProps) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const popupRef = useRef<HTMLDivElement>(null);
 
   const date = toDate(value || "");
   const range = {
@@ -69,12 +71,58 @@ export function SingleDatePicker({
 
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
-      if (ref.current && !ref.current.contains(e.target as Node)) {
-        setOpen(false);
-      }
+      const target = e.target as Node;
+      if (ref.current?.contains(target) || popupRef.current?.contains(target)) return;
+      setOpen(false);
     }
-    if (open) document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
+    function handleEscape(e: KeyboardEvent) {
+      if (e.key === "Escape") setOpen(false);
+    }
+    if (open) {
+      document.addEventListener("mousedown", handleClickOutside);
+      document.addEventListener("keydown", handleEscape);
+    }
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+      document.removeEventListener("keydown", handleEscape);
+    };
+  }, [open]);
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    const popup = popupRef.current;
+    const anchor = ref.current;
+    if (!popup || !anchor) return;
+
+    function place() {
+      if (!popup || !anchor) return;
+      const rect = anchor.getBoundingClientRect();
+      const margin = 8;
+      const width = popup.offsetWidth;
+      const height = popup.offsetHeight;
+      let left = rect.left;
+      if (left + width > window.innerWidth - margin) {
+        left = window.innerWidth - width - margin;
+      }
+      if (left < margin) left = margin;
+      const below = rect.bottom + 4;
+      const above = rect.top - height - 4;
+      const top =
+        below + height <= window.innerHeight - margin || below <= above
+          ? below
+          : Math.max(margin, above);
+      popup.style.left = `${left}px`;
+      popup.style.top = `${top}px`;
+      popup.style.visibility = "visible";
+    }
+
+    place();
+    window.addEventListener("resize", place);
+    window.addEventListener("scroll", place, true);
+    return () => {
+      window.removeEventListener("resize", place);
+      window.removeEventListener("scroll", place, true);
+    };
   }, [open]);
 
   const handleChange = (date: Date) => {
@@ -106,37 +154,43 @@ export function SingleDatePicker({
         )}
       />
       <CalendarIcon className="absolute right-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground pointer-events-none" />
-      {open && (
-        <div className="absolute left-0 top-full z-50 mt-1 max-h-[min(420px,85vh)] max-w-[min(320px,calc(100vw-1.5rem))] overflow-auto rounded-lg border border-border bg-card p-3 shadow-lg">
-          <div className="text-xs">
-            <Calendar
-              ranges={[range]}
-              onChange={handleChange}
-              showDateDisplay={false}
-              displayMode="date"
-              months={1}
-              direction="horizontal"
-              showSelectionPreview
-              locale={enGB}
-              color="hsl(var(--primary))"
-              rangeColors={["hsl(var(--primary))"]}
-              minDate={minDate}
-            />
-          </div>
-          <div className="mt-2 flex justify-end border-t border-border pt-2">
-            <button
-              type="button"
-              onClick={() => {
-                onChange("");
-                setOpen(false);
-              }}
-              className="text-sm text-muted-foreground hover:text-foreground focus:outline-none focus:underline"
-            >
-              Clear
-            </button>
-          </div>
-        </div>
-      )}
+      {open &&
+        createPortal(
+          <div
+            ref={popupRef}
+            className="fixed z-[80] w-max rounded-lg border border-border bg-card p-3 shadow-xl"
+            style={{ visibility: "hidden" }}
+          >
+            <div className="text-xs">
+              <Calendar
+                ranges={[range]}
+                onChange={handleChange}
+                showDateDisplay={false}
+                displayMode="date"
+                months={1}
+                direction="horizontal"
+                showSelectionPreview
+                locale={enGB}
+                color="hsl(var(--primary))"
+                rangeColors={["hsl(var(--primary))"]}
+                minDate={minDate}
+              />
+            </div>
+            <div className="mt-2 flex justify-end border-t border-border pt-2">
+              <button
+                type="button"
+                onClick={() => {
+                  onChange("");
+                  setOpen(false);
+                }}
+                className="text-sm text-muted-foreground hover:text-foreground focus:outline-none focus:underline"
+              >
+                Clear
+              </button>
+            </div>
+          </div>,
+          document.body
+        )}
     </div>
   );
 }

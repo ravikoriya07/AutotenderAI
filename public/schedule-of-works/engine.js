@@ -55,6 +55,8 @@ var sowSplitLoadGeneration = 0;
 var sowFullSchedule = [];
 var sowScheduleSheets = [];
 var sowActiveScheduleSheet = '';
+var sowScheduleSheetScrollLeft = 0;
+var sowScheduleSheetScrollLocked = false;
 var sowSplitResponse = null;
 var SHARED_ITEMS = [];
 var sowSharedItemRemoving = false;
@@ -979,6 +981,7 @@ function selectScheduleSheet(name){
   var exists = sowScheduleSheets.some(function(sheet){ return sheet.name === name; });
   if(!exists) return;
   sowActiveScheduleSheet = name;
+  sowScheduleSheetScrollLocked = true;
   renderScheduleView();
 }
 
@@ -1147,6 +1150,8 @@ function clearSplitResultsOnly(){
   sowFullSchedule = [];
   sowScheduleSheets = [];
   sowActiveScheduleSheet = '';
+  sowScheduleSheetScrollLeft = 0;
+  sowScheduleSheetScrollLocked = false;
   sowSplitResponse = null;
   SHARED_ITEMS = [];
   scheduleChanges = {};
@@ -1619,6 +1624,8 @@ function resetSplit(){
   sowFullSchedule = [];
   sowScheduleSheets = [];
   sowActiveScheduleSheet = '';
+  sowScheduleSheetScrollLeft = 0;
+  sowScheduleSheetScrollLocked = false;
   sowSplitResponse = null;
   SHARED_ITEMS = [];
   scheduleChanges = {};
@@ -2601,6 +2608,10 @@ function scheduleCellText(value){
 function renderScheduleView(){
   var panel=el('schedule-panel');
   if(!panel)return;
+  var keepSheetScroll=sowScheduleSheetScrollLocked;
+  sowScheduleSheetScrollLocked=false;
+  var existingSheetScroll=panel.querySelector('.schedule-sheet-tabs__scroll');
+  if(existingSheetScroll && !keepSheetScroll) sowScheduleSheetScrollLeft=existingSheetScroll.scrollLeft;
   var active = activeScheduleSheet();
   var allItems = active ? active.items.slice() : [];
   if(!allItems.length){
@@ -2643,11 +2654,29 @@ function renderScheduleView(){
       count.textContent=String((sheetTab.items||[]).length);
       tabBtn.appendChild(name);
       tabBtn.appendChild(count);
+      tabBtn.onmousedown=function(event){
+        event.preventDefault();
+        sowScheduleSheetScrollLeft=sheetScroll.scrollLeft;
+      };
       tabBtn.onclick=function(){ selectScheduleSheet(sheetTab.name); };
       sheetScroll.appendChild(tabBtn);
     });
     sheetBar.appendChild(sheetLabel);
+    var sheetPrev=document.createElement('button');
+    sheetPrev.type='button';
+    sheetPrev.className='schedule-sheet-tabs__nav';
+    sheetPrev.setAttribute('data-sheet-nav','prev');
+    sheetPrev.setAttribute('aria-label','Previous sheets');
+    sheetPrev.innerHTML='<svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M8.5 3L4.5 7l4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+    var sheetNext=document.createElement('button');
+    sheetNext.type='button';
+    sheetNext.className='schedule-sheet-tabs__nav';
+    sheetNext.setAttribute('data-sheet-nav','next');
+    sheetNext.setAttribute('aria-label','Next sheets');
+    sheetNext.innerHTML='<svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M5.5 3l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+    sheetBar.appendChild(sheetPrev);
     sheetBar.appendChild(sheetScroll);
+    sheetBar.appendChild(sheetNext);
     wrap.appendChild(sheetBar);
   }
 
@@ -2787,10 +2816,46 @@ function renderScheduleView(){
     '<button class="btn btn-primary btn-sm" data-schedule-apply style="background:var(--green)" disabled onclick="applyScheduleAllocations()">&#10003; Apply Changes</button>';
   wrap.appendChild(bar);
   panel.appendChild(wrap);
-  var activeSheetBtn=wrap.querySelector('.schedule-sheet-tab.is-active');
+  bindScheduleSheetNav(wrap.querySelector('.schedule-sheet-tabs'));
   var sheetScroll=wrap.querySelector('.schedule-sheet-tabs__scroll');
-  if(activeSheetBtn && sheetScroll) sheetScroll.scrollLeft=Math.max(0, activeSheetBtn.offsetLeft-8);
+  if(sheetScroll) sheetScroll.scrollLeft=sowScheduleSheetScrollLeft;
   updateScheduleChangeUi();
+}
+
+function bindScheduleSheetNav(bar){
+  if(!bar) return;
+  var scroll=bar.querySelector('.schedule-sheet-tabs__scroll');
+  var prev=bar.querySelector('[data-sheet-nav="prev"]');
+  var next=bar.querySelector('[data-sheet-nav="next"]');
+  if(!scroll || !prev || !next) return;
+  function update(){
+    var max=scroll.scrollWidth-scroll.clientWidth;
+    var overflow=max>4;
+    prev.hidden=!overflow;
+    next.hidden=!overflow;
+    prev.disabled=scroll.scrollLeft<=2;
+    next.disabled=scroll.scrollLeft>=max-2;
+  }
+  function move(direction){
+    var amount=Math.max(160, Math.round(scroll.clientWidth*0.72));
+    scroll.scrollBy({left:direction*amount, behavior:'smooth'});
+  }
+  prev.onmousedown=function(event){ event.preventDefault(); };
+  next.onmousedown=function(event){ event.preventDefault(); };
+  prev.onclick=function(){ move(-1); };
+  next.onclick=function(){ move(1); };
+  scroll.addEventListener('scroll', function(){
+    sowScheduleSheetScrollLeft=scroll.scrollLeft;
+    update();
+  });
+  scroll.addEventListener('wheel', function(event){
+    if(scroll.scrollWidth<=scroll.clientWidth+4) return;
+    if(Math.abs(event.deltaX)>Math.abs(event.deltaY)) return;
+    event.preventDefault();
+    scroll.scrollLeft+=event.deltaY;
+  }, {passive:false});
+  update();
+  requestAnimationFrame(update);
 }
 
 window.resetScheduleChanges = resetScheduleChanges;
