@@ -3073,15 +3073,53 @@ window.setSowSupportingDocuments = function(payload){
   updateSec2Status();
 };
 
+function supportingFileExtension(file){
+  var name = file && file.name ? String(file.name) : '';
+  var dot = name.lastIndexOf('.');
+  return dot >= 0 ? name.slice(dot + 1).toLowerCase() : '';
+}
+
+function supportingFileAllowed(file, type){
+  var ext = supportingFileExtension(file);
+  if(type === 'dwg') return ext === 'pdf';
+  return ext === 'pdf' || ext === 'docx';
+}
+
+function supportingFileRuleText(type){
+  return type === 'dwg'
+    ? 'Drawing schedules accept PDF files only.'
+    : 'Specification sections accept PDF and Word (.docx) files only.';
+}
+
+function addSupportingFiles(files, type, input){
+  var accepted = [];
+  var rejected = [];
+  Array.from(files || []).forEach(function(file){
+    if(supportingFileAllowed(file, type)) accepted.push(file);
+    else rejected.push(file && file.name ? file.name : 'file');
+  });
+  accepted.forEach(function(file){ addSupportingFile(file, type); });
+  if(input) input.value = '';
+  if(!rejected.length) return;
+  var names = rejected.slice(0, 3).join(', ');
+  if(rejected.length > 3) names += ' and ' + (rejected.length - 3) + ' more';
+  sowDialog({
+    title: 'File not added',
+    text: names + '. ' + supportingFileRuleText(type),
+    icon: 'warning',
+    confirmButtonText: 'OK',
+    confirmButtonColor: 'hsl(262 83% 58%)'
+  });
+}
+
 function specHandleFile(event, type) {
-  var files = Array.from(event.target.files);
-  files.forEach(function(f){ addSupportingFile(f, type); });
+  addSupportingFiles(event.target.files, type, event.target);
 }
 function specHandleDrop(event, type) {
   event.preventDefault();
   var dz = el(type+'-drop-zone');
-  dz.style.borderColor='var(--border)'; dz.style.background='var(--bg)';
-  Array.from(event.dataTransfer.files).forEach(function(f){ addSupportingFile(f, type); });
+  if(dz){ dz.style.borderColor='var(--border)'; dz.style.background='var(--bg)'; }
+  addSupportingFiles(event.dataTransfer.files, type);
 }
 function addSupportingFile(f, type) {
   supportingFiles[type].push(f);
