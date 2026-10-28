@@ -316,6 +316,7 @@ function resetSowModuleForProjectSwitch(){
 
   scheduleChanges = {};
   scheduleOverarchingChanges = {};
+  scheduleSharedChanges = {};
   scheduleApplying = false;
   updateScheduleChangeUi();
 
@@ -978,7 +979,8 @@ function normalizeFullScheduleItem(item, sheetName){
     tradeId: item.tradeId || '',
     tradeLabel: item.tradeLabel || '',
     overarching_trade: item.overarching_trade || item.overarchingTrade || '',
-    match_confidence: normalizeMatchConfidence(item.match_confidence || item.matchConfidence)
+    match_confidence: normalizeMatchConfidence(item.match_confidence || item.matchConfidence),
+    shared_item_id: item.shared_item_id || item.sharedItemId || null
   };
 }
 
@@ -1200,6 +1202,7 @@ function clearSplitResultsOnly(){
   SHARED_ITEMS = [];
   scheduleChanges = {};
   scheduleOverarchingChanges = {};
+  scheduleSharedChanges = {};
   var emptyEl = el('split-empty');
   var resultsEl = el('split-results');
   var procEl = el('split-processing');
@@ -1674,6 +1677,7 @@ function resetSplit(){
   SHARED_ITEMS = [];
   scheduleChanges = {};
   scheduleOverarchingChanges = {};
+  scheduleSharedChanges = {};
   // Restore SOW section
   el('split-file-pill').style.display='none';
   el('sow-upload-area').style.display='block';
@@ -1813,6 +1817,10 @@ function sowDialog(options){
   }
   alert((options && (options.text || options.title)) || '');
   return Promise.resolve({ isConfirmed: true });
+}
+
+function sowToast(type, message){
+  if(typeof window.sowToast === 'function') window.sowToast(type, message);
 }
 
 function sharedTradeId(trade){
@@ -2430,6 +2438,7 @@ function switchResultTab(tab){
     var isActive=t===tab;
     panel.style.display=isActive?(t==='trades'||t==='schedule'?'flex':'block'):'none';
     btn.style.cssText='padding:10px 16px;background:transparent;border:none;border-bottom:3px solid '+(isActive?'var(--navy)':'transparent')+';font-size:13px;font-weight:'+(isActive?'700':'500')+';color:'+(isActive?'var(--navy)':'var(--text-light)')+';cursor:pointer;font-family:DM Sans,sans-serif';
+    if(t==='compliance')btn.style.display='none'; // Compliance Check tab hidden
   });
   if(tab==='shared')renderSharedItems();
   if(tab==='schedule')renderScheduleView();
@@ -2451,12 +2460,15 @@ function makeAllocBtn(ref,desc){
 // ── SCHEDULE VIEW ─────────────────────────────────────────
 var scheduleChanges={};
 var scheduleOverarchingChanges={};
+// item_key -> true/false for "Shared" ticks that differ from the saved row (shared_item_id)
+var scheduleSharedChanges={};
 var scheduleApplying=false;
 
 function getSchedulePendingCount(){
   var keys={};
   Object.keys(scheduleChanges).forEach(function(key){ keys[key]=true; });
   Object.keys(scheduleOverarchingChanges).forEach(function(key){ keys[key]=true; });
+  Object.keys(scheduleSharedChanges).forEach(function(key){ keys[key]=true; });
   return Object.keys(keys).length;
 }
 
@@ -2507,6 +2519,15 @@ function scheduleSyncRow(itemKey,tradeId,originalTradeId,overarchingName,origina
   updateScheduleChangeUi();
 }
 
+function scheduleSharedChanged(checkbox){
+  var itemKey=checkbox.getAttribute('data-item-key');
+  if(!itemKey) return;
+  var original=checkbox.getAttribute('data-original-shared')==='true';
+  if(checkbox.checked===original) delete scheduleSharedChanges[itemKey];
+  else scheduleSharedChanges[itemKey]=checkbox.checked;
+  updateScheduleChangeUi();
+}
+
 function scheduleAllocationPayload(){
   var request={};
   var changes={};
@@ -2519,6 +2540,7 @@ function scheduleAllocationPayload(){
   });
   if(Object.keys(changes).length) request.changes=changes;
   if(Object.keys(overarching).length) request.overarching_changes=overarching;
+  if(Object.keys(scheduleSharedChanges).length) request.shared_changes=Object.assign({},scheduleSharedChanges);
   return request;
 }
 
@@ -2590,6 +2612,7 @@ function resetScheduleChanges(){
   if(!getSchedulePendingCount()) return;
   scheduleChanges={};
   scheduleOverarchingChanges={};
+  scheduleSharedChanges={};
   renderScheduleView();
 }
 
@@ -2599,6 +2622,7 @@ function applyAllocationResponse(response){
   }
   scheduleChanges={};
   scheduleOverarchingChanges={};
+  scheduleSharedChanges={};
   updateSplitResultSummary();
   updateSharedCountBadge();
   renderSplitTradeList();
@@ -2610,7 +2634,7 @@ function applyAllocationResponse(response){
 async function applyScheduleAllocations(){
   var request=scheduleAllocationPayload();
   var count=getSchedulePendingCount();
-  if(!count || scheduleApplying || (!request.changes && !request.overarching_changes)) return;
+  if(!count || scheduleApplying || (!request.changes && !request.overarching_changes && !request.shared_changes)) return;
   if(!sowProjectJobId){
     window.dispatchEvent(new CustomEvent('sow-needs-project'));
     alert('Select a project before applying allocation changes.');
@@ -2630,7 +2654,22 @@ async function applyScheduleAllocations(){
     var requestJobId = sowProjectJobId;
     var response=await window.patchSowAllocations(requestJobId,request);
     if(requestJobId !== sowProjectJobId) return;
-    applyAllocationResponse(response);
+    // Reload the listing from GET /sow/split so the table shows what the server saved.
+    // Falls back to the PATCH response tabs if the reload fails.
+    var reloaded=null;
+    try {
+      if(typeof window.fetchSavedSowSplit==='function') reloaded=await window.fetchSavedSowSplit(requestJobId);
+    } catch(reloadError) {
+      console.error('[schedule-of-works] GET /sow/split after apply failed', reloadError);
+    }
+    if(requestJobId !== sowProjectJobId) return;
+    applyAllocationResponse(reloaded && reloaded.tabs ? reloaded : response);
+    // Older backends accept the request but ignore shared_changes; tell the user instead of failing silently.
+    if(request.shared_changes && !Array.isArray(response.shared_changed)){
+      sowToast('warning', 'Trade changes were applied, but the server did not save the Shared ticks. Please try again later.');
+    } else {
+      sowToast('success', count+' change'+(count===1?'':'s')+' applied successfully.');
+    }
   } catch(e) {
     alert(e && e.message ? e.message : 'Failed to apply allocation changes.');
     updateScheduleChangeUi();
@@ -2752,7 +2791,7 @@ function renderScheduleView(){
   var sheet=document.createElement('div');
   sheet.className='schedule-sheet';
 
-  ['','Ref','Description','Qty','Unit','Overarching Trade','Trade Allocation'].forEach(function(h){
+  ['','Ref','Shared','Description','Qty','Unit','Overarching Trade','Trade Allocation'].forEach(function(h){
     var d=document.createElement('div');
     d.className='schedule-head-cell';
     d.textContent=h;
@@ -2793,6 +2832,22 @@ function renderScheduleView(){
       r.className='schedule-cell schedule-cell--ref'+rowClass;
       r.textContent=scheduleCellText(item.ref);
       sheet.appendChild(r);
+
+      var savedShared=Boolean(item.shared_item_id);
+      var hasSharedEdit=Object.prototype.hasOwnProperty.call(scheduleSharedChanges,item.item_key);
+      var sh=document.createElement('div');
+      sh.className='schedule-cell schedule-cell--shared'+rowClass;
+      var shBox=document.createElement('input');
+      shBox.type='checkbox';
+      shBox.className='schedule-shared-checkbox';
+      shBox.setAttribute('data-item-key', item.item_key);
+      shBox.setAttribute('data-original-shared', savedShared?'true':'false');
+      shBox.setAttribute('aria-label','Mark '+scheduleCellText(item.ref)+' as shared');
+      shBox.title='Shared item';
+      shBox.checked=hasSharedEdit?scheduleSharedChanges[item.item_key]:savedShared;
+      shBox.onchange=function(){ scheduleSharedChanged(this); };
+      sh.appendChild(shBox);
+      sheet.appendChild(sh);
 
       var d=document.createElement('div');
       d.className='schedule-cell schedule-cell--desc'+rowClass;

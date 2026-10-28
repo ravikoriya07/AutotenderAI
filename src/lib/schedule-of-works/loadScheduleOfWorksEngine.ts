@@ -15,7 +15,7 @@ import type {
   SowSharedItemPatchResponse,
 } from "@/services/sowService";
 
-const ENGINE_VERSION = "45";
+const ENGINE_VERSION = "48";
 const ENGINE_SRC = `/schedule-of-works/engine.js?v=${ENGINE_VERSION}`;
 const LOADED_FLAG = `__sowEngineLoaded_${ENGINE_VERSION}`;
 
@@ -344,6 +344,19 @@ export function registerSowDialog(handler: SowDialogHandler): () => void {
   win.sowDialog = handler;
   return () => {
     delete win.sowDialog;
+  };
+}
+
+export type SowToastType = "success" | "error" | "info" | "warning";
+
+export type SowToastHandler = (type: SowToastType, message: string) => void;
+
+export function registerSowToast(handler: SowToastHandler): () => void {
+  if (typeof window === "undefined") return () => undefined;
+  const win = window as Window & { sowToast?: SowToastHandler };
+  win.sowToast = handler;
+  return () => {
+    delete win.sowToast;
   };
 }
 

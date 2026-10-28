@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
 import Swal from "sweetalert2";
+import { toast } from "react-toastify";
 import { SOW_BODY_HTML } from "@/components/schedule-of-works/sowBodyHtml";
 import { SowCreateProjectModal } from "@/components/schedule-of-works/SowCreateProjectModal";
 import { useResearchProject } from "@/contexts/ResearchProjectContext";
@@ -16,6 +17,7 @@ import {
   registerSowSplitLoad,
   registerSowSplitSubmit,
   registerSowSheetsFetch,
+  registerSowToast,
   registerSowWorkbookSubmit,
   registerSowWorkbookTemplateValidate,
   runLoadSavedSowSplit,
@@ -273,6 +275,13 @@ export function ScheduleOfWorksView() {
     return registerSowSharedItemPatch((jobId, itemId, request, signal) =>
       patchSowSharedItem(jobId, itemId, request, signal)
     );
+  }, [engineReady]);
+
+  useEffect(() => {
+    if (!engineReady) return;
+    return registerSowToast((type, message) => {
+      toast[type](message);
+    });
   }, [engineReady]);
 
   useEffect(() => {

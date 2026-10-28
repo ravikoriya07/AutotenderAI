@@ -312,6 +312,8 @@ export type SowFullScheduleItem = {
   tradeLabel?: string;
   overarching_trade?: string;
   match_confidence?: string;
+  /** Shared-items card id when the row is ticked "Shared"; null when it is not. */
+  shared_item_id?: string | null;
 };
 
 export type SowSharedItemTrade = {
@@ -469,17 +471,23 @@ export async function submitSowSplit(
 
 export type SowAllocationChanges = Record<string, string>;
 
+/** item_key -> true to tick a row "Shared", false to untick it. */
+export type SowSharedChanges = Record<string, boolean>;
+
 export type SowAllocationsRequest = {
   changes?: SowAllocationChanges;
   overarching_changes?: SowAllocationChanges;
+  shared_changes?: SowSharedChanges;
 };
 
 export type SowAllocationsResponse = {
   status: string;
   moved?: string[];
   overarching_updated?: string[];
+  shared_changed?: string[];
   not_found?: string[];
   trade_line_counts?: Record<string, number>;
+  active_shared_item_count?: number;
   tabs?: SowSplitResponse["tabs"];
 };
 
@@ -494,8 +502,19 @@ function nonemptyAllocationMap(
   return Object.fromEntries(entries);
 }
 
+function nonemptySharedMap(
+  map: SowSharedChanges | undefined
+): SowSharedChanges | null {
+  if (!map) return null;
+  const entries = Object.entries(map).filter(
+    ([key, value]) => key.trim() !== "" && typeof value === "boolean"
+  );
+  if (!entries.length) return null;
+  return Object.fromEntries(entries);
+}
+
 /**
- * Persists Full Schedule trade re-allocations.
+ * Persists Full Schedule trade re-allocations and "Shared" ticks.
  * PATCH /sow/allocations/:job_id (application/json)
  */
 export async function patchSowAllocations(
@@ -513,13 +532,15 @@ export async function patchSowAllocations(
 
   const changes = nonemptyAllocationMap(request.changes);
   const overarchingChanges = nonemptyAllocationMap(request.overarching_changes);
-  if (!changes && !overarchingChanges) {
+  const sharedChanges = nonemptySharedMap(request.shared_changes);
+  if (!changes && !overarchingChanges && !sharedChanges) {
     throw new Error("No allocation changes to apply.");
   }
 
   const body: SowAllocationsRequest = {};
   if (changes) body.changes = changes;
   if (overarchingChanges) body.overarching_changes = overarchingChanges;
+  if (sharedChanges) body.shared_changes = sharedChanges;
 
   const token = getAuthToken();
   const res = await fetch(
@@ -544,8 +565,10 @@ export async function patchSowAllocations(
     status: String(raw.status ?? "success"),
     moved: raw.moved,
     overarching_updated: raw.overarching_updated,
+    shared_changed: raw.shared_changed,
     not_found: raw.not_found,
     trade_line_counts: raw.trade_line_counts,
+    active_shared_item_count: raw.active_shared_item_count,
     tabs: raw.tabs,
   };
 }

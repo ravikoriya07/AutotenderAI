@@ -302,9 +302,9 @@
 
 .sow-module #schedule-panel .schedule-sheet {
   display: grid;
-  grid-template-columns: 36px 64px minmax(140px, 1fr) 52px 56px minmax(150px, 210px) minmax(170px, 220px);
+  grid-template-columns: 36px 64px 64px minmax(140px, 1fr) 52px 56px minmax(150px, 210px) minmax(170px, 220px);
   width: 100%;
-  min-width: 860px;
+  min-width: 924px;
   font-family: Arial, sans-serif;
   font-size: 12px;
   align-items: stretch;
@@ -406,6 +406,18 @@
   font-size: 11px;
   font-weight: 700;
   color: #1b3a6b;
+}
+
+.sow-module #schedule-panel .schedule-cell--shared {
+  justify-content: center;
+}
+
+.sow-module #schedule-panel .schedule-shared-checkbox {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  cursor: pointer;
+  accent-color: #1b3a6b;
 }
 
 .sow-module #schedule-panel .schedule-cell--desc {
