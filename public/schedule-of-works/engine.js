@@ -920,19 +920,29 @@ function forgetHiddenSharedId(id){
   writeHiddenSharedIds(readHiddenSharedIds().filter(function(saved){ return saved !== id; }));
 }
 
+function sharedFlag(value){
+  if(value === true || String(value).toLowerCase() === 'true') return true;
+  if(value === false || value === 0 || String(value).toLowerCase() === 'false') return false;
+  return null;
+}
+
 function isActiveSharedItem(item){
   if(!item) return false;
-  var flag = item.is_shared;
-  var explicitlyShared = flag === true || String(flag).toLowerCase() === 'true';
-  var explicitlyHidden = flag === false || flag === 0 || String(flag).toLowerCase() === 'false';
-  var trades = Array.isArray(item.trades) ? item.trades : [];
-  var tradeCount = item.trade_count != null && item.trade_count !== '' ? Number(item.trade_count) : null;
-  var onlyOneTrade = trades.length === 1 || (tradeCount != null && !isNaN(tradeCount) && tradeCount < 2);
-  if(explicitlyShared && trades.length >= 2){
+  if(sharedFlag(item.removed_from_shared) === true) return false;
+  var markedShared = sharedFlag(item.marked_shared);
+  var isShared = sharedFlag(item.is_shared);
+  // The backend decides: a card it marks shared stays listed even with one trade (or none),
+  // and the session hidden-id memory never overrides it.
+  if(markedShared === true || isShared === true){
     forgetHiddenSharedId(item.id);
     return true;
   }
-  if(explicitlyHidden || onlyOneTrade){
+  if(markedShared === false || isShared === false) return false;
+  // No flags from the backend: fall back to the trade-count rule.
+  var trades = Array.isArray(item.trades) ? item.trades : [];
+  var tradeCount = item.trade_count != null && item.trade_count !== '' ? Number(item.trade_count) : null;
+  var onlyOneTrade = trades.length === 1 || (tradeCount != null && !isNaN(tradeCount) && tradeCount < 2);
+  if(onlyOneTrade){
     rememberHiddenSharedId(item.id);
     return false;
   }
@@ -1709,7 +1719,7 @@ function renderSharedItems(){
   var headerHTML='<div class="flex-b mb16">'+
     '<div>'+
       '<div style="font-size:18px;font-weight:700;color:var(--text)">Shared Items</div>'+
-      '<div style="font-size:13px;color:var(--text-light);margin-top:2px">'+SHARED_ITEMS.length+' items identified that span multiple trades</div>'+
+      '<div style="font-size:13px;color:var(--text-light);margin-top:2px">'+SHARED_ITEMS.length+' shared item'+(SHARED_ITEMS.length===1?'':'s')+' across trades</div>'+
     '</div>'+
     '<button class="btn btn-secondary btn-sm" id="sow-export-shared-btn" onclick="exportSharedItems()"'+(SHARED_ITEMS.length ? '' : ' disabled')+'>&#8681; Export Schedule</button>'+
   '</div>'+
@@ -1747,7 +1757,7 @@ function renderSharedItems(){
       '<div style="flex:1">'+
         '<div style="font-size:13.5px;font-weight:600;color:var(--text);line-height:1.4">'+esc(item.desc)+'</div>'+
         '<div style="margin-top:6px;display:flex;gap:6px;align-items:center;flex-wrap:wrap">'+
-          '<span style="font-size:11px;font-weight:700;color:var(--amber);background:var(--amber-bg);border:1px solid rgba(196,123,0,.2);padding:2px 8px;border-radius:10px">&#9888; '+item.trades.length+' trades</span>'+
+          '<span style="font-size:11px;font-weight:700;color:var(--amber);background:var(--amber-bg);border:1px solid rgba(196,123,0,.2);padding:2px 8px;border-radius:10px">&#9888; '+item.trades.length+' trade'+(item.trades.length===1?'':'s')+'</span>'+
           tradeBadges+
         '</div>'+
       '</div>';
