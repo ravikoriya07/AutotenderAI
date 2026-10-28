@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
+import Swal from "sweetalert2";
 import { SOW_BODY_HTML } from "@/components/schedule-of-works/sowBodyHtml";
 import { SowCreateProjectModal } from "@/components/schedule-of-works/SowCreateProjectModal";
 import { useResearchProject } from "@/contexts/ResearchProjectContext";
@@ -9,9 +10,12 @@ import {
   cancelLoadSavedSowSplit,
   loadScheduleOfWorksEngine,
   registerSowAllocationsPatch,
+  registerSowDialog,
+  registerSowSharedItemPatch,
   registerSowDownloadExport,
   registerSowSplitLoad,
   registerSowSplitSubmit,
+  registerSowSheetsFetch,
   registerSowWorkbookSubmit,
   registerSowWorkbookTemplateValidate,
   runLoadSavedSowSplit,
@@ -19,6 +23,9 @@ import {
   setSowFoundFiles,
   setSowFoundFilesLoading,
   setSowProjectContext,
+  setSowSupportingDocuments,
+  setSowSupportingDocumentsLoading,
+  clearSowSupportingDocuments,
 } from "@/lib/schedule-of-works/loadScheduleOfWorksEngine";
 import { assertSowWorkbookTemplateContent } from "@/lib/schedule-of-works/validateSowWorkbookTemplate";
 import { requestProjectCatalogRefresh } from "@/lib/projectCatalogRefresh";
@@ -29,7 +36,10 @@ import {
   downloadSowExport,
   fetchSavedSowSplit,
   fetchSowByJobId,
+  fetchSowSheets,
+  fetchSowSupportingDocuments,
   patchSowAllocations,
+  patchSowSharedItem,
   submitSowSplit,
   submitSowWorkbook,
   type SowFoundFile,
@@ -47,6 +57,19 @@ export function ScheduleOfWorksView() {
   }>({
     loading: false,
     files: [],
+  });
+  const pendingSupportingDocsRef = useRef<{
+    loading: boolean;
+    ready: boolean;
+    specifications: { file_name: string }[];
+    drawings: { file_name: string }[];
+    error: string;
+  }>({
+    loading: false,
+    ready: false,
+    specifications: [],
+    drawings: [],
+    error: "",
   });
   const [engineError, setEngineError] = useState<string | null>(null);
   const [engineReady, setEngineReady] = useState(false);
@@ -85,6 +108,24 @@ export function ScheduleOfWorksView() {
       jobId,
       projectName: pending.projectName ?? project?.project_name,
       clientName: pending.clientName,
+    });
+    applyPendingSupportingDocs();
+  }
+
+  function applyPendingSupportingDocs() {
+    const pending = pendingSupportingDocsRef.current;
+    if (pending.loading) {
+      setSowSupportingDocumentsLoading(true);
+      return;
+    }
+    if (!pending.ready) {
+      clearSowSupportingDocuments();
+      return;
+    }
+    setSowSupportingDocuments({
+      specifications: pending.specifications,
+      drawings: pending.drawings,
+      error: pending.error,
     });
   }
 
@@ -151,6 +192,21 @@ export function ScheduleOfWorksView() {
 
     lastProjectJobIdRef.current = jobId;
     pendingSowFilesRef.current = { loading: Boolean(jobId), files: [] };
+    pendingSupportingDocsRef.current = jobId
+      ? {
+          loading: true,
+          ready: false,
+          specifications: [],
+          drawings: [],
+          error: "",
+        }
+      : {
+          loading: false,
+          ready: false,
+          specifications: [],
+          drawings: [],
+          error: "",
+        };
 
     if (engineReadyRef.current) {
       setSowFoundFilesLoading(Boolean(jobId));
@@ -160,6 +216,7 @@ export function ScheduleOfWorksView() {
         projectName: completedStepProjectsRef.current.find((p) => p.job_id === jobId)
           ?.project_name,
       });
+      applyPendingSupportingDocs();
     }
   }, [selectedProjectJobId]);
 
@@ -175,6 +232,12 @@ export function ScheduleOfWorksView() {
     return registerSowWorkbookTemplateValidate(async (file) => {
       await assertSowWorkbookTemplateContent(file);
     });
+  }, []);
+
+  useEffect(() => {
+    return registerSowSheetsFetch((request, signal) =>
+      fetchSowSheets(request, signal)
+    );
   }, []);
 
   useEffect(() => {
@@ -207,6 +270,40 @@ export function ScheduleOfWorksView() {
 
   useEffect(() => {
     if (!engineReady) return;
+    return registerSowSharedItemPatch((jobId, itemId, request, signal) =>
+      patchSowSharedItem(jobId, itemId, request, signal)
+    );
+  }, [engineReady]);
+
+  useEffect(() => {
+    if (!engineReady) return;
+    return registerSowDialog((options) =>
+      Swal.fire({
+        title: options.title,
+        text: options.text,
+        icon: options.icon ?? "warning",
+        showCancelButton: Boolean(options.showCancelButton),
+        confirmButtonText: options.confirmButtonText ?? "OK",
+        cancelButtonText: options.cancelButtonText ?? "Cancel",
+        confirmButtonColor:
+          options.confirmButtonColor ??
+          (options.showCancelButton ? "hsl(0 84% 60%)" : "hsl(262 83% 58%)"),
+        cancelButtonColor: "#6b7280",
+        reverseButtons: true,
+        focusCancel: Boolean(options.showCancelButton),
+        customClass: {
+          popup: "!rounded-2xl !shadow-2xl",
+          title: "!text-base !font-semibold",
+          htmlContainer: "!text-sm !text-gray-500",
+          confirmButton: "!rounded-lg !text-sm !font-medium !px-4 !py-2",
+          cancelButton: "!rounded-lg !text-sm !font-medium !px-4 !py-2",
+        },
+      }).then((result) => ({ isConfirmed: result.isConfirmed }))
+    );
+  }, [engineReady]);
+
+  useEffect(() => {
+    if (!engineReady) return;
     return registerSowSplitLoad((jobId, signal) =>
       fetchSavedSowSplit(jobId, signal)
     );
@@ -218,6 +315,13 @@ export function ScheduleOfWorksView() {
 
     if (!jobId) {
       pendingSowFilesRef.current = { loading: false, files: [] };
+      pendingSupportingDocsRef.current = {
+        loading: false,
+        ready: false,
+        specifications: [],
+        drawings: [],
+        error: "",
+      };
       if (engineReadyRef.current) {
         applyPendingSowFindToEngine("");
       }
@@ -252,6 +356,42 @@ export function ScheduleOfWorksView() {
         if (engineReadyRef.current) {
           setSowFoundFilesLoading(false);
           setSowFoundFiles([]);
+        }
+      }
+    })();
+
+    void (async () => {
+      try {
+        const response = await fetchSowSupportingDocuments(
+          jobId,
+          controller.signal
+        );
+        if (controller.signal.aborted) return;
+        pendingSupportingDocsRef.current = {
+          loading: false,
+          ready: true,
+          specifications: response.specifications,
+          drawings: response.drawings,
+          error: "",
+        };
+        if (engineReadyRef.current) {
+          applyPendingSupportingDocs();
+        }
+      } catch (err) {
+        if (controller.signal.aborted) return;
+        console.error(
+          "[schedule-of-works] GET /sow/supporting-documents failed",
+          err
+        );
+        pendingSupportingDocsRef.current = {
+          loading: false,
+          ready: true,
+          specifications: [],
+          drawings: [],
+          error: "Could not load specifications and drawings.",
+        };
+        if (engineReadyRef.current) {
+          applyPendingSupportingDocs();
         }
       }
     })();

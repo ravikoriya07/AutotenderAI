@@ -1,5 +1,7 @@
 import type {
   SowFoundFile,
+  SowSheetsRequest,
+  SowSheetsResponse,
   SowSplitRequest,
   SowSplitResponse,
   SowTradeSplitOptions,
@@ -9,9 +11,11 @@ import type {
   SowFileDownloadResult,
   SowAllocationsRequest,
   SowAllocationsResponse,
+  SowSharedItemPatchRequest,
+  SowSharedItemPatchResponse,
 } from "@/services/sowService";
 
-const ENGINE_VERSION = "16";
+const ENGINE_VERSION = "45";
 const ENGINE_SRC = `/schedule-of-works/engine.js?v=${ENGINE_VERSION}`;
 const LOADED_FLAG = `__sowEngineLoaded_${ENGINE_VERSION}`;
 
@@ -124,6 +128,46 @@ export function setSowFoundFilesLoading(loading: boolean): void {
   bridge?.(loading);
 }
 
+export type SowSupportingDocumentsView = {
+  specifications: { file_name: string }[];
+  drawings: { file_name: string }[];
+  error?: string;
+};
+
+export function setSowSupportingDocumentsLoading(loading: boolean): void {
+  if (typeof window === "undefined") return;
+  const bridge = (
+    window as Window & {
+      setSowSupportingDocumentsLoading?: (loading: boolean) => void;
+    }
+  ).setSowSupportingDocumentsLoading;
+  bridge?.(loading);
+}
+
+export function setSowSupportingDocuments(
+  documents: SowSupportingDocumentsView
+): void {
+  if (typeof window === "undefined") return;
+  const bridge = (
+    window as Window & {
+      setSowSupportingDocuments?: (
+        documents: SowSupportingDocumentsView
+      ) => void;
+    }
+  ).setSowSupportingDocuments;
+  bridge?.(documents);
+}
+
+export function clearSowSupportingDocuments(): void {
+  if (typeof window === "undefined") return;
+  const bridge = (
+    window as Window & {
+      clearSowSupportingDocuments?: () => void;
+    }
+  ).clearSowSupportingDocuments;
+  bridge?.();
+}
+
 export function getSowTradeSplitOptions(): SowTradeSplitOptions | null {
   if (typeof window === "undefined") return null;
   const bridge = (
@@ -149,6 +193,24 @@ export type SowSplitSubmitHandler = (
   request: SowSplitRequest,
   signal?: AbortSignal
 ) => Promise<SowSplitResponse>;
+
+export type SowSheetsFetchHandler = (
+  request: SowSheetsRequest,
+  signal?: AbortSignal
+) => Promise<SowSheetsResponse>;
+
+export function registerSowSheetsFetch(
+  handler: SowSheetsFetchHandler
+): () => void {
+  if (typeof window === "undefined") return () => undefined;
+  const win = window as Window & {
+    fetchSowSheets?: SowSheetsFetchHandler;
+  };
+  win.fetchSowSheets = handler;
+  return () => {
+    delete win.fetchSowSheets;
+  };
+}
 
 export function registerSowSplitSubmit(
   handler: SowSplitSubmitHandler
@@ -252,6 +314,49 @@ export function registerSowAllocationsPatch(
   win.patchSowAllocations = handler;
   return () => {
     delete win.patchSowAllocations;
+  };
+}
+
+export type SowSharedItemPatchHandler = (
+  jobId: string,
+  itemId: string,
+  request: SowSharedItemPatchRequest,
+  signal?: AbortSignal
+) => Promise<SowSharedItemPatchResponse>;
+
+export type SowDialogOptions = {
+  title: string;
+  text?: string;
+  icon?: "warning" | "error" | "info" | "success";
+  showCancelButton?: boolean;
+  confirmButtonText?: string;
+  cancelButtonText?: string;
+  confirmButtonColor?: string;
+};
+
+export type SowDialogHandler = (
+  options: SowDialogOptions
+) => Promise<{ isConfirmed: boolean }>;
+
+export function registerSowDialog(handler: SowDialogHandler): () => void {
+  if (typeof window === "undefined") return () => undefined;
+  const win = window as Window & { sowDialog?: SowDialogHandler };
+  win.sowDialog = handler;
+  return () => {
+    delete win.sowDialog;
+  };
+}
+
+export function registerSowSharedItemPatch(
+  handler: SowSharedItemPatchHandler
+): () => void {
+  if (typeof window === "undefined") return () => undefined;
+  const win = window as Window & {
+    patchSowSharedItem?: SowSharedItemPatchHandler;
+  };
+  win.patchSowSharedItem = handler;
+  return () => {
+    delete win.patchSowSharedItem;
   };
 }
 

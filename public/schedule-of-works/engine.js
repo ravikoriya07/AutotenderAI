@@ -1,5 +1,5 @@
 
-var splitFile=null,splitActiveTrade=null,splitTrades=[];
+var splitFile=null,splitActiveTrade=null,splitTrades=[],pricingDocuments=[];
 function el(id){return document.getElementById(id);}
 function esc(s){return s?String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'):''; }
 function escQ(s){return s?String(s).replace(/\\/g,'\\\\').replace(/'/g,"\\'"):''; }
@@ -43,7 +43,8 @@ function openAllocateModal(ref,desc){
 
 var splitFile = null;
 var splitActiveTrade = null;
-var splitTrades = [];   // [{id, label, nbs, items:[{ref,desc,qty,unit}], lineCount}]
+var splitTrades = [];   // catalogue trades for Full Schedule and shared items
+var pricingDocuments = [];   // Trade Documents tab, grouped by overarching name
 var sowProjectJobId = '';
 var sowSplitProcessing = false;
 var sowFoundFiles = [];
@@ -53,8 +54,13 @@ var sowSplitValidationMsg = '';
 var sowSplitStepTimers = null;
 var sowSplitLoadGeneration = 0;
 var sowFullSchedule = [];
+var sowScheduleSheets = [];
+var sowActiveScheduleSheet = '';
+var sowScheduleSheetScrollLeft = 0;
+var sowScheduleSheetScrollLocked = false;
 var sowSplitResponse = null;
 var SHARED_ITEMS = [];
+var sowSharedItemRemoving = false;
 
 function updateSowEmsSectionStatus(){
   if(splitFile) return;
@@ -128,6 +134,9 @@ function toggleSowFoundFile(index, checked){
     sowSelectedFileIndex = -1;
   }
   renderSowFoundFilesList();
+  if(splitFile) return;
+  if(checked && sowSelectedFileIndex === index) requestSowSheets();
+  else clearSowSheetPicker();
 }
 
 window.setSowFoundFiles = function(files){
@@ -135,6 +144,7 @@ window.setSowFoundFiles = function(files){
   sowSelectedFileIndex = -1;
   sowFoundFilesLoading = false;
   renderSowFoundFilesList();
+  if(!splitFile) clearSowSheetPicker();
 };
 
 window.setSowFoundFilesLoading = function(loading){
@@ -275,6 +285,7 @@ function resetSowSection1UploadUi(){
   if(convertStatus) convertStatus.textContent = '';
   if(el('sec1-status')) el('sec1-status').textContent = '';
   if(el('sec1-num')) el('sec1-num').className = 'section-num done';
+  clearSowSheetPicker();
 }
 
 function resetSowModuleForProjectSwitch(){
@@ -284,6 +295,7 @@ function resetSowModuleForProjectSwitch(){
 
   supportingFiles = { spec: [], dwg: [] };
   renderSupportingFilesList();
+  clearSowSupportingDocuments();
   updateSec2Status();
   updateCheckBtn();
 
@@ -303,6 +315,7 @@ function resetSowModuleForProjectSwitch(){
   if(typeof clearWbTemplate === 'function') clearWbTemplate();
 
   scheduleChanges = {};
+  scheduleOverarchingChanges = {};
   scheduleApplying = false;
   updateScheduleChangeUi();
 
@@ -498,9 +511,10 @@ function setSplitFile(f){
   // Mark section 1 done, then collapse after short delay
   el('sec1-num').className = 'section-num done';
   el('sec1-status').textContent = f.name.length > 18 ? f.name.substring(0,16)+'…' : f.name;
-  setTimeout(function(){ collapseSection('sec1'); }, 800);
+  expandSection('sec1');
 
   updateCheckBtn();
+  requestSowSheets();
 }
 
 function clearSowFile(){
@@ -515,6 +529,7 @@ function clearSowFile(){
   expandSection('sec1');
   updateCheckBtn();
   renderSowFoundFilesList();
+  clearSowSheetPicker();
 }
 
 function showSplitValidation(msg){
@@ -540,6 +555,209 @@ function getSowSplitSource(){
   }
   return null;
 }
+
+var sowSheetOptions = [];
+var sowSelectedSheetIndexes = {};
+var sowSheetsLoading = false;
+var sowSheetsLoaded = false;
+var sowSheetsError = '';
+var sowSheetsRequestId = 0;
+var sowSheetsAbort = null;
+var sowSheetsMenuOpen = false;
+
+function selectedSowSheetIndexes(){
+  return Object.keys(sowSelectedSheetIndexes)
+    .map(function(key){ return Number(key); })
+    .filter(function(index){ return sowSelectedSheetIndexes[index]; })
+    .sort(function(a, b){ return a - b; });
+}
+
+function clearSowSheetPicker(){
+  sowSheetsRequestId += 1;
+  if(sowSheetsAbort){
+    sowSheetsAbort.abort();
+    sowSheetsAbort = null;
+  }
+  sowSheetOptions = [];
+  sowSelectedSheetIndexes = {};
+  sowSheetsLoading = false;
+  sowSheetsLoaded = false;
+  sowSheetsError = '';
+  sowSheetsMenuOpen = false;
+  renderSowSheetPicker();
+}
+
+function sowSheetsReadyForRun(){
+  if(sowSheetsLoading){
+    showSplitValidation('Sheets are still loading. Please wait.');
+    return false;
+  }
+  if(sowSheetsError){
+    showSplitValidation(sowSheetsError);
+    return false;
+  }
+  if(!sowSheetOptions.length){
+    showSplitValidation('No sheets were found for this file.');
+    return false;
+  }
+  if(!selectedSowSheetIndexes().length){
+    showSplitValidation('Select at least one sheet.');
+    return false;
+  }
+  return true;
+}
+
+function updateSowSheetToggleLabel(){
+  var button = el('sow-sheet-toggle');
+  if(!button) return;
+  var selected = sowSheetOptions.filter(function(sheet){
+    return sowSelectedSheetIndexes[sheet.index];
+  });
+  if(!selected.length){
+    button.textContent = 'Select sheets';
+    return;
+  }
+  var names = selected.map(function(sheet){ return sheet.name; });
+  button.textContent = names.length <= 2 ? names.join(', ') : names.length + ' sheets selected';
+}
+
+function renderSowSheetPicker(){
+  var picker = el('sow-sheet-picker');
+  var button = el('sow-sheet-toggle');
+  var menu = el('sow-sheet-menu');
+  var message = el('sow-sheet-message');
+  if(!picker || !button || !menu || !message) return;
+
+  var visible = sowSheetsLoading || sowSheetsLoaded || Boolean(sowSheetsError);
+  picker.style.display = visible ? 'block' : 'none';
+  menu.style.display = sowSheetsMenuOpen && sowSheetOptions.length ? 'block' : 'none';
+  button.disabled = sowSheetsLoading || !sowSheetOptions.length;
+
+  if(sowSheetsLoading){
+    button.textContent = 'Loading sheets…';
+    menu.innerHTML = '';
+    message.textContent = '';
+    message.className = 'sow-sheet-picker__message';
+    return;
+  }
+
+  if(sowSheetsError){
+    button.textContent = 'Select sheets';
+    menu.innerHTML = '';
+    message.textContent = sowSheetsError;
+    message.className = 'sow-sheet-picker__message sow-sheet-picker__message--error';
+    return;
+  }
+
+  message.textContent = sowSheetOptions.length ? '' : 'No sheets were found for this file.';
+  message.className = sowSheetOptions.length
+    ? 'sow-sheet-picker__message'
+    : 'sow-sheet-picker__message sow-sheet-picker__message--error';
+
+  menu.innerHTML = sowSheetOptions.map(function(sheet){
+    var checked = sowSelectedSheetIndexes[sheet.index] ? ' checked' : '';
+    return '<label class="sow-sheet-picker__option">'+
+      '<input type="checkbox" value="'+sheet.index+'"'+checked+'>'+
+      '<span>'+esc(sheet.name)+'</span>'+
+    '</label>';
+  }).join('');
+  updateSowSheetToggleLabel();
+  if(visible) expandSection('sec1');
+}
+
+function toggleSowSheetMenu(event){
+  if(event){
+    event.preventDefault();
+    event.stopPropagation();
+  }
+  if(sowSheetsLoading || !sowSheetOptions.length) return;
+  sowSheetsMenuOpen = !sowSheetsMenuOpen;
+  var menu = el('sow-sheet-menu');
+  if(menu) menu.style.display = sowSheetsMenuOpen ? 'block' : 'none';
+  if(sowSheetsMenuOpen) expandSection('sec1');
+}
+
+function onSowSheetMenuChange(event){
+  var input = event && event.target;
+  if(!input || input.type !== 'checkbox') return;
+  var index = Number(input.value);
+  if(!Number.isFinite(index)) return;
+  if(input.checked) sowSelectedSheetIndexes[index] = true;
+  else delete sowSelectedSheetIndexes[index];
+  updateSowSheetToggleLabel();
+  clearSplitValidation();
+}
+
+function requestSowSheets(){
+  var source = getSowSplitSource();
+  if(!source){
+    clearSowSheetPicker();
+    return;
+  }
+  if(source.type === 'existing' && !sowProjectJobId){
+    sowSheetsLoading = false;
+    sowSheetsError = 'Select a project before loading sheets for an EMS file.';
+    sowSheetOptions = [];
+    sowSelectedSheetIndexes = {};
+    renderSowSheetPicker();
+    return;
+  }
+
+  if(sowSheetsAbort) sowSheetsAbort.abort();
+  var controller = new AbortController();
+  sowSheetsAbort = controller;
+  var requestId = ++sowSheetsRequestId;
+  sowSheetsLoading = true;
+  sowSheetsLoaded = false;
+  sowSheetsError = '';
+  sowSheetOptions = [];
+  sowSelectedSheetIndexes = {};
+  sowSheetsMenuOpen = false;
+  renderSowSheetPicker();
+  expandSection('sec1');
+
+  var request = source.type === 'upload'
+    ? { type: 'upload', file: source.file, jobId: sowProjectJobId || undefined }
+    : { type: 'existing', jobId: sowProjectJobId, filePath: source.file_path };
+
+  if(typeof window.fetchSowSheets !== 'function'){
+    sowSheetsLoading = false;
+    sowSheetsError = 'Sheet service is not ready. Please refresh the page.';
+    renderSowSheetPicker();
+    return;
+  }
+
+  window.fetchSowSheets(request, controller.signal).then(function(response){
+    if(requestId !== sowSheetsRequestId) return;
+    sowSheetsLoading = false;
+    sowSheetsLoaded = true;
+    sowSheetsError = '';
+    var sheets = response && Array.isArray(response.sheets) ? response.sheets : [];
+    sowSheetOptions = sheets.filter(function(sheet){
+      return sheet && sheet.name && Number.isFinite(Number(sheet.index));
+    }).map(function(sheet){
+      return { name: String(sheet.name), index: Number(sheet.index), hidden: Boolean(sheet.hidden) };
+    });
+    renderSowSheetPicker();
+  }).catch(function(err){
+    if(requestId !== sowSheetsRequestId) return;
+    if(err && (err.name === 'AbortError' || err.code === 'ERR_CANCELED')) return;
+    sowSheetsLoading = false;
+    sowSheetsLoaded = true;
+    sowSheetOptions = [];
+    sowSheetsError = err && err.message ? err.message : 'Could not load sheets.';
+    renderSowSheetPicker();
+  });
+}
+
+document.addEventListener('click', function(event){
+  if(!sowSheetsMenuOpen) return;
+  var picker = el('sow-sheet-picker');
+  if(picker && event.target && picker.contains(event.target)) return;
+  sowSheetsMenuOpen = false;
+  var menu = el('sow-sheet-menu');
+  if(menu) menu.style.display = 'none';
+});
 
 function renderSplitProcessingSteps(){
   var steps=[
@@ -612,8 +830,113 @@ function normalizeTradeDocument(trade){
     section: trade.section || trade.label || '',
     lineCount: trade.lineCount != null ? trade.lineCount : items.length,
     items: items,
+    overarching_trades: readOverarchingTradeNames(trade),
     unallocated: trade.id === 'unallocated' || Boolean(trade.unallocated)
   };
+}
+
+function readOverarchingTradeNames(trade){
+  var raw = trade && (trade.overarching_trades || trade.overarchingTrades);
+  if(!Array.isArray(raw)) return [];
+  var names = [];
+  raw.forEach(function(name){
+    var text = String(name == null ? '' : name).trim();
+    if(text && names.indexOf(text) < 0) names.push(text);
+  });
+  return names;
+}
+
+function isCatalogueTradeLabel(label){
+  return /^[A-Z]{1,4}\d{0,4}\s*[—–-]/.test(String(label || '').trim());
+}
+
+function pricingExcelTradeId(doc, normalized){
+  var downloadId = doc && (doc.download_id || doc.downloadId);
+  if(downloadId) return String(downloadId).trim();
+  var id = String((normalized && normalized.id) || (doc && doc.id) || '').trim();
+  if(id.indexOf('overarching:') === 0) return id;
+  var rawTrade = doc && (doc.trade_id || doc.tradeId);
+  if(rawTrade && String(rawTrade).indexOf('overarching:') === 0) return String(rawTrade).trim();
+  var name = String(doc && (doc.overarching || doc.overarching_trade || doc.overarchingTrade) || '').trim();
+  if(name && name.toUpperCase() !== 'N/A') return 'overarching:' + name;
+  var label = String((normalized && normalized.label) || (doc && (doc.label || doc.trade_name)) || '').trim();
+  if(label && !isCatalogueTradeLabel(label) && id !== 'unallocated' && id !== 'general') return 'overarching:' + label;
+  return id;
+}
+
+function normalizePricingDocument(doc){
+  if(!doc) return null;
+  var base = normalizeTradeDocument(doc);
+  if(!base) return null;
+  if(!base.id){
+    var label = String(doc.label || doc.name || '').trim();
+    base.id = label ? 'overarching:' + label : '';
+    if(label) base.label = label;
+  }
+  base.excelTradeId = pricingExcelTradeId(doc, base);
+  return base.id ? base : null;
+}
+
+function readPricingDocuments(tabs, catalogueTrades){
+  var raw = tabs && tabs.pricing_documents;
+  if(Array.isArray(raw)){
+    return raw.map(normalizePricingDocument).filter(function(doc){ return doc && doc.id; });
+  }
+  return (catalogueTrades || []).map(function(trade){
+    return Object.assign({}, trade, { excelTradeId: trade.id });
+  });
+}
+
+function hiddenSharedStorageKey(){
+  return 'sow-hidden-shared:' + (sowProjectJobId || '');
+}
+
+function readHiddenSharedIds(){
+  try {
+    var raw = sessionStorage.getItem(hiddenSharedStorageKey());
+    var ids = raw ? JSON.parse(raw) : [];
+    return Array.isArray(ids) ? ids : [];
+  } catch (e) {
+    return [];
+  }
+}
+
+function writeHiddenSharedIds(ids){
+  try {
+    sessionStorage.setItem(hiddenSharedStorageKey(), JSON.stringify(ids));
+  } catch (e) {}
+}
+
+function rememberHiddenSharedId(id){
+  if(!id) return;
+  var ids = readHiddenSharedIds();
+  if(ids.indexOf(id) < 0) ids.push(id);
+  writeHiddenSharedIds(ids);
+}
+
+function forgetHiddenSharedId(id){
+  if(!id) return;
+  writeHiddenSharedIds(readHiddenSharedIds().filter(function(saved){ return saved !== id; }));
+}
+
+function isActiveSharedItem(item){
+  if(!item) return false;
+  var flag = item.is_shared;
+  var explicitlyShared = flag === true || String(flag).toLowerCase() === 'true';
+  var explicitlyHidden = flag === false || flag === 0 || String(flag).toLowerCase() === 'false';
+  var trades = Array.isArray(item.trades) ? item.trades : [];
+  var tradeCount = item.trade_count != null && item.trade_count !== '' ? Number(item.trade_count) : null;
+  var onlyOneTrade = trades.length === 1 || (tradeCount != null && !isNaN(tradeCount) && tradeCount < 2);
+  if(explicitlyShared && trades.length >= 2){
+    forgetHiddenSharedId(item.id);
+    return true;
+  }
+  if(explicitlyHidden || onlyOneTrade){
+    rememberHiddenSharedId(item.id);
+    return false;
+  }
+  if(item.id && readHiddenSharedIds().indexOf(item.id) >= 0) return false;
+  return true;
 }
 
 function normalizeSharedItem(item){
@@ -622,8 +945,12 @@ function normalizeSharedItem(item){
     id: item.id || '',
     ref: item.ref || '',
     desc: item.desc || '',
+    version: Number.isFinite(Number(item.version)) ? Number(item.version) : 0,
+    is_shared: !(item.is_shared === false || item.is_shared === 0 || String(item.is_shared).toLowerCase() === 'false'),
+    trade_count: item.trade_count != null && item.trade_count !== '' ? Number(item.trade_count) : (Array.isArray(item.trades) ? item.trades.length : 0),
     trades: Array.isArray(item.trades) ? item.trades.map(function(t){
       return {
+        trade_id: t.trade_id || t.tradeId || '',
         trade: t.trade || '',
         nbs: t.nbs || '',
         lead: Boolean(t.lead),
@@ -634,17 +961,76 @@ function normalizeSharedItem(item){
   };
 }
 
-function normalizeFullScheduleItem(item){
+function normalizeFullScheduleItem(item, sheetName){
   if(!item) return null;
+  var ref = item.ref || '';
+  var itemKey = item.item_key || item.itemKey || '';
+  if(!ref && !itemKey) return null;
+  var sourceSheet = item.source_sheet || item.sourceSheet || sheetName || '';
   return {
-    ref: item.ref || '',
+    ref: ref,
+    item_key: itemKey || ((sourceSheet || 'Full Schedule') + '::' + ref),
+    source_sheet: sourceSheet,
     desc: item.desc || '',
     qty: item.qty != null ? item.qty : '',
     unit: item.unit || '',
     section: item.section || '',
     tradeId: item.tradeId || '',
-    tradeLabel: item.tradeLabel || ''
+    tradeLabel: item.tradeLabel || '',
+    overarching_trade: item.overarching_trade || item.overarchingTrade || '',
+    match_confidence: normalizeMatchConfidence(item.match_confidence || item.matchConfidence)
   };
+}
+
+function readFullScheduleSheets(raw){
+  var sheets = [];
+  function rowsFor(list, sheetName){
+    var source = Array.isArray(list) ? list : [];
+    return source.map(function(item){
+      return normalizeFullScheduleItem(item, sheetName);
+    }).filter(function(item){ return item && item.ref; });
+  }
+  if(Array.isArray(raw)){
+    var legacy = rowsFor(raw, 'Full Schedule');
+    if(legacy.length) sheets.push({ name: 'Full Schedule', items: legacy });
+    return sheets;
+  }
+  if(raw && typeof raw === 'object'){
+    Object.keys(raw).forEach(function(name){
+      sheets.push({ name: name, items: rowsFor(raw[name], name) });
+    });
+  }
+  return sheets;
+}
+
+function rememberActiveScheduleSheet(){
+  var names = sowScheduleSheets.map(function(sheet){ return sheet.name; });
+  if(names.indexOf(sowActiveScheduleSheet) < 0){
+    sowActiveScheduleSheet = names.length ? names[0] : '';
+  }
+}
+
+function activeScheduleSheet(){
+  var found = null;
+  sowScheduleSheets.forEach(function(sheet){
+    if(sheet.name === sowActiveScheduleSheet) found = sheet;
+  });
+  return found || sowScheduleSheets[0] || null;
+}
+
+function selectScheduleSheet(name){
+  if(!name || name === sowActiveScheduleSheet) return;
+  var exists = sowScheduleSheets.some(function(sheet){ return sheet.name === name; });
+  if(!exists) return;
+  sowActiveScheduleSheet = name;
+  sowScheduleSheetScrollLocked = true;
+  renderScheduleView();
+}
+
+function normalizeMatchConfidence(value){
+  var key = String(value || '').trim().toLowerCase();
+  if(key === 'high' || key === 'medium' || key === 'low') return key;
+  return '';
 }
 
 function applySowSplitResponse(response){
@@ -655,31 +1041,40 @@ function applySowSplitResponse(response){
   var tradeDocs = Array.isArray(tabs.trade_documents) ? tabs.trade_documents : [];
   if(!tradeDocs.length) tradeDocs = normalizeSowSplitTrades(response) || [];
 
-  if(!tradeDocs.length) return false;
-
   splitTrades = tradeDocs.map(normalizeTradeDocument).filter(function(t){ return t && t.id; });
+  pricingDocuments = readPricingDocuments(tabs, splitTrades);
+  if(!splitTrades.length && !pricingDocuments.length) return false;
 
-  var fullSched = Array.isArray(tabs.full_schedule) ? tabs.full_schedule : [];
-  sowFullSchedule = fullSched.map(normalizeFullScheduleItem).filter(function(i){ return i && i.ref; });
-
-  if(!sowFullSchedule.length){
+  var rawSchedule = tabs.full_schedule;
+  sowScheduleSheets = readFullScheduleSheets(rawSchedule);
+  var hasSheetEntries = rawSchedule != null && !Array.isArray(rawSchedule) && typeof rawSchedule === 'object' && Object.keys(rawSchedule).length > 0;
+  if(!sowScheduleSheets.length && !hasSheetEntries){
+    var fallback = [];
     splitTrades.forEach(function(t){
       (t.items || []).forEach(function(item){
-        sowFullSchedule.push({
+        fallback.push(normalizeFullScheduleItem({
           ref: item.ref,
           desc: item.desc,
           qty: item.qty,
           unit: item.unit,
           section: item.section || t.section || t.label,
           tradeId: t.id,
-          tradeLabel: t.label
+          tradeLabel: t.label,
+          overarching_trade: item.overarching_trade || item.overarchingTrade || '',
+          match_confidence: item.match_confidence || item.matchConfidence,
+          item_key: item.item_key || item.itemKey || ''
+        }, 'Full Schedule'));
         });
       });
-    });
+    fallback = fallback.filter(function(item){ return item && item.ref; });
+    if(fallback.length) sowScheduleSheets = [{ name: 'Full Schedule', items: fallback }];
   }
+  rememberActiveScheduleSheet();
+  var activeSheet = activeScheduleSheet();
+  sowFullSchedule = activeSheet ? activeSheet.items.slice() : [];
 
   var shared = Array.isArray(tabs.shared_items) ? tabs.shared_items : [];
-  SHARED_ITEMS = shared.map(normalizeSharedItem).filter(function(i){ return i && i.ref; });
+  SHARED_ITEMS = shared.filter(isActiveSharedItem).map(normalizeSharedItem).filter(function(i){ return i && i.ref; });
 
   applyRevisionDiffFromResponse(tabs.revision_diff);
 
@@ -698,7 +1093,8 @@ function applySowSplitResponse(response){
     renderComplianceView();
   }
 
-  splitActiveTrade = splitTrades[0] ? splitTrades[0].id : null;
+  var activePricing = pricingDocuments.some(function(doc){ return doc.id === splitActiveTrade; });
+  if(!activePricing) splitActiveTrade = pricingDocuments[0] ? pricingDocuments[0].id : null;
   return true;
 }
 
@@ -793,11 +1189,17 @@ function clearRevisionResults(){
 
 function clearSplitResultsOnly(){
   splitTrades = [];
+  pricingDocuments = [];
   splitActiveTrade = null;
   sowFullSchedule = [];
+  sowScheduleSheets = [];
+  sowActiveScheduleSheet = '';
+  sowScheduleSheetScrollLeft = 0;
+  sowScheduleSheetScrollLocked = false;
   sowSplitResponse = null;
   SHARED_ITEMS = [];
   scheduleChanges = {};
+  scheduleOverarchingChanges = {};
   var emptyEl = el('split-empty');
   var resultsEl = el('split-results');
   var procEl = el('split-processing');
@@ -881,6 +1283,8 @@ async function runSplit(){
     return;
   }
 
+  if(!sowSheetsReadyForRun()) return;
+
   if(!sowProjectJobId){
     window.dispatchEvent(new CustomEvent('sow-request-create-project'));
     return;
@@ -919,7 +1323,8 @@ function buildSplitRequest(source){
     type: source.type,
     method: splitOptions.method,
     inclPrelims: splitOptions.inclPrelims,
-    inclBwic: splitOptions.inclBwic
+    inclBwic: splitOptions.inclBwic,
+    sheet_indexes: selectedSowSheetIndexes()
   };
   if(source.type === 'existing'){
     request.file_path = source.file_path;
@@ -985,21 +1390,23 @@ window.cancelLoadSavedSowSplit = function(){
 };
 
 function updateSplitResultSummary(){
-  var totalItems=splitTrades.reduce(function(s,t){
+  var totalItems=pricingDocuments.reduce(function(s,t){
     return s + (t.lineCount != null ? t.lineCount : (t.items || []).length);
   }, 0);
+  var tradeCount=splitTrades.length || pricingDocuments.length;
   var titleEl=el('split-result-title');
   var subEl=el('split-result-sub');
-  if(titleEl) titleEl.textContent=splitTrades.length+' trades identified';
-  if(subEl) subEl.textContent=totalItems+' line items across '+splitTrades.length+' pricing documents';
+  if(titleEl) titleEl.textContent=tradeCount+' trades identified';
+  if(subEl) subEl.textContent=totalItems+' line items across '+pricingDocuments.length+' pricing documents';
 }
 
-function updateSharedCountBadge(){
+function updateSharedCountBadge(count){
   var badge=el('shared-count-badge');
   if(!badge) return;
-  badge.textContent=SHARED_ITEMS.length;
-  badge.style.display=SHARED_ITEMS.length>0?'':'none';
-  badge.style.background=SHARED_ITEMS.length>0?'var(--amber-bg)':'var(--bg)';
+  var total = typeof count === 'number' ? count : SHARED_ITEMS.length;
+  badge.textContent=total;
+  badge.style.display=total>0?'':'none';
+  badge.style.background=total>0?'var(--amber-bg)':'var(--bg)';
 }
 
 function showSplitResults(){
@@ -1022,7 +1429,7 @@ function showSplitResults(){
 function renderSplitTradeList(){
   var container=el('split-trade-list');
   container.innerHTML='';
-  splitTrades.forEach(function(t){
+  pricingDocuments.forEach(function(t){
     var isActive=t.id===splitActiveTrade;
     var isUnalloc=t.id==='unallocated';
     var isGeneral=t.id==='general';
@@ -1057,15 +1464,14 @@ function selectSplitTrade(id){
 }
 
 function renderSplitPreview(id){
-  var t=splitTrades.find(function(x){return x.id===id;});
+  var t=pricingDocuments.find(function(x){return x.id===id;});
   if(!t)return;
   var isUnalloc=t.id==='unallocated';
   var isGeneral=t.id==='general';
   var filename=t.label.replace(/[^a-zA-Z0-9 ]/g,'').replace(/\s+/g,'-')+'_Pricing.xlsx';
-  var col=TRADE_COLOURS[t.id]||{bg:'#F0F0F5',border:'#9BA3BF',text:'#4A5272'};
   var nbsBadges=t.nbs&&t.nbs.length
-    ?t.nbs.map(function(n){return '<span class="badge b-purple" style="margin-right:4px">'+n+'</span>';}).join('')
-    :'<span class="badge" style="background:'+col.bg+';color:'+col.text+';border:1px solid '+col.border+'">'+esc(t.label)+'</span>';
+    ?t.nbs.map(function(n){return '<span class="badge b-purple" style="margin-right:4px">'+esc(n)+'</span>';}).join('')+' &middot; '
+    :'';
 
   var headerDiv=document.createElement('div');
   headerDiv.className='flex-b mb16';
@@ -1074,7 +1480,7 @@ function renderSplitPreview(id){
       '<div style="font-size:17px;font-weight:700;color:'+(isUnalloc?'var(--red)':'var(--text)')+'">'+
         (isUnalloc?'&#9888; ':isGeneral?'&#9685; ':'')+esc(t.label)+
       '</div>'+
-      '<div style="font-size:12px;color:var(--text-light);margin-top:3px">'+nbsBadges+' &middot; '+t.lineCount+' items</div>'+
+      '<div style="font-size:12px;color:var(--text-light);margin-top:3px">'+nbsBadges+t.lineCount+' items</div>'+
       (isUnalloc?'<div style="font-size:12px;color:var(--red);margin-top:5px">These items could not be automatically assigned to a trade — use the Allocate button to assign each one manually.</div>':'')+
     '</div>';
 
@@ -1217,7 +1623,7 @@ function withSowDownloadButton(btn, work){
 }
 
 async function runSowDownload(exportType, tradeId, btn){
-  if(!splitTrades.length){
+  if(!splitTrades.length && !pricingDocuments.length){
     alert('Run the AI Trade Split first.');
     return;
   }
@@ -1244,9 +1650,9 @@ async function runSowDownload(exportType, tradeId, btn){
 }
 
 function downloadTradeExcel(id, btn){
-  var t = splitTrades.find(function(x){ return x.id === id; });
+  var t = pricingDocuments.find(function(x){ return x.id === id; });
   if(!t) return;
-  void runSowDownload('trade', t.id, btn || null);
+  void runSowDownload('trade', t.excelTradeId || t.id, btn || null);
 }
 function downloadAllExcel(){
   void runSowDownload('all', null, el('sow-download-all-btn'));
@@ -1258,11 +1664,16 @@ function sendToEnquiry(){
   alert(splitTrades.length+' trade packages sent to Enquiry Generation module. Trades are now available in Module 4.');
 }
 function resetSplit(){
-  splitFile=null; splitTrades=[]; splitActiveTrade=null;
+  splitFile=null; splitTrades=[]; pricingDocuments=[]; splitActiveTrade=null;
   sowFullSchedule = [];
+  sowScheduleSheets = [];
+  sowActiveScheduleSheet = '';
+  sowScheduleSheetScrollLeft = 0;
+  sowScheduleSheetScrollLocked = false;
   sowSplitResponse = null;
   SHARED_ITEMS = [];
   scheduleChanges = {};
+  scheduleOverarchingChanges = {};
   // Restore SOW section
   el('split-file-pill').style.display='none';
   el('sow-upload-area').style.display='block';
@@ -1338,10 +1749,10 @@ function renderSharedItems(){
       '</div>';
 
     var editBtn=document.createElement('button');
-    editBtn.textContent='Edit';
+    editBtn.textContent='Add';
     editBtn.style.cssText='flex-shrink:0;background:transparent;border:1px solid var(--border);border-radius:4px;padding:5px 10px;font-size:12px;font-weight:600;cursor:pointer;color:var(--text-mid);font-family:DM Sans,sans-serif';
     editBtn.setAttribute('data-item-id', item.id);
-    editBtn.onclick=function(){editLeadTrade(this.getAttribute('data-item-id'));};
+    editBtn.onclick=function(){ openAddSharedTrade(item); };
     hdr.appendChild(editBtn);
     card.appendChild(hdr);
 
@@ -1350,14 +1761,33 @@ function renderSharedItems(){
       var col=resolveSharedTradeColor(t.trade);
       var isLead=t.lead;
       var row=document.createElement('div');
-      row.style.cssText='padding:13px 18px;border-bottom:1px solid var(--border);background:'+(isLead?'rgba(196,123,0,.04)':'rgba(15,108,189,.03)')+';border-left:3px solid '+(isLead?'var(--amber)':'var(--blue)');
-      row.innerHTML='<div style="display:flex;align-items:center;gap:8px;margin-bottom:7px">'+
-          '<span style="font-size:11px;font-weight:700;padding:2px 9px;border-radius:10px;background:'+col+'18;color:'+col+';border:1px solid '+col+'28">'+(isLead?'&#9733; LEAD':'SUPPORTING')+'</span>'+
-          '<span style="font-size:13px;font-weight:600;color:var(--text)">'+esc(t.trade)+'</span>'+
-          '<span style="font-size:11px;color:var(--text-hint)">'+esc(t.nbs)+'</span>'+
-        '</div>'+
-        '<div style="font-size:12.5px;color:var(--text-mid);line-height:1.6;margin-bottom:6px"><strong style="color:var(--text)">Scope: </strong>'+esc(t.scope)+'</div>'+
-        '<div style="font-size:11.5px;font-style:italic;color:'+(isLead?'var(--amber)':'var(--blue)')+'">'+esc(t.note)+'</div>';
+      row.className='sow-shared-trade'+(isLead?' sow-shared-trade--lead':'');
+      var top=document.createElement('div');
+      top.className='sow-shared-trade__head'+(isLead?'':' sow-shared-trade__head--delete');
+      top.innerHTML='<span class="sow-shared-trade__badge" style="background:'+col+'18;color:'+col+';border-color:'+col+'28">'+(isLead?'&#9733; LEAD':'SUPPORTING')+'</span>'+
+          '<span class="sow-shared-trade__name">'+esc(t.trade)+'</span>'+
+          '<span class="sow-shared-trade__code">'+esc(t.nbs)+'</span>';
+      row.appendChild(top);
+      if(!isLead){
+        var del=document.createElement('button');
+        del.type='button';
+        del.className='sow-shared-delete';
+        del.setAttribute('aria-label', 'Remove '+t.trade);
+        del.title='Remove';
+        del.innerHTML='<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>';
+        del.onclick=function(){ removeSharedItemTrade(item, t, del); };
+        row.appendChild(del);
+      }
+      var scope=document.createElement('div');
+      scope.style.cssText='font-size:12.5px;color:var(--text-mid);line-height:1.6;margin-bottom:6px';
+      scope.innerHTML='<strong style="color:var(--text)">Scope: </strong>'+esc(t.scope);
+      row.appendChild(scope);
+      if(t.note){
+        var noteLine=document.createElement('div');
+        noteLine.style.cssText='font-size:11.5px;font-style:italic;color:'+(isLead?'var(--amber)':'var(--blue)');
+        noteLine.textContent=t.note;
+        row.appendChild(noteLine);
+      }
 
       // Editable note field
       var noteWrap=document.createElement('div');
@@ -1376,8 +1806,433 @@ function renderSharedItems(){
   });
 }
 
-function editLeadTrade(itemId){
-  alert('In the full version, you can reassign which trade leads and which supports, and override the AI-detected scope split for each trade.');
+function sowDialog(options){
+  if(typeof window.sowDialog === 'function') return window.sowDialog(options);
+  if(options && options.showCancelButton){
+    return Promise.resolve({ isConfirmed: confirm(options.text || options.title || '') });
+  }
+  alert((options && (options.text || options.title)) || '');
+  return Promise.resolve({ isConfirmed: true });
+}
+
+function sharedTradeId(trade){
+  if(trade && trade.trade_id) return String(trade.trade_id);
+  var match = splitTrades.find(function(t){ return t.label === trade.trade; });
+  return match && match.id ? String(match.id) : '';
+}
+
+function applySharedItemPatch(itemId, response){
+  var nextRaw = response && response.shared_item ? response.shared_item : null;
+  var next = nextRaw ? normalizeSharedItem(nextRaw) : null;
+  var active = nextRaw ? isActiveSharedItem(nextRaw) : false;
+  var index = -1;
+  SHARED_ITEMS.forEach(function(item, i){
+    if(item.id === itemId || (next && next.ref && item.ref === next.ref)) index = i;
+  });
+  if(!active){
+    rememberHiddenSharedId(itemId);
+    if(next && next.id) rememberHiddenSharedId(next.id);
+    if(index >= 0) SHARED_ITEMS.splice(index, 1);
+  } else if(next){
+    forgetHiddenSharedId(itemId);
+    if(next.id) forgetHiddenSharedId(next.id);
+    if(index >= 0) SHARED_ITEMS[index] = next;
+    else SHARED_ITEMS.push(next);
+  }
+  if(sowSplitResponse && sowSplitResponse.tabs && Array.isArray(sowSplitResponse.tabs.shared_items)){
+    sowSplitResponse.tabs.shared_items = sowSplitResponse.tabs.shared_items.filter(isActiveSharedItem);
+  }
+  updateSharedCountBadge();
+  renderSharedItems();
+}
+
+async function removeSharedItemTrade(item, trade, button){
+  if(!item || !trade || sowSharedItemRemoving) return;
+  var tradeId = sharedTradeId(trade);
+  if(!tradeId){
+    await sowDialog({
+      title: 'Cannot remove trade',
+      text: 'This trade cannot be removed because its id is missing.',
+      icon: 'error',
+      confirmButtonText: 'OK'
+    });
+    return;
+  }
+  if(!sowProjectJobId){
+    window.dispatchEvent(new CustomEvent('sow-needs-project'));
+    await sowDialog({
+      title: 'Select a project',
+      text: 'Select a project before removing a trade.',
+      icon: 'warning',
+      confirmButtonText: 'OK'
+    });
+    return;
+  }
+  var confirmed = await sowDialog({
+    title: 'Remove trade?',
+    text: 'Remove '+trade.trade+' from '+(item.desc || item.ref || 'this shared item')+'?',
+    icon: 'warning',
+    showCancelButton: true,
+    confirmButtonText: 'Remove',
+    cancelButtonText: 'Cancel'
+  });
+  if(!confirmed || !confirmed.isConfirmed) return;
+
+  var remaining = (item.trades || []).filter(function(t){ return t !== trade; }).map(function(t){
+    return { trade_id: sharedTradeId(t) };
+  }).filter(function(t){ return t.trade_id; });
+  if(!remaining.length){
+    await sowDialog({
+      title: 'Cannot remove trade',
+      text: 'At least one trade must remain.',
+      icon: 'warning',
+      confirmButtonText: 'OK'
+    });
+    return;
+  }
+
+  sowSharedItemRemoving = true;
+  if(button){
+    button.disabled = true;
+    button.classList.add('is-busy');
+    button.setAttribute('aria-label', 'Removing '+trade.trade);
+  }
+  try {
+    if(typeof window.patchSowSharedItem !== 'function'){
+      throw new Error('Shared item service is not ready. Please refresh the page.');
+    }
+    var request = { trades: remaining };
+    if(Number.isFinite(Number(item.version))) request.expected_version = Number(item.version);
+    var response = await window.patchSowSharedItem(sowProjectJobId, item.id, request);
+    applySharedItemPatch(item.id, response);
+  } catch(e) {
+    await sowDialog({
+      title: 'Could not remove trade',
+      text: e && e.message ? e.message : 'Could not remove this trade.',
+      icon: 'error',
+      confirmButtonText: 'OK'
+    });
+    if(button){
+      button.disabled = false;
+      button.classList.remove('is-busy');
+      button.setAttribute('aria-label', 'Remove '+trade.trade);
+    }
+  } finally {
+    sowSharedItemRemoving = false;
+  }
+}
+
+function sharedAddChoices(item){
+  var attached = {};
+  (item.trades || []).forEach(function(trade){
+    var id = sharedTradeId(trade);
+    if(id) attached[id] = true;
+  });
+  return splitTrades.filter(function(trade){
+    if(!trade || !trade.id || trade.unallocated || trade.id === 'unallocated') return false;
+    if(attached[String(trade.id)]) return false;
+    return sharedScopeRows(trade).length > 0;
+  });
+}
+
+function sharedScopeRows(trade){
+  var items = trade && Array.isArray(trade.items) ? trade.items : [];
+  return items.filter(function(row){
+    return String((row && (row.desc || row.description)) || '').trim();
+  });
+}
+
+function sharedTradeChoiceLabel(trade){
+  var codes = Array.isArray(trade.nbs) ? trade.nbs.filter(Boolean).join('/') : '';
+  return codes ? trade.label + ' (' + codes + ')' : (trade.label || trade.id);
+}
+
+function closeAddSharedTrade(){
+  var node = document.getElementById('sow-shared-add-modal');
+  if(node) node.remove();
+  document.removeEventListener('keydown', onAddSharedTradeKey);
+}
+
+function onAddSharedTradeKey(e){
+  if(e.key === 'Escape' && !sowSharedItemRemoving) closeAddSharedTrade();
+}
+
+function createSharedPicker(placeholder){
+  var root = document.createElement('div');
+  root.className = 'sow-shared-add__picker';
+  var button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'sow-shared-add__picker-btn';
+  var label = document.createElement('span');
+  label.className = 'sow-shared-add__picker-label is-placeholder';
+  label.textContent = placeholder;
+  var caret = document.createElement('span');
+  caret.className = 'sow-shared-add__picker-caret';
+  caret.setAttribute('aria-hidden', 'true');
+  caret.textContent = '\u25BE';
+  button.appendChild(label);
+  button.appendChild(caret);
+  var list = document.createElement('div');
+  list.className = 'sow-shared-add__picker-list';
+  list.hidden = true;
+  root.appendChild(button);
+  root.appendChild(list);
+  var state = { value: '', scope: '', disabled: false, placeholder: placeholder, onChange: null };
+  function close(){
+    list.hidden = true;
+    root.classList.remove('is-open');
+  }
+  function open(){
+    if(state.disabled || !list.childElementCount) return;
+    var openPickers = document.querySelectorAll('.sow-shared-add__picker.is-open');
+    Array.prototype.forEach.call(openPickers, function(node){
+      if(node === root) return;
+      node.classList.remove('is-open');
+      var other = node.querySelector('.sow-shared-add__picker-list');
+      if(other) other.hidden = true;
+    });
+    list.hidden = false;
+    root.classList.add('is-open');
+  }
+  button.onclick = function(e){
+    e.stopPropagation();
+    if(list.hidden) open();
+    else close();
+  };
+  return {
+    root: root,
+    close: close,
+    getValue: function(){ return state.value; },
+    getScope: function(){ return state.scope; },
+    setDisabled: function(disabled){
+      state.disabled = disabled;
+      button.disabled = disabled;
+      if(disabled) close();
+    },
+    onChange: function(fn){ state.onChange = fn; },
+    setPlaceholder: function(text){
+      state.placeholder = text;
+      if(!state.value){
+        label.textContent = text;
+        label.classList.add('is-placeholder');
+      }
+    },
+    setOptions: function(options){
+      list.innerHTML = '';
+      state.value = '';
+      state.scope = '';
+      label.textContent = state.placeholder;
+      label.classList.add('is-placeholder');
+      close();
+      options.forEach(function(opt){
+        var row = document.createElement('button');
+        row.type = 'button';
+        row.className = 'sow-shared-add__picker-option';
+        row.textContent = opt.label;
+        row.onclick = function(e){
+          e.stopPropagation();
+          state.value = opt.value;
+          state.scope = opt.scope || '';
+          label.textContent = opt.label;
+          label.classList.remove('is-placeholder');
+          close();
+          if(state.onChange) state.onChange();
+        };
+        list.appendChild(row);
+      });
+    }
+  };
+}
+
+function openAddSharedTrade(item){
+  if(!item || sowSharedItemRemoving) return;
+  closeAddSharedTrade();
+  var choices = sharedAddChoices(item);
+  var modal = document.createElement('div');
+  modal.id = 'sow-shared-add-modal';
+  modal.className = 'sow-shared-add';
+  var panel = document.createElement('div');
+  panel.className = 'sow-shared-add__panel';
+  var title = document.createElement('div');
+  title.className = 'sow-shared-add__title';
+  title.textContent = 'Add trade';
+  var subtitle = document.createElement('p');
+  subtitle.className = 'sow-shared-add__subtitle';
+  subtitle.textContent = (item.ref ? item.ref + ' ' : '') + (item.desc || 'Shared item');
+  panel.appendChild(title);
+  panel.appendChild(subtitle);
+
+  if(!choices.length){
+    var empty = document.createElement('p');
+    empty.className = 'sow-shared-add__empty';
+    empty.textContent = 'No other trades with scope items are available to add.';
+    panel.appendChild(empty);
+  }
+
+  var tradeLabel = document.createElement('label');
+  tradeLabel.className = 'sow-shared-add__label';
+  tradeLabel.textContent = 'Trade';
+  var tradePicker = createSharedPicker('Select a trade');
+  tradePicker.setOptions(choices.map(function(trade, index){
+    return { value: String(index), label: sharedTradeChoiceLabel(trade) };
+  }));
+  tradePicker.setDisabled(!choices.length);
+
+  var scopeLabel = document.createElement('label');
+  scopeLabel.className = 'sow-shared-add__label';
+  scopeLabel.textContent = 'Scope';
+  var scopePicker = createSharedPicker('Select a trade first');
+  scopePicker.setDisabled(true);
+
+  var noteLabel = document.createElement('label');
+  noteLabel.className = 'sow-shared-add__label';
+  noteLabel.textContent = 'Coordination note';
+  var noteInput = document.createElement('input');
+  noteInput.type = 'text';
+  noteInput.className = 'sow-shared-add__control';
+  noteInput.placeholder = 'Optional';
+  noteInput.disabled = !choices.length;
+
+  tradePicker.onChange(function(){
+    var trade = choices[Number(tradePicker.getValue())];
+    scopePicker.setPlaceholder(trade ? 'Select a scope' : 'Select a trade first');
+    scopePicker.setDisabled(!trade);
+    scopePicker.setOptions(trade ? sharedScopeRows(trade).map(function(row, index){
+      var desc = String(row.desc || row.description || '').trim();
+      var ref = row.ref ? String(row.ref) : '';
+      return { value: String(index), label: ref ? ref + ' — ' + desc : desc, scope: desc };
+    }) : []);
+    updateAddSharedTradeSave();
+  });
+  scopePicker.onChange(updateAddSharedTradeSave);
+
+  var actions = document.createElement('div');
+  actions.className = 'sow-shared-add__actions';
+  var cancel = document.createElement('button');
+  cancel.type = 'button';
+  cancel.className = 'sow-shared-add__cancel';
+  cancel.textContent = 'Cancel';
+  cancel.onclick = closeAddSharedTrade;
+  var save = document.createElement('button');
+  save.type = 'button';
+  save.className = 'sow-shared-add__save';
+  save.textContent = 'Save';
+  save.disabled = true;
+  var status = document.createElement('div');
+  status.className = 'sow-shared-add__status';
+  status.hidden = true;
+  var statusSpin = document.createElement('span');
+  statusSpin.className = 'sow-shared-add__spinner';
+  statusSpin.setAttribute('aria-hidden', 'true');
+  var statusText = document.createElement('span');
+  statusText.textContent = 'Saving this trade…';
+  status.appendChild(statusSpin);
+  status.appendChild(statusText);
+  save.onclick = function(){ saveAddedSharedTrade(item, choices, tradePicker, scopePicker, noteInput, save, cancel, status); };
+  actions.appendChild(cancel);
+  actions.appendChild(save);
+
+  function updateAddSharedTradeSave(){
+    save.disabled = !choices[Number(tradePicker.getValue())] || !scopePicker.getScope() || sowSharedItemRemoving;
+  }
+
+  if(choices.length){
+    panel.appendChild(tradeLabel);
+    panel.appendChild(tradePicker.root);
+    panel.appendChild(scopeLabel);
+    panel.appendChild(scopePicker.root);
+    panel.appendChild(noteLabel);
+    panel.appendChild(noteInput);
+  }
+  panel.appendChild(status);
+  panel.appendChild(actions);
+  panel.addEventListener('click', function(){
+    tradePicker.close();
+    scopePicker.close();
+  });
+  modal.appendChild(panel);
+  modal.addEventListener('click', function(e){
+    if(e.target === modal && !sowSharedItemRemoving) closeAddSharedTrade();
+  });
+  document.addEventListener('keydown', onAddSharedTradeKey);
+  document.body.appendChild(modal);
+}
+
+async function saveAddedSharedTrade(item, choices, tradePicker, scopePicker, noteInput, save, cancel, status){
+  if(!item || sowSharedItemRemoving) return;
+  var trade = choices[Number(tradePicker.getValue())];
+  var scope = scopePicker.getScope();
+  var note = noteInput.value.trim();
+  if(!trade || !scope) return;
+  if(!sowProjectJobId){
+    window.dispatchEvent(new CustomEvent('sow-needs-project'));
+    await sowDialog({
+      title: 'Select a project',
+      text: 'Select a project before adding a trade.',
+      icon: 'warning',
+      confirmButtonText: 'OK'
+    });
+    return;
+  }
+  var missingId = (item.trades || []).some(function(row){ return !sharedTradeId(row); });
+  if(missingId){
+    await sowDialog({
+      title: 'Cannot add trade',
+      text: 'An attached trade is missing its id.',
+      icon: 'error',
+      confirmButtonText: 'OK'
+    });
+    return;
+  }
+
+  var trades = (item.trades || []).map(function(row){
+    return { trade_id: sharedTradeId(row) };
+  });
+  var added = { trade_id: String(trade.id), scope: scope };
+  if(note) added.note = note;
+  trades.push(added);
+
+  sowSharedItemRemoving = true;
+  save.disabled = true;
+  save.classList.add('is-saving');
+  save.textContent = '';
+  var saveSpin = document.createElement('span');
+  saveSpin.className = 'sow-shared-add__spinner';
+  saveSpin.setAttribute('aria-hidden', 'true');
+  save.appendChild(saveSpin);
+  save.appendChild(document.createTextNode('Saving…'));
+  cancel.disabled = true;
+  tradePicker.setDisabled(true);
+  scopePicker.setDisabled(true);
+  noteInput.disabled = true;
+  if(status) status.hidden = false;
+  try {
+    if(typeof window.patchSowSharedItem !== 'function'){
+      throw new Error('Shared item service is not ready. Please refresh the page.');
+    }
+    var request = { trades: trades };
+    if(Number.isFinite(Number(item.version))) request.expected_version = Number(item.version);
+    var response = await window.patchSowSharedItem(sowProjectJobId, item.id, request);
+    closeAddSharedTrade();
+    applySharedItemPatch(item.id, response);
+  } catch(e) {
+    await sowDialog({
+      title: 'Could not add trade',
+      text: e && e.message ? e.message : 'Could not add this trade.',
+      icon: 'error',
+      confirmButtonText: 'OK'
+    });
+    save.disabled = false;
+    save.classList.remove('is-saving');
+    save.textContent = 'Save';
+    cancel.disabled = false;
+    tradePicker.setDisabled(false);
+    scopePicker.setDisabled(!tradePicker.getValue());
+    noteInput.disabled = false;
+    if(status) status.hidden = true;
+  } finally {
+    sowSharedItemRemoving = false;
+  }
 }
 
 // Override showSplitResults to also update shared badge and flag items in trade previews
@@ -1595,10 +2450,14 @@ function makeAllocBtn(ref,desc){
 
 // ── SCHEDULE VIEW ─────────────────────────────────────────
 var scheduleChanges={};
+var scheduleOverarchingChanges={};
 var scheduleApplying=false;
 
 function getSchedulePendingCount(){
-  return Object.keys(scheduleChanges).length;
+  var keys={};
+  Object.keys(scheduleChanges).forEach(function(key){ keys[key]=true; });
+  Object.keys(scheduleOverarchingChanges).forEach(function(key){ keys[key]=true; });
+  return Object.keys(keys).length;
 }
 
 function updateScheduleChangeUi(){
@@ -1620,15 +2479,117 @@ function updateScheduleChangeUi(){
   }
 }
 
-function scheduleMarkChange(ref,newTradeId,originalTradeId){
-  if(newTradeId===originalTradeId) delete scheduleChanges[ref];
-  else scheduleChanges[ref]=newTradeId;
+function tradeOverarchingChoices(tradeId){
+  var found=null;
+  splitTrades.forEach(function(trade){
+    if(trade && trade.id===tradeId) found=trade;
+  });
+  return found && Array.isArray(found.overarching_trades) ? found.overarching_trades.slice() : [];
+}
+
+function overarchingAfterTradeChange(newTradeId,currentName,originalTradeId,originalName){
+  var choices=tradeOverarchingChoices(newTradeId);
+  if(currentName && choices.indexOf(currentName)>=0) return currentName;
+  if(newTradeId===originalTradeId && originalName && choices.indexOf(originalName)>=0) return originalName;
+  return '';
+}
+
+function scheduleSyncRow(itemKey,tradeId,originalTradeId,overarchingName,originalOverarching){
+  if(!itemKey) return;
+  if(tradeId===originalTradeId) delete scheduleChanges[itemKey];
+  else scheduleChanges[itemKey]=tradeId;
+
+  var tradeChanged=tradeId!==originalTradeId;
+  var name=overarchingName||'';
+  var originalName=originalOverarching||'';
+  if(!tradeChanged && (name===originalName || !name)) delete scheduleOverarchingChanges[itemKey];
+  else scheduleOverarchingChanges[itemKey]=name;
   updateScheduleChangeUi();
+}
+
+function scheduleAllocationPayload(){
+  var request={};
+  var changes={};
+  var overarching={};
+  Object.keys(scheduleChanges).forEach(function(key){
+    if(scheduleChanges[key]) changes[key]=scheduleChanges[key];
+  });
+  Object.keys(scheduleOverarchingChanges).forEach(function(key){
+    if(scheduleOverarchingChanges[key]) overarching[key]=scheduleOverarchingChanges[key];
+  });
+  if(Object.keys(changes).length) request.changes=changes;
+  if(Object.keys(overarching).length) request.overarching_changes=overarching;
+  return request;
+}
+
+function fillOverarchingSelect(select,tradeId,selectedName){
+  var choices=tradeOverarchingChoices(tradeId);
+  var selected=selectedName && choices.indexOf(selectedName)>=0 ? selectedName : '';
+  select.innerHTML='';
+  if(!choices.length){
+    var empty=document.createElement('option');
+    empty.value='';
+    empty.textContent='-';
+    select.appendChild(empty);
+    select.value='';
+    select.disabled=true;
+    select.title='';
+    return;
+  }
+  select.disabled=false;
+  if(!selected){
+    var placeholder=document.createElement('option');
+    placeholder.value='';
+    placeholder.textContent='Select';
+    placeholder.disabled=true;
+    placeholder.selected=true;
+    select.appendChild(placeholder);
+  }
+  choices.forEach(function(choiceName){
+    var option=document.createElement('option');
+    option.value=choiceName;
+    option.textContent=choiceName;
+    select.appendChild(option);
+  });
+  select.value=selected;
+  select.title=selected;
+}
+
+function scheduleTradeChanged(select){
+  var itemKey=select.getAttribute('data-item-key');
+  var originalTrade=select.getAttribute('data-original-trade-id')||'';
+  var tradeCell=select.parentElement;
+  var overarchingCell=tradeCell ? tradeCell.previousElementSibling : null;
+  var overarchingSelect=overarchingCell ? overarchingCell.querySelector('select') : null;
+  var originalOverarching=overarchingSelect ? (overarchingSelect.getAttribute('data-original-overarching')||'') : '';
+  var currentName=overarchingSelect ? overarchingSelect.value : '';
+  var nextName=overarchingAfterTradeChange(select.value,currentName,originalTrade,originalOverarching);
+  if(overarchingSelect) fillOverarchingSelect(overarchingSelect,select.value,nextName);
+  scheduleSyncRow(itemKey,select.value,originalTrade,nextName,originalOverarching);
+  var nc=TRADE_COLOURS[select.value]||{text:'#9BA3BF'};
+  if(select.previousSibling) select.previousSibling.style.background=nc.text;
+  var isU=select.value==='unallocated';
+  select.style.borderColor=isU?'var(--red)':'var(--border)';
+  select.style.color=isU?'var(--red)':'var(--text)';
+  select.style.background=isU?'var(--red-bg)':'#fff';
+}
+
+function scheduleOverarchingChanged(select){
+  var itemKey=select.getAttribute('data-item-key');
+  var originalOverarching=select.getAttribute('data-original-overarching')||'';
+  var overarchingCell=select.parentElement;
+  var tradeCell=overarchingCell ? overarchingCell.nextElementSibling : null;
+  var tradeSelect=tradeCell ? tradeCell.querySelector('select') : null;
+  var tradeId=tradeSelect ? tradeSelect.value : '';
+  var originalTrade=tradeSelect ? (tradeSelect.getAttribute('data-original-trade-id')||'') : '';
+  select.title=select.value;
+  scheduleSyncRow(itemKey,tradeId,originalTrade,select.value,originalOverarching);
 }
 
 function resetScheduleChanges(){
   if(!getSchedulePendingCount()) return;
   scheduleChanges={};
+  scheduleOverarchingChanges={};
   renderScheduleView();
 }
 
@@ -1637,6 +2598,7 @@ function applyAllocationResponse(response){
     throw new Error('Allocation update did not return valid split data.');
   }
   scheduleChanges={};
+  scheduleOverarchingChanges={};
   updateSplitResultSummary();
   updateSharedCountBadge();
   renderSplitTradeList();
@@ -1646,9 +2608,9 @@ function applyAllocationResponse(response){
 }
 
 async function applyScheduleAllocations(){
-  var changes=Object.assign({}, scheduleChanges);
-  var count=Object.keys(changes).length;
-  if(!count || scheduleApplying) return;
+  var request=scheduleAllocationPayload();
+  var count=getSchedulePendingCount();
+  if(!count || scheduleApplying || (!request.changes && !request.overarching_changes)) return;
   if(!sowProjectJobId){
     window.dispatchEvent(new CustomEvent('sow-needs-project'));
     alert('Select a project before applying allocation changes.');
@@ -1666,7 +2628,7 @@ async function applyScheduleAllocations(){
       throw new Error('Allocation API is not available. Please refresh the page.');
     }
     var requestJobId = sowProjectJobId;
-    var response=await window.patchSowAllocations(requestJobId,{changes:changes});
+    var response=await window.patchSowAllocations(requestJobId,request);
     if(requestJobId !== sowProjectJobId) return;
     applyAllocationResponse(response);
   } catch(e) {
@@ -1681,20 +2643,21 @@ async function applyScheduleAllocations(){
   }
 }
 
+function scheduleCellText(value){
+  if(value == null) return '-';
+  var text = String(value).trim();
+  return text ? text : '-';
+}
+
 function renderScheduleView(){
   var panel=el('schedule-panel');
   if(!panel)return;
-  var allItems=[];
-  if(sowFullSchedule.length){
-    allItems = sowFullSchedule.slice();
-  } else {
-    splitTrades.forEach(function(t){
-      (t.items||[]).forEach(function(item){
-        allItems.push({ref:item.ref,desc:item.desc,qty:item.qty,unit:item.unit,
-          section:item.section||t.label,tradeId:t.id,tradeLabel:t.label});
-      });
-    });
-  }
+  var keepSheetScroll=sowScheduleSheetScrollLocked;
+  sowScheduleSheetScrollLocked=false;
+  var existingSheetScroll=panel.querySelector('.schedule-sheet-tabs__scroll');
+  if(existingSheetScroll && !keepSheetScroll) sowScheduleSheetScrollLeft=existingSheetScroll.scrollLeft;
+  var active = activeScheduleSheet();
+  var allItems = active ? active.items.slice() : [];
   if(!allItems.length){
     panel.innerHTML='<div style="padding:40px;text-align:center;color:var(--text-light)">No schedule items available yet. Run AI Trade Split to populate the full schedule.</div>';
     return;
@@ -1707,10 +2670,59 @@ function renderScheduleView(){
     sections[item.section].push(item);
   });
   var unallocCount=allItems.filter(function(i){return i.tradeId==='unallocated';}).length;
+  var hasMatchConfidence=allItems.some(function(i){return normalizeMatchConfidence(i.match_confidence);});
 
   panel.innerHTML='';
   var wrap=document.createElement('div');
-  wrap.style.cssText='display:flex;flex-direction:column;height:100%;overflow:hidden';
+  wrap.style.cssText='display:flex;flex-direction:column;height:100%;width:100%;min-width:0;overflow:hidden';
+
+  if(sowScheduleSheets.length){
+    var sheetBar=document.createElement('div');
+    sheetBar.className='schedule-sheet-tabs';
+    var sheetLabel=document.createElement('span');
+    sheetLabel.className='schedule-sheet-tabs__label';
+    sheetLabel.textContent='Sheet';
+    sheetBar.appendChild(sheetLabel);
+    var sheetScroll=document.createElement('div');
+    sheetScroll.className='schedule-sheet-tabs__scroll';
+    sowScheduleSheets.forEach(function(sheetTab){
+      var tabBtn=document.createElement('button');
+      tabBtn.type='button';
+      tabBtn.className='schedule-sheet-tab'+(sheetTab.name===sowActiveScheduleSheet?' is-active':'');
+      tabBtn.title=sheetTab.name;
+      var name=document.createElement('span');
+      name.className='schedule-sheet-tab__name';
+      name.textContent=sheetTab.name;
+      var count=document.createElement('span');
+      count.className='schedule-sheet-tab__count';
+      count.textContent=String((sheetTab.items||[]).length);
+      tabBtn.appendChild(name);
+      tabBtn.appendChild(count);
+      tabBtn.onmousedown=function(event){
+        event.preventDefault();
+        sowScheduleSheetScrollLeft=sheetScroll.scrollLeft;
+      };
+      tabBtn.onclick=function(){ selectScheduleSheet(sheetTab.name); };
+      sheetScroll.appendChild(tabBtn);
+    });
+    sheetBar.appendChild(sheetLabel);
+    var sheetPrev=document.createElement('button');
+    sheetPrev.type='button';
+    sheetPrev.className='schedule-sheet-tabs__nav';
+    sheetPrev.setAttribute('data-sheet-nav','prev');
+    sheetPrev.setAttribute('aria-label','Previous sheets');
+    sheetPrev.innerHTML='<svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M8.5 3L4.5 7l4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+    var sheetNext=document.createElement('button');
+    sheetNext.type='button';
+    sheetNext.className='schedule-sheet-tabs__nav';
+    sheetNext.setAttribute('data-sheet-nav','next');
+    sheetNext.setAttribute('aria-label','Next sheets');
+    sheetNext.innerHTML='<svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M5.5 3l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+    sheetBar.appendChild(sheetPrev);
+    sheetBar.appendChild(sheetScroll);
+    sheetBar.appendChild(sheetNext);
+    wrap.appendChild(sheetBar);
+  }
 
   // Toolbar
   var tb=document.createElement('div');
@@ -1720,6 +2732,14 @@ function renderScheduleView(){
     '<span style="font-size:12px;color:var(--text-light);margin-left:10px">'+allItems.length+' items &middot; '+sectionOrder.length+' sections'+
     (unallocCount>0?' &middot; <span style="color:var(--red);font-weight:600">'+unallocCount+' unallocated</span>':'')+
     '</span></div>'+
+    (hasMatchConfidence
+      ? '<div class="schedule-confidence-legend" title="Row colour shows how confident the trade match is">'+
+          '<span class="schedule-confidence-legend__label">Match</span>'+
+          '<span class="schedule-confidence-legend__item schedule-confidence-legend__item--high">High</span>'+
+          '<span class="schedule-confidence-legend__item schedule-confidence-legend__item--medium">Medium</span>'+
+          '<span class="schedule-confidence-legend__item schedule-confidence-legend__item--low">Low</span>'+
+        '</div>'
+      : '')+
     '<div class="schedule-toolbar-hint">Change any dropdown to reassign</div>'+
     '<button class="btn btn-secondary btn-sm" data-schedule-discard disabled onclick="resetScheduleChanges()">Discard</button>'+
     '<button class="btn btn-primary btn-sm" data-schedule-apply style="background:var(--green)" disabled onclick="applyScheduleAllocations()">&#10003; Apply Changes</button>'+
@@ -1732,7 +2752,7 @@ function renderScheduleView(){
   var sheet=document.createElement('div');
   sheet.className='schedule-sheet';
 
-  ['','Ref','Description','Qty','Unit','Trade Allocation'].forEach(function(h){
+  ['','Ref','Description','Qty','Unit','Overarching Trade','Trade Allocation'].forEach(function(h){
     var d=document.createElement('div');
     d.className='schedule-head-cell';
     d.textContent=h;
@@ -1751,45 +2771,64 @@ function renderScheduleView(){
     items.forEach(function(item){
       rowNum++;
       var savedTradeId=item.tradeId;
-      var displayTradeId=scheduleChanges[item.ref]!=null?scheduleChanges[item.ref]:savedTradeId;
+      var displayTradeId=scheduleChanges[item.item_key]!=null?scheduleChanges[item.item_key]:savedTradeId;
+      var savedOverarching=item.overarching_trade||'';
+      var hasOverarchingEdit=Object.prototype.hasOwnProperty.call(scheduleOverarchingChanges,item.item_key);
+      var displayOverarching=hasOverarchingEdit?scheduleOverarchingChanges[item.item_key]:savedOverarching;
+      if(tradeOverarchingChoices(displayTradeId).indexOf(displayOverarching)<0) displayOverarching='';
       var col=TRADE_COLOURS[displayTradeId]||{bg:'#F0F0F5',border:'#9BA3BF',text:'#4A5272'};
       var isUnalloc=displayTradeId==='unallocated';
+      var confidence=normalizeMatchConfidence(item.match_confidence);
       var altClass=rowNum%2===0?'':' schedule-cell--alt';
+      var confidenceClass=confidence?' schedule-cell--confidence-'+confidence:'';
+      var rowClass=altClass+confidenceClass;
 
       var n=document.createElement('div');
-      n.className='schedule-cell schedule-cell--num'+altClass;
+      n.className='schedule-cell schedule-cell--num'+rowClass;
       n.textContent=rowNum;
+      if(confidence) n.title='Match confidence: '+confidence.charAt(0).toUpperCase()+confidence.slice(1);
       sheet.appendChild(n);
 
       var r=document.createElement('div');
-      r.className='schedule-cell schedule-cell--ref'+altClass;
-      r.textContent=item.ref;
+      r.className='schedule-cell schedule-cell--ref'+rowClass;
+      r.textContent=scheduleCellText(item.ref);
       sheet.appendChild(r);
 
       var d=document.createElement('div');
-      d.className='schedule-cell schedule-cell--desc'+altClass;
-      d.textContent=item.desc;
+      d.className='schedule-cell schedule-cell--desc'+rowClass;
+      d.textContent=scheduleCellText(item.desc);
       sheet.appendChild(d);
 
       var q=document.createElement('div');
-      q.className='schedule-cell schedule-cell--qty'+altClass;
-      q.textContent=item.qty!=null?item.qty:'';
+      q.className='schedule-cell schedule-cell--qty'+rowClass;
+      q.textContent=scheduleCellText(item.qty);
       sheet.appendChild(q);
 
       var u=document.createElement('div');
-      u.className='schedule-cell schedule-cell--unit'+altClass;
-      u.textContent=item.unit||'';
+      u.className='schedule-cell schedule-cell--unit'+rowClass;
+      u.textContent=scheduleCellText(item.unit);
       sheet.appendChild(u);
 
+      var ot=document.createElement('div');
+      ot.className='schedule-cell schedule-cell--overarching'+rowClass;
+      var otSel=document.createElement('select');
+      otSel.className='schedule-trade-select schedule-overarching-select';
+      otSel.setAttribute('data-item-key', item.item_key);
+      otSel.setAttribute('data-original-overarching', savedOverarching);
+      fillOverarchingSelect(otSel, displayTradeId, displayOverarching);
+      otSel.onchange=function(){ scheduleOverarchingChanged(this); };
+      ot.appendChild(otSel);
+      sheet.appendChild(ot);
+
       var tc=document.createElement('div');
-      tc.className='schedule-cell schedule-cell--trade'+altClass;
+      tc.className='schedule-cell schedule-cell--trade'+rowClass;
       var swatch=document.createElement('div');
       swatch.className='schedule-trade-swatch';
       swatch.style.background=col.text;
       tc.appendChild(swatch);
       var sel=document.createElement('select');
       sel.className='schedule-trade-select';
-      sel.setAttribute('data-item-ref',item.ref);
+      sel.setAttribute('data-item-key', item.item_key);
       sel.setAttribute('data-original-trade-id',savedTradeId);
       if(isUnalloc){
         sel.style.borderColor='var(--red)';
@@ -1798,17 +2837,7 @@ function renderScheduleView(){
       }
       sel.innerHTML=tradeOptions;
       sel.value=displayTradeId;
-      sel.onchange=function(){
-        var ref=this.getAttribute('data-item-ref');
-        var original=this.getAttribute('data-original-trade-id');
-        scheduleMarkChange(ref,this.value,original);
-        var nc=TRADE_COLOURS[this.value]||{text:'#9BA3BF'};
-        this.previousSibling.style.background=nc.text;
-        var isU=this.value==='unallocated';
-        this.style.borderColor=isU?'var(--red)':'var(--border)';
-        this.style.color=isU?'var(--red)':'var(--text)';
-        this.style.background=isU?'var(--red-bg)':'#fff';
-      };
+      sel.onchange=function(){ scheduleTradeChanged(this); };
       tc.appendChild(sel);
       sheet.appendChild(tc);
     });
@@ -1831,7 +2860,46 @@ function renderScheduleView(){
     '<button class="btn btn-primary btn-sm" data-schedule-apply style="background:var(--green)" disabled onclick="applyScheduleAllocations()">&#10003; Apply Changes</button>';
   wrap.appendChild(bar);
   panel.appendChild(wrap);
+  bindScheduleSheetNav(wrap.querySelector('.schedule-sheet-tabs'));
+  var sheetScroll=wrap.querySelector('.schedule-sheet-tabs__scroll');
+  if(sheetScroll) sheetScroll.scrollLeft=sowScheduleSheetScrollLeft;
   updateScheduleChangeUi();
+}
+
+function bindScheduleSheetNav(bar){
+  if(!bar) return;
+  var scroll=bar.querySelector('.schedule-sheet-tabs__scroll');
+  var prev=bar.querySelector('[data-sheet-nav="prev"]');
+  var next=bar.querySelector('[data-sheet-nav="next"]');
+  if(!scroll || !prev || !next) return;
+  function update(){
+    var max=scroll.scrollWidth-scroll.clientWidth;
+    var overflow=max>4;
+    prev.hidden=!overflow;
+    next.hidden=!overflow;
+    prev.disabled=scroll.scrollLeft<=2;
+    next.disabled=scroll.scrollLeft>=max-2;
+  }
+  function move(direction){
+    var amount=Math.max(160, Math.round(scroll.clientWidth*0.72));
+    scroll.scrollBy({left:direction*amount, behavior:'smooth'});
+  }
+  prev.onmousedown=function(event){ event.preventDefault(); };
+  next.onmousedown=function(event){ event.preventDefault(); };
+  prev.onclick=function(){ move(-1); };
+  next.onclick=function(){ move(1); };
+  scroll.addEventListener('scroll', function(){
+    sowScheduleSheetScrollLeft=scroll.scrollLeft;
+    update();
+  });
+  scroll.addEventListener('wheel', function(event){
+    if(scroll.scrollWidth<=scroll.clientWidth+4) return;
+    if(Math.abs(event.deltaX)>Math.abs(event.deltaY)) return;
+    event.preventDefault();
+    scroll.scrollLeft+=event.deltaY;
+  }, {passive:false});
+  update();
+  requestAnimationFrame(update);
 }
 
 window.resetScheduleChanges = resetScheduleChanges;
@@ -1839,16 +2907,219 @@ window.applyScheduleAllocations = applyScheduleAllocations;
 
 // ── SUPPORTING FILES (SPEC & DRAWINGS) ───────────────────
 var supportingFiles = { spec: [], dwg: [] };
+var sowSupportingSpecs = [];
+var sowSupportingDrawings = [];
+var sowSupportingDocsLoading = false;
+var sowSupportingDocsReady = false;
+var sowSupportingDocsError = '';
+var sowSupportingDocsModalKind = '';
+
+function sowSupportingDocNames(list){
+  if(!Array.isArray(list)) return [];
+  return list.map(function(item){
+    if(typeof item === 'string') return item.trim();
+    return item && item.file_name ? String(item.file_name).trim() : '';
+  }).filter(Boolean);
+}
+
+function sowSupportingDocsForKind(kind){
+  return kind === 'drawings' ? sowSupportingDrawings : sowSupportingSpecs;
+}
+
+function sowSupportingDocsTitle(kind){
+  return kind === 'drawings' ? 'Drawings' : 'Specifications';
+}
+
+function closeSowSupportingDocsModal(){
+  sowSupportingDocsModalKind = '';
+  var modal = document.getElementById('sow-supporting-docs-modal');
+  if(modal) modal.remove();
+}
+
+function renderSowSupportingDocsModalList(){
+  var list = document.getElementById('sow-supporting-docs-modal-list');
+  var empty = document.getElementById('sow-supporting-docs-modal-empty');
+  var count = document.getElementById('sow-supporting-docs-modal-count');
+  var input = document.getElementById('sow-supporting-docs-modal-search');
+  if(!list || !sowSupportingDocsModalKind) return;
+  var names = sowSupportingDocsForKind(sowSupportingDocsModalKind);
+  var query = input && input.value ? input.value.trim().toLowerCase() : '';
+  var shown = !query ? names : names.filter(function(name){
+    return name.toLowerCase().indexOf(query) !== -1;
+  });
+  list.innerHTML = shown.map(function(name){
+    return '<div class="sow-supporting-modal__item">'+esc(name)+'</div>';
+  }).join('');
+  list.style.display = shown.length ? 'block' : 'none';
+  if(empty){
+    empty.style.display = shown.length ? 'none' : 'block';
+    empty.textContent = names.length
+      ? 'No matching files'
+      : (sowSupportingDocsModalKind === 'drawings' ? 'No drawings' : 'No specifications');
+  }
+  if(count){
+    count.textContent = query && shown.length !== names.length
+      ? shown.length + ' of ' + names.length
+      : names.length + (names.length === 1 ? ' file' : ' files');
+  }
+}
+
+function openSowSupportingDocsModal(kind){
+  if(sowSupportingDocsLoading || !sowSupportingDocsReady) return;
+  closeSowSupportingDocsModal();
+  sowSupportingDocsModalKind = kind === 'drawings' ? 'drawings' : 'specifications';
+  var title = sowSupportingDocsTitle(sowSupportingDocsModalKind);
+  var total = sowSupportingDocsForKind(sowSupportingDocsModalKind).length;
+  var modal = document.createElement('div');
+  modal.id = 'sow-supporting-docs-modal';
+  modal.className = 'sow-supporting-modal';
+  modal.innerHTML =
+    '<div class="sow-supporting-modal__panel" role="dialog" aria-modal="true">'+
+      '<div class="sow-supporting-modal__header">'+
+        '<div class="sow-supporting-modal__title">'+esc(title)+' ('+total+')</div>'+
+        '<button type="button" class="sow-supporting-modal__close" onclick="closeSowSupportingDocsModal()" aria-label="Close">&times;</button>'+
+      '</div>'+
+      '<div class="sow-supporting-modal__body">'+
+        '<input id="sow-supporting-docs-modal-search" class="sow-supporting-modal__search" type="search" placeholder="Search filename" oninput="filterSowSupportingDocsModal()">'+
+        '<div id="sow-supporting-docs-modal-count" class="sow-supporting-modal__count"></div>'+
+        '<div id="sow-supporting-docs-modal-list" class="sow-supporting-modal__list"></div>'+
+        '<div id="sow-supporting-docs-modal-empty" class="sow-supporting-modal__empty" style="display:none"></div>'+
+      '</div>'+
+    '</div>';
+  modal.addEventListener('click', function(event){
+    if(event.target === modal) closeSowSupportingDocsModal();
+  });
+  var host = document.body;
+  host.appendChild(modal);
+  renderSowSupportingDocsModalList();
+  var input = document.getElementById('sow-supporting-docs-modal-search');
+  if(input) input.focus();
+}
+
+window.openSowSupportingDocsModal = openSowSupportingDocsModal;
+window.closeSowSupportingDocsModal = closeSowSupportingDocsModal;
+window.filterSowSupportingDocsModal = renderSowSupportingDocsModalList;
+
+function renderSowSupportingDocuments(){
+  var root = el('sow-supporting-docs');
+  var specBtn = el('sow-supporting-specs-btn');
+  var drawingBtn = el('sow-supporting-drawings-btn');
+  var message = el('sow-supporting-docs-message');
+  if(!root || !specBtn || !drawingBtn || !message) return;
+
+  var visible = sowSupportingDocsLoading || sowSupportingDocsReady || Boolean(sowSupportingDocsError);
+  root.style.display = visible ? 'flex' : 'none';
+  specBtn.disabled = sowSupportingDocsLoading || !sowSupportingDocsReady;
+  drawingBtn.disabled = sowSupportingDocsLoading || !sowSupportingDocsReady;
+  specBtn.textContent = sowSupportingDocsLoading
+    ? 'Specifications'
+    : 'Specifications (' + sowSupportingSpecs.length + ')';
+  drawingBtn.textContent = sowSupportingDocsLoading
+    ? 'Drawings'
+    : 'Drawings (' + sowSupportingDrawings.length + ')';
+
+  if(sowSupportingDocsLoading){
+    message.textContent = 'Loading specifications and drawings\u2026';
+    message.className = 'sow-supporting-docs__message';
+    closeSowSupportingDocsModal();
+    return;
+  }
+
+  message.textContent = sowSupportingDocsError || '';
+  message.className = sowSupportingDocsError
+    ? 'sow-supporting-docs__message sow-supporting-docs__message--error'
+    : 'sow-supporting-docs__message';
+
+  if(sowSupportingDocsModalKind) renderSowSupportingDocsModalList();
+
+  if(sowSupportingDocsReady && !sowSupportingDocsError &&
+    (sowSupportingSpecs.length || sowSupportingDrawings.length)){
+    expandSection('sec2');
+  }
+}
+
+function clearSowSupportingDocuments(){
+  sowSupportingSpecs = [];
+  sowSupportingDrawings = [];
+  sowSupportingDocsLoading = false;
+  sowSupportingDocsReady = false;
+  sowSupportingDocsError = '';
+  closeSowSupportingDocsModal();
+  renderSowSupportingDocuments();
+}
+
+window.clearSowSupportingDocuments = clearSowSupportingDocuments;
+
+window.setSowSupportingDocumentsLoading = function(loading){
+  sowSupportingDocsLoading = Boolean(loading);
+  if(sowSupportingDocsLoading){
+    sowSupportingSpecs = [];
+    sowSupportingDrawings = [];
+    sowSupportingDocsReady = false;
+    sowSupportingDocsError = '';
+  }
+  renderSowSupportingDocuments();
+  updateSec2Status();
+};
+
+window.setSowSupportingDocuments = function(payload){
+  var data = payload || {};
+  sowSupportingDocsLoading = false;
+  sowSupportingDocsReady = true;
+  sowSupportingDocsError = data.error ? String(data.error) : '';
+  sowSupportingSpecs = sowSupportingDocNames(data.specifications);
+  sowSupportingDrawings = sowSupportingDocNames(data.drawings);
+  renderSowSupportingDocuments();
+  updateSec2Status();
+};
+
+function supportingFileExtension(file){
+  var name = file && file.name ? String(file.name) : '';
+  var dot = name.lastIndexOf('.');
+  return dot >= 0 ? name.slice(dot + 1).toLowerCase() : '';
+}
+
+function supportingFileAllowed(file, type){
+  var ext = supportingFileExtension(file);
+  if(type === 'dwg') return ext === 'pdf';
+  return ext === 'pdf' || ext === 'docx';
+}
+
+function supportingFileRuleText(type){
+  return type === 'dwg'
+    ? 'Drawing schedules accept PDF files only.'
+    : 'Specification sections accept PDF and Word (.docx) files only.';
+}
+
+function addSupportingFiles(files, type, input){
+  var accepted = [];
+  var rejected = [];
+  Array.from(files || []).forEach(function(file){
+    if(supportingFileAllowed(file, type)) accepted.push(file);
+    else rejected.push(file && file.name ? file.name : 'file');
+  });
+  accepted.forEach(function(file){ addSupportingFile(file, type); });
+  if(input) input.value = '';
+  if(!rejected.length) return;
+  var names = rejected.slice(0, 3).join(', ');
+  if(rejected.length > 3) names += ' and ' + (rejected.length - 3) + ' more';
+  sowDialog({
+    title: 'File not added',
+    text: names + '. ' + supportingFileRuleText(type),
+    icon: 'warning',
+    confirmButtonText: 'OK',
+    confirmButtonColor: 'hsl(262 83% 58%)'
+  });
+}
 
 function specHandleFile(event, type) {
-  var files = Array.from(event.target.files);
-  files.forEach(function(f){ addSupportingFile(f, type); });
+  addSupportingFiles(event.target.files, type, event.target);
 }
 function specHandleDrop(event, type) {
   event.preventDefault();
   var dz = el(type+'-drop-zone');
-  dz.style.borderColor='var(--border)'; dz.style.background='var(--bg)';
-  Array.from(event.dataTransfer.files).forEach(function(f){ addSupportingFile(f, type); });
+  if(dz){ dz.style.borderColor='var(--border)'; dz.style.background='var(--bg)'; }
+  addSupportingFiles(event.dataTransfer.files, type);
 }
 function addSupportingFile(f, type) {
   supportingFiles[type].push(f);
@@ -1866,9 +3137,16 @@ function updateSec2Status() {
   var statusEl = el('sec2-status');
   var numEl = el('sec2-num');
   if(!statusEl || !numEl) return;
-  var total = supportingFiles.spec.length + supportingFiles.dwg.length;
+  var uploaded = supportingFiles.spec.length + supportingFiles.dwg.length;
+  var fromProject = sowSupportingSpecs.length + sowSupportingDrawings.length;
+  var total = uploaded + fromProject;
+  if(sowSupportingDocsLoading && !total){
+    statusEl.textContent = 'Loading\u2026';
+    numEl.className = 'section-num optional';
+    return;
+  }
   if(total > 0){
-    statusEl.textContent = total + ' file' + (total===1?'':'s') + ' loaded';
+    statusEl.textContent = total + ' file' + (total===1?'':'s');
     numEl.className = 'section-num done';
   } else {
     statusEl.textContent = 'optional';
@@ -2592,6 +3870,7 @@ async function runRevisionCompare(){
     alert('Please ensure the original schedule source is still available in Step 1.');
     return;
   }
+  if(!sowSheetsReadyForRun()) return;
 
   var btn = el('rev-compare-btn');
   btn.disabled = true;
@@ -2880,6 +4159,8 @@ window.refreshSowEngineDom = function(){
   updateSplitRunBtnState();
   renderSowFoundFilesList();
   updateSowEmsSectionStatus();
+  renderSowSupportingDocuments();
+  updateSec2Status();
   initWorkbookTemplateControls();
 };
 

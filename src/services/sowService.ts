@@ -77,15 +77,51 @@ export type SowSplitExistingRequest = SowTradeSplitOptions &
   SowSplitSupportingFiles & {
     type: "existing";
     file_path: string;
+    /** Checked sheet indexes from POST /sow/sheets, sent once as a JSON array. */
+    sheet_indexes: number[];
   };
 
 export type SowSplitUploadRequest = SowTradeSplitOptions &
   SowSplitSupportingFiles & {
     type: "upload";
     file: File;
+    /** Checked sheet indexes from POST /sow/sheets, sent once as a JSON array. */
+    sheet_indexes: number[];
   };
 
 export type SowSplitRequest = SowSplitExistingRequest | SowSplitUploadRequest;
+
+function sowErrorMessage(body: unknown): string | null {
+  if (!body || typeof body !== "object") return null;
+  const data = body as {
+    message?: unknown;
+    error?: unknown;
+    detail?: unknown;
+  };
+  if (typeof data.message === "string" && data.message.trim()) {
+    return data.message.trim();
+  }
+  if (typeof data.error === "string" && data.error.trim()) {
+    return data.error.trim();
+  }
+  if (typeof data.detail === "string" && data.detail.trim()) {
+    return data.detail.trim();
+  }
+  if (Array.isArray(data.detail)) {
+    const parts = data.detail
+      .map((entry) => {
+        if (typeof entry === "string") return entry;
+        if (entry && typeof entry === "object" && "msg" in entry) {
+          const msg = (entry as { msg?: unknown }).msg;
+          return typeof msg === "string" ? msg : "";
+        }
+        return "";
+      })
+      .filter((value) => value.trim().length > 0);
+    if (parts.length > 0) return parts.join("; ");
+  }
+  return null;
+}
 
 function appendOptionalSplitFiles(
   formData: FormData,
@@ -98,16 +134,15 @@ function appendOptionalSplitFiles(
   }
 }
 
-async function parseSowApiError(res: Response): Promise<string> {
-  let detail = `Trade split failed (${res.status})`;
+async function parseSowApiError(
+  res: Response,
+  fallback?: string
+): Promise<string> {
+  let detail = fallback ?? `Trade split failed (${res.status})`;
   try {
     const contentType = res.headers.get("content-type") ?? "";
     if (contentType.includes("application/json")) {
-      const body = (await res.json()) as Record<string, unknown>;
-      const message =
-        (typeof body.message === "string" && body.message) ||
-        (typeof body.error === "string" && body.error) ||
-        (typeof body.detail === "string" && body.detail);
+      const message = sowErrorMessage(await res.json());
       if (message) detail = message;
     } else {
       const text = await res.text();
@@ -134,26 +169,7 @@ async function sowBlobLooksLikeJsonError(blob: Blob): Promise<boolean> {
 async function messageFromSowJsonBlob(blob: Blob): Promise<string | null> {
   try {
     const text = await blob.text();
-    const data = JSON.parse(text) as {
-      message?: string;
-      detail?: string | { msg?: string }[];
-      error?: string;
-    };
-    if (typeof data.message === "string" && data.message.trim()) {
-      return data.message.trim();
-    }
-    if (typeof data.error === "string" && data.error.trim()) {
-      return data.error.trim();
-    }
-    if (typeof data.detail === "string" && data.detail.trim()) {
-      return data.detail.trim();
-    }
-    if (Array.isArray(data.detail)) {
-      const parts = data.detail
-        .map((entry) => (typeof entry === "string" ? entry : entry?.msg))
-        .filter((value): value is string => typeof value === "string" && value.trim().length > 0);
-      if (parts.length > 0) return parts.join("; ");
-    }
+    return sowErrorMessage(JSON.parse(text));
   } catch {
     /* ignore */
   }
@@ -186,7 +202,7 @@ export type SowDownloadType = "trade" | "all" | "shared" | "schedule";
 
 export type SowDownloadRequest = {
   type: SowDownloadType;
-  /** Trade id slug for `type=trade` (e.g. preambles, demolitions). */
+  /** Catalogue trade id, or `overarching:Name` for a pricing document. */
   tradeId?: string;
 };
 
@@ -205,8 +221,12 @@ function fallbackSowDownloadFilename(
       return "Full_Schedule.xlsx";
     case "trade":
     default: {
+      const rawId = tradeId?.trim() || "";
+      const source = rawId.toLowerCase().startsWith("overarching:")
+        ? rawId.slice("overarching:".length)
+        : rawId;
       const safe =
-        tradeId?.replace(/[^\w\s-]+/g, "").trim().replace(/\s+/g, "_") ||
+        source.replace(/[^\w\s-]+/g, "").trim().replace(/\s+/g, "_") ||
         "Trade";
       return `${safe}_Pricing.xlsx`;
     }
@@ -243,7 +263,9 @@ export type SowSplitResponse = {
   status: string;
   tabs?: {
     trade_documents?: SowTradeDocument[];
-    full_schedule?: SowFullScheduleItem[];
+    /** Trade Documents tab. Grouped by overarching name, plus catalogue rows set to N/A. */
+    pricing_documents?: SowTradeDocument[];
+    full_schedule?: SowFullScheduleItem[] | Record<string, SowFullScheduleItem[]>;
     shared_items?: SowSharedItem[];
     revision_diff?: SowRevisionDiff;
   };
@@ -259,6 +281,12 @@ export type SowTradeDocument = {
   section?: string;
   lineCount?: number;
   items?: SowTradeLineItem[];
+  /** Names for the Full Schedule overarching dropdown. No ids. */
+  overarching_trades?: string[];
+  /** Set on a pricing document when the Excel id differs from `id`. */
+  trade_id?: string;
+  download_id?: string;
+  overarching?: string;
   unallocated?: boolean;
 };
 
@@ -272,16 +300,22 @@ export type SowTradeLineItem = {
 };
 
 export type SowFullScheduleItem = {
+  item_key?: string;
   ref: string;
   desc: string;
   qty?: number | string;
   unit?: string;
   section?: string;
+  source_sheet?: string;
+  source_row?: number;
   tradeId?: string;
   tradeLabel?: string;
+  overarching_trade?: string;
+  match_confidence?: string;
 };
 
 export type SowSharedItemTrade = {
+  trade_id?: string;
   trade: string;
   nbs?: string;
   lead?: boolean;
@@ -293,6 +327,8 @@ export type SowSharedItem = {
   id: string;
   ref: string;
   desc: string;
+  version?: number;
+  is_shared?: boolean;
   trades?: SowSharedItemTrade[];
 };
 
@@ -332,6 +368,7 @@ export function normalizeSowSplitResponse(
       status: String(record.status ?? "success"),
       tabs: {
         trade_documents: record.trade_documents as SowTradeDocument[],
+        pricing_documents: record.pricing_documents as SowTradeDocument[] | undefined,
         full_schedule: record.full_schedule as SowFullScheduleItem[] | undefined,
         shared_items: record.shared_items as SowSharedItem[] | undefined,
       },
@@ -346,7 +383,11 @@ export function hasSavedSowSplitData(
 ): boolean {
   if (!response) return false;
   const trades = response.tabs?.trade_documents;
-  return Array.isArray(trades) && trades.length > 0;
+  const pricing = response.tabs?.pricing_documents;
+  return (
+    (Array.isArray(trades) && trades.length > 0) ||
+    (Array.isArray(pricing) && pricing.length > 0)
+  );
 }
 
 /**
@@ -371,6 +412,14 @@ export async function submitSowSplit(
   formData.append("method", request.method);
   formData.append("inclPrelims", String(request.inclPrelims));
   formData.append("inclBwic", String(request.inclBwic));
+
+  const sheetIndexes = request.sheet_indexes
+    .map((index) => Number(index))
+    .filter((index) => Number.isInteger(index) && index >= 0);
+  if (!sheetIndexes.length) {
+    throw new Error("Select at least one sheet.");
+  }
+  formData.append("sheet_indexes", JSON.stringify(sheetIndexes));
 
   if (request.type === "existing") {
     const filePath = request.file_path.trim();
@@ -421,16 +470,29 @@ export async function submitSowSplit(
 export type SowAllocationChanges = Record<string, string>;
 
 export type SowAllocationsRequest = {
-  changes: SowAllocationChanges;
+  changes?: SowAllocationChanges;
+  overarching_changes?: SowAllocationChanges;
 };
 
 export type SowAllocationsResponse = {
   status: string;
   moved?: string[];
+  overarching_updated?: string[];
   not_found?: string[];
   trade_line_counts?: Record<string, number>;
   tabs?: SowSplitResponse["tabs"];
 };
+
+function nonemptyAllocationMap(
+  map: SowAllocationChanges | undefined
+): SowAllocationChanges | null {
+  if (!map) return null;
+  const entries = Object.entries(map).filter(
+    ([, value]) => String(value ?? "").trim() !== ""
+  );
+  if (!entries.length) return null;
+  return Object.fromEntries(entries);
+}
 
 /**
  * Persists Full Schedule trade re-allocations.
@@ -449,10 +511,15 @@ export async function patchSowAllocations(
     throw new Error("API base URL is not configured.");
   }
 
-  const changes = request.changes ?? {};
-  if (Object.keys(changes).length === 0) {
+  const changes = nonemptyAllocationMap(request.changes);
+  const overarchingChanges = nonemptyAllocationMap(request.overarching_changes);
+  if (!changes && !overarchingChanges) {
     throw new Error("No allocation changes to apply.");
   }
+
+  const body: SowAllocationsRequest = {};
+  if (changes) body.changes = changes;
+  if (overarchingChanges) body.overarching_changes = overarchingChanges;
 
   const token = getAuthToken();
   const res = await fetch(
@@ -463,7 +530,7 @@ export async function patchSowAllocations(
         "Content-Type": "application/json",
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
-      body: JSON.stringify({ changes }),
+      body: JSON.stringify(body),
       signal,
     }
   );
@@ -476,9 +543,77 @@ export async function patchSowAllocations(
   return {
     status: String(raw.status ?? "success"),
     moved: raw.moved,
+    overarching_updated: raw.overarching_updated,
     not_found: raw.not_found,
     trade_line_counts: raw.trade_line_counts,
     tabs: raw.tabs,
+  };
+}
+
+export type SowSharedItemTradeUpdate = {
+  trade_id: string;
+  scope?: string;
+  note?: string;
+};
+
+export type SowSharedItemPatchRequest = {
+  expected_version?: number;
+  trades: SowSharedItemTradeUpdate[];
+};
+
+export type SowSharedItemPatchResponse = {
+  status: string;
+  job_id?: string;
+  active_shared_item_count?: number;
+  shared_item?: SowSharedItem;
+};
+
+/**
+ * Saves the trades that should remain on a shared item.
+ * PATCH /sow/shared-items/:job_id/:item_id
+ */
+export async function patchSowSharedItem(
+  jobId: string,
+  itemId: string,
+  request: SowSharedItemPatchRequest,
+  signal?: AbortSignal
+): Promise<SowSharedItemPatchResponse> {
+  const trimmedJobId = jobId.trim();
+  const trimmedItemId = itemId.trim();
+  if (!trimmedJobId || !trimmedItemId) {
+    throw new Error("Invalid shared item.");
+  }
+  if (!API_BASE_URL) {
+    throw new Error("API base URL is not configured.");
+  }
+  if (!request.trades.length) {
+    throw new Error("At least one trade must remain.");
+  }
+
+  const token = getAuthToken();
+  const res = await fetch(
+    `${API_BASE_URL}/sow/shared-items/${encodeURIComponent(trimmedJobId)}/${encodeURIComponent(trimmedItemId)}`,
+    {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify(request),
+      signal,
+    }
+  );
+
+  if (!res.ok) {
+    throw new Error(await parseSowApiError(res, `Could not update this shared item (${res.status})`));
+  }
+
+  const raw = (await res.json()) as SowSharedItemPatchResponse;
+  return {
+    status: String(raw.status ?? "success"),
+    job_id: raw.job_id,
+    active_shared_item_count: raw.active_shared_item_count,
+    shared_item: raw.shared_item,
   };
 }
 
@@ -643,4 +778,185 @@ export async function fetchSowByJobId(
   );
 
   return data;
+}
+
+export type SowSupportingDocumentFile = {
+  file_name: string;
+  file_path: string;
+};
+
+export type SowSupportingDocumentsResponse = {
+  status: string;
+  job_id: string;
+  specifications: SowSupportingDocumentFile[];
+  drawings: SowSupportingDocumentFile[];
+};
+
+function normalizeSupportingDocumentFile(
+  raw: unknown
+): SowSupportingDocumentFile | null {
+  if (!raw || typeof raw !== "object") return null;
+  const row = raw as Record<string, unknown>;
+  const fileName =
+    typeof row.file_name === "string" ? row.file_name.trim() : "";
+  if (!fileName) return null;
+  return {
+    file_name: fileName,
+    file_path: typeof row.file_path === "string" ? row.file_path : "",
+  };
+}
+
+function normalizeSupportingDocumentsResponse(
+  raw: unknown,
+  jobId: string
+): SowSupportingDocumentsResponse {
+  const record =
+    raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  const specifications = Array.isArray(record.specifications)
+    ? record.specifications
+    : [];
+  const drawings = Array.isArray(record.drawings) ? record.drawings : [];
+  return {
+    status: typeof record.status === "string" ? record.status : "",
+    job_id: typeof record.job_id === "string" ? record.job_id : jobId,
+    specifications: specifications
+      .map(normalizeSupportingDocumentFile)
+      .filter((item): item is SowSupportingDocumentFile => item !== null),
+    drawings: drawings
+      .map(normalizeSupportingDocumentFile)
+      .filter((item): item is SowSupportingDocumentFile => item !== null),
+  };
+}
+
+/**
+ * Lists specification and drawing files already stored for a project.
+ * GET /sow/supporting-documents/:job_id
+ */
+export async function fetchSowSupportingDocuments(
+  jobId: string,
+  signal?: AbortSignal
+): Promise<SowSupportingDocumentsResponse> {
+  const trimmed = jobId.trim();
+  if (!trimmed) {
+    throw new Error("Invalid job id.");
+  }
+
+  const config: SowRequestConfig = {
+    skipGlobalLoader: true,
+    ...(signal ? { signal } : {}),
+  };
+
+  const { data } = await apiClient.get<unknown>(
+    `/sow/supporting-documents/${encodeURIComponent(trimmed)}`,
+    config
+  );
+  const normalized = normalizeSupportingDocumentsResponse(data, trimmed);
+  if (normalized.status && normalized.status !== "success") {
+    throw new Error("Could not load specifications and drawings.");
+  }
+  return normalized;
+}
+
+export type SowSheetItem = {
+  name: string;
+  index: number;
+  hidden: boolean;
+};
+
+export type SowSheetsResponse = {
+  status: string;
+  file_name: string;
+  sheets: SowSheetItem[];
+};
+
+export type SowSheetsRequest =
+  | { type: "upload"; file: File; jobId?: string }
+  | { type: "existing"; jobId: string; filePath: string };
+
+function normalizeSowSheetItem(raw: unknown, fallbackIndex: number): SowSheetItem | null {
+  if (!raw || typeof raw !== "object") return null;
+  const row = raw as Record<string, unknown>;
+  const indexRaw = row.index;
+  const index =
+    typeof indexRaw === "number" && Number.isFinite(indexRaw)
+      ? indexRaw
+      : typeof indexRaw === "string" && indexRaw.trim() !== "" && Number.isFinite(Number(indexRaw))
+        ? Number(indexRaw)
+        : fallbackIndex;
+  const name =
+    typeof row.name === "string" && row.name.trim()
+      ? row.name.trim()
+      : `Sheet ${index}`;
+  return {
+    name,
+    index,
+    hidden: row.hidden === true,
+  };
+}
+
+function normalizeSowSheetsResponse(raw: unknown): SowSheetsResponse {
+  const record =
+    raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  const list = Array.isArray(record.sheets) ? record.sheets : [];
+  return {
+    status: typeof record.status === "string" ? record.status : "",
+    file_name: typeof record.file_name === "string" ? record.file_name : "",
+    sheets: list
+      .map((item, index) => normalizeSowSheetItem(item, index))
+      .filter((item): item is SowSheetItem => item !== null),
+  };
+}
+
+/**
+ * Lists workbook sheets for a schedule file.
+ * POST /sow/sheets (multipart/form-data)
+ */
+export async function fetchSowSheets(
+  request: SowSheetsRequest,
+  signal?: AbortSignal
+): Promise<SowSheetsResponse> {
+  if (!API_BASE_URL) {
+    throw new Error("API base URL is not configured.");
+  }
+
+  const formData = new FormData();
+  formData.append("type", request.type);
+
+  if (request.type === "upload") {
+    formData.append("file", request.file);
+    const jobId = request.jobId?.trim();
+    if (jobId) formData.append("job_id", jobId);
+  } else {
+    const jobId = request.jobId.trim();
+    const filePath = request.filePath.trim();
+    if (!jobId) {
+      throw new Error("A project is required to load sheets for an EMS file.");
+    }
+    if (!filePath) {
+      throw new Error("Selected EMS file path is missing.");
+    }
+    formData.append("job_id", jobId);
+    formData.append("file_path", filePath);
+  }
+
+  const token = getAuthToken();
+  const res = await fetch(`${API_BASE_URL}/sow/sheets`, {
+    method: "POST",
+    headers: {
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: formData,
+    signal,
+  });
+
+  if (!res.ok) {
+    throw new Error(await parseSowApiError(res, `Could not load sheets (${res.status})`));
+  }
+
+  const raw: unknown = await res.json();
+  const normalized = normalizeSowSheetsResponse(raw);
+  if (normalized.status && normalized.status !== "success") {
+    throw new Error("Could not load sheets.");
+  }
+  return normalized;
 }
