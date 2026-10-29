@@ -1494,11 +1494,14 @@ function renderSplitPreview(id){
         (isUnalloc?'&#9888; ':isGeneral?'&#9685; ':'')+esc(t.label)+
       '</div>'+
       '<div style="font-size:12px;color:var(--text-light);margin-top:3px">'+nbsBadges+t.lineCount+' items</div>'+
-      (isUnalloc?'<div style="font-size:12px;color:var(--red);margin-top:5px">These items could not be automatically assigned to a trade — use the Allocate button to assign each one manually.</div>':'')+
+      (isUnalloc?'<div style="font-size:12px;color:var(--red);margin-top:5px">These items could not be automatically assigned to a trade — choose a trade for each one, then press Apply Changes.</div>':'')+
     '</div>';
 
   var actionDiv=document.createElement('div');
   actionDiv.className='flex-g';
+  actionDiv.innerHTML=
+    '<button class="btn btn-secondary btn-sm" data-schedule-discard disabled onclick="resetScheduleChanges()">Discard</button>'+
+    '<button class="btn btn-primary btn-sm" data-schedule-apply style="background:var(--green)" disabled onclick="applyScheduleAllocations()">&#10003; Apply Changes</button>';
   if(!isUnalloc){
     var dlBtn=document.createElement('button');
     dlBtn.className='btn btn-primary btn-sm';
@@ -1518,8 +1521,8 @@ function renderSplitPreview(id){
   });
 
   // Build table per section
-  var colW='50px 70px 1fr 50px 50px 90px 90px';
-  var hdrRow=['','Item','Description','Qty','Unit','Rate (£)','Total (£)'].map(function(h,i){
+  var colW='50px 70px minmax(140px,1fr) 50px 50px minmax(150px,200px) minmax(170px,220px)';
+  var hdrRow=['','Item','Description','Qty','Unit','Overarching Trade','Trade Allocation'].map(function(h,i){
     return '<div style="padding:6px 8px;font-size:10px;font-weight:700;color:#1B3A6B;text-align:'+(i<=1||i===3||i===4?'center':'left')+'">'+h+'</div>';
   }).join('');
 
@@ -1535,6 +1538,13 @@ function renderSplitPreview(id){
 
   // Column headers
   tableHTML+='<div style="display:grid;grid-template-columns:'+colW+';background:#D0D8E8;border-bottom:1px solid var(--border)">'+hdrRow+'</div>';
+
+  // Saved trade and overarching trade come from the Full Schedule row with the same item_key.
+  var scheduleRowsByKey={};
+  sowScheduleSheets.forEach(function(sheetTab){
+    (sheetTab.items||[]).forEach(function(row){ if(row.item_key) scheduleRowsByKey[row.item_key]=row; });
+  });
+  var allocRows=[];
 
   var globalRow=0;
   sectionOrder.forEach(function(sectionName){
@@ -1560,20 +1570,18 @@ function renderSplitPreview(id){
         '<div style="padding:7px 8px;font-size:11px;text-align:center">'+item.qty+'</div>'+
         '<div style="padding:7px 8px;font-size:11px;text-align:center;color:#666">'+esc(item.unit)+'</div>'+
         (function(){
-          if(isUnalloc){
-            var ab=document.createElement('div');
-            ab.style.cssText='padding:7px 8px;grid-column:6/8;display:flex;align-items:center;justify-content:center';
-            var b=document.createElement('button');
-            b.style.cssText='padding:4px 10px;background:var(--navy);border:none;border-radius:4px;font-size:11px;font-weight:600;cursor:pointer;color:#fff;font-family:DM Sans,sans-serif';
-            b.textContent='Allocate →';
-            b.setAttribute('data-ref',item.ref);
-            b.setAttribute('data-desc',item.desc);
-            b.onclick=function(){openAllocateModal(this.getAttribute('data-ref'),this.getAttribute('data-desc'));};
-            ab.appendChild(b);
-            return ab.outerHTML;
+          var itemKey=item.item_key||item.itemKey||'';
+          if(!itemKey){
+            return '<div class="td-alloc-cell" style="color:var(--text-hint)">-</div><div class="td-alloc-cell" style="color:var(--text-hint)">-</div>';
           }
-          return '<div style="padding:7px 8px;font-size:11px;text-align:right;color:#0000FF;background:#F0F4FF">&pound;0.00</div>'+
-                 '<div style="padding:7px 8px;font-size:11px;text-align:right;color:#555">=D*F</div>';
+          var row=scheduleRowsByKey[itemKey]||{};
+          var idx=allocRows.length;
+          allocRows.push({
+            itemKey:itemKey,
+            tradeId:row.tradeId||item.tradeId||item.trade_id||'',
+            overarching:row.overarching_trade||item.overarching_trade||item.overarchingTrade||''
+          });
+          return '<div class="td-alloc-cell" data-td-ot="'+idx+'"></div><div class="td-alloc-cell" data-td-tc="'+idx+'"></div>';
         })()+
       '</div>';
     });
@@ -1583,20 +1591,14 @@ function renderSplitPreview(id){
     tableHTML+='<div style="padding:8px 16px;font-size:11px;color:var(--text-hint);text-align:center;background:var(--bg)">... '+(t.lineCount-t.items.length)+' further line items in full Excel file</div>';
   }
 
-  if(!isUnalloc){
-    tableHTML+='<div style="display:grid;grid-template-columns:'+colW+';background:#1B3A6B">'+
-      '<div style="grid-column:1/6;padding:8px;font-size:12px;font-weight:700;color:#fff;padding-left:16px">TOTAL (Excl. VAT)</div>'+
-      '<div style="grid-column:6/8;padding:8px;font-size:12px;font-weight:700;color:#fff;text-align:right">=SUM</div>'+
-    '</div>';
-  }
   tableHTML+='</div>';
 
   var infoBox = isUnalloc
     ?'<div style="background:var(--red-bg);border:1px solid rgba(196,43,28,.15);border-radius:6px;padding:12px 16px;font-size:12.5px;color:var(--red)">'+
-       '&#9888; &nbsp;'+t.items.length+' item'+(t.items.length===1?'':'s')+' need manual allocation. Click <strong>Allocate &rarr;</strong> on each item to assign it to a trade.'+
+       '&#9888; &nbsp;'+t.items.length+' item'+(t.items.length===1?'':'s')+' need manual allocation. Choose a trade for each item, then press <strong>Apply Changes</strong>.'+
      '</div>'
     :'<div style="background:var(--blue-bg);border:1px solid rgba(15,108,189,.2);border-radius:6px;padding:12px 16px;font-size:12.5px;color:var(--blue)">'+
-       '&#9432; &nbsp;Full Excel contains all <strong>'+t.lineCount+' line items</strong> grouped by section heading. Rate cells (blue) are editable.'+
+       '&#9432; &nbsp;Full Excel contains all <strong>'+t.lineCount+' line items</strong> grouped by section heading. Change any dropdown to reassign, then press <strong>Apply Changes</strong>.'+
      '</div>';
 
   var panel=el('split-preview-panel');
@@ -1606,6 +1608,14 @@ function renderSplitPreview(id){
   wrapper.appendChild(headerDiv);
   panel.appendChild(wrapper);
   panel.insertAdjacentHTML('beforeend', tableHTML + infoBox);
+
+  var tradeOptions=splitTrades.map(function(tr){return '<option value="'+escQ(tr.id)+'">'+esc(tr.label)+'</option>';}).join('');
+  allocRows.forEach(function(row, idx){
+    var otCell=panel.querySelector('[data-td-ot="'+idx+'"]');
+    var tcCell=panel.querySelector('[data-td-tc="'+idx+'"]');
+    if(otCell && tcCell) fillAllocationCells(otCell, tcCell, row.itemKey, row.tradeId, row.overarching, tradeOptions);
+  });
+  updateScheduleChangeUi();
 }
 
 function editSplitTrade(id){alert('Edit mode: you can add, remove or rename line items before downloading.');}
@@ -1712,6 +1722,17 @@ function exportToEMS(){
 }
 
 
+function sharedItemSequence(item){
+  var match = /(\d+)$/.exec(String(item && item.id || ''));
+  return match ? Number(match[1]) : -1;
+}
+
+function sharedItemsLatestFirst(){
+  return SHARED_ITEMS.slice().sort(function(a, b){
+    return sharedItemSequence(b) - sharedItemSequence(a);
+  });
+}
+
 function renderSharedItems(){
   var panel=el('shared-items-panel');
   if(!panel) return;
@@ -1741,7 +1762,9 @@ function renderSharedItems(){
     return;
   }
 
-  SHARED_ITEMS.forEach(function(item){
+  // Latest first: ids are sh_<n> and <n> grows as cards are created, so sort by it descending.
+  // Sorted copy, so SHARED_ITEMS keeps its order for patch lookups.
+  sharedItemsLatestFirst().forEach(function(item){
     var card=document.createElement('div');
     card.style.cssText='background:var(--white);border:1px solid var(--border);border-radius:8px;overflow:hidden;box-shadow:0 1px 4px rgba(0,0,0,.05);margin-bottom:16px';
 
@@ -2453,6 +2476,7 @@ function switchResultTab(tab){
   if(tab==='shared')renderSharedItems();
   if(tab==='schedule')renderScheduleView();
   if(tab==='workbook')renderWorkbookPanel();
+  if(tab==='trades' && splitActiveTrade)renderSplitPreview(splitActiveTrade);
   if(tab==='revision')renderRevisionPanel();
   if(tab==='compliance')renderComplianceView();
 }
@@ -2618,12 +2642,51 @@ function scheduleOverarchingChanged(select){
   scheduleSyncRow(itemKey,tradeId,originalTrade,select.value,originalOverarching);
 }
 
+// Builds the Overarching Trade select (in otCell) and the Trade Allocation select (in tcCell).
+// otCell must sit directly before tcCell: scheduleTradeChanged/scheduleOverarchingChanged find each other by sibling.
+// Pending edits live in scheduleChanges/scheduleOverarchingChanges, shared by Full Schedule and Trade Documents.
+function fillAllocationCells(otCell, tcCell, itemKey, savedTradeId, savedOverarching, tradeOptions){
+  var displayTradeId=scheduleChanges[itemKey]!=null?scheduleChanges[itemKey]:savedTradeId;
+  var hasOverarchingEdit=Object.prototype.hasOwnProperty.call(scheduleOverarchingChanges,itemKey);
+  var displayOverarching=hasOverarchingEdit?scheduleOverarchingChanges[itemKey]:savedOverarching;
+  if(tradeOverarchingChoices(displayTradeId).indexOf(displayOverarching)<0) displayOverarching='';
+  var col=TRADE_COLOURS[displayTradeId]||{bg:'#F0F0F5',border:'#9BA3BF',text:'#4A5272'};
+  var isUnalloc=displayTradeId==='unallocated';
+
+  var otSel=document.createElement('select');
+  otSel.className='schedule-trade-select schedule-overarching-select';
+  otSel.setAttribute('data-item-key', itemKey);
+  otSel.setAttribute('data-original-overarching', savedOverarching);
+  fillOverarchingSelect(otSel, displayTradeId, displayOverarching);
+  otSel.onchange=function(){ scheduleOverarchingChanged(this); };
+  otCell.appendChild(otSel);
+
+  var swatch=document.createElement('div');
+  swatch.className='schedule-trade-swatch';
+  swatch.style.background=col.text;
+  tcCell.appendChild(swatch);
+  var sel=document.createElement('select');
+  sel.className='schedule-trade-select';
+  sel.setAttribute('data-item-key', itemKey);
+  sel.setAttribute('data-original-trade-id',savedTradeId);
+  if(isUnalloc){
+    sel.style.borderColor='var(--red)';
+    sel.style.color='var(--red)';
+    sel.style.background='var(--red-bg)';
+  }
+  sel.innerHTML=tradeOptions;
+  sel.value=displayTradeId;
+  sel.onchange=function(){ scheduleTradeChanged(this); };
+  tcCell.appendChild(sel);
+}
+
 function resetScheduleChanges(){
   if(!getSchedulePendingCount()) return;
   scheduleChanges={};
   scheduleOverarchingChanges={};
   scheduleSharedChanges={};
   renderScheduleView();
+  if(splitActiveTrade) renderSplitPreview(splitActiveTrade);
 }
 
 function applyAllocationResponse(response){
@@ -2819,14 +2882,6 @@ function renderScheduleView(){
 
     items.forEach(function(item){
       rowNum++;
-      var savedTradeId=item.tradeId;
-      var displayTradeId=scheduleChanges[item.item_key]!=null?scheduleChanges[item.item_key]:savedTradeId;
-      var savedOverarching=item.overarching_trade||'';
-      var hasOverarchingEdit=Object.prototype.hasOwnProperty.call(scheduleOverarchingChanges,item.item_key);
-      var displayOverarching=hasOverarchingEdit?scheduleOverarchingChanges[item.item_key]:savedOverarching;
-      if(tradeOverarchingChoices(displayTradeId).indexOf(displayOverarching)<0) displayOverarching='';
-      var col=TRADE_COLOURS[displayTradeId]||{bg:'#F0F0F5',border:'#9BA3BF',text:'#4A5272'};
-      var isUnalloc=displayTradeId==='unallocated';
       var confidence=normalizeMatchConfidence(item.match_confidence);
       var altClass=rowNum%2===0?'':' schedule-cell--alt';
       var confidenceClass=confidence?' schedule-cell--confidence-'+confidence:'';
@@ -2876,34 +2931,10 @@ function renderScheduleView(){
 
       var ot=document.createElement('div');
       ot.className='schedule-cell schedule-cell--overarching'+rowClass;
-      var otSel=document.createElement('select');
-      otSel.className='schedule-trade-select schedule-overarching-select';
-      otSel.setAttribute('data-item-key', item.item_key);
-      otSel.setAttribute('data-original-overarching', savedOverarching);
-      fillOverarchingSelect(otSel, displayTradeId, displayOverarching);
-      otSel.onchange=function(){ scheduleOverarchingChanged(this); };
-      ot.appendChild(otSel);
-      sheet.appendChild(ot);
-
       var tc=document.createElement('div');
       tc.className='schedule-cell schedule-cell--trade'+rowClass;
-      var swatch=document.createElement('div');
-      swatch.className='schedule-trade-swatch';
-      swatch.style.background=col.text;
-      tc.appendChild(swatch);
-      var sel=document.createElement('select');
-      sel.className='schedule-trade-select';
-      sel.setAttribute('data-item-key', item.item_key);
-      sel.setAttribute('data-original-trade-id',savedTradeId);
-      if(isUnalloc){
-        sel.style.borderColor='var(--red)';
-        sel.style.color='var(--red)';
-        sel.style.background='var(--red-bg)';
-      }
-      sel.innerHTML=tradeOptions;
-      sel.value=displayTradeId;
-      sel.onchange=function(){ scheduleTradeChanged(this); };
-      tc.appendChild(sel);
+      fillAllocationCells(ot, tc, item.item_key, item.tradeId, item.overarching_trade||'', tradeOptions);
+      sheet.appendChild(ot);
       sheet.appendChild(tc);
     });
   });

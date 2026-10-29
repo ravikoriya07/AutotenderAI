@@ -15,7 +15,7 @@ import type {
   SowSharedItemPatchResponse,
 } from "@/services/sowService";
 
-const ENGINE_VERSION = "49";
+const ENGINE_VERSION = "52";
 const ENGINE_SRC = `/schedule-of-works/engine.js?v=${ENGINE_VERSION}`;
 const LOADED_FLAG = `__sowEngineLoaded_${ENGINE_VERSION}`;
 

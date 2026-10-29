@@ -757,6 +757,8 @@ export async function fetchSavedSowSplit(
   const config: SowRequestConfig = {
     skipGlobalLoader: true,
     ...(signal ? { signal } : {}),
+    // Cache-buster: the reload right after Apply must not get a stale browser-cached listing.
+    params: { _ts: Date.now() },
     validateStatus: (status) => status === 200 || status === 404,
   };
 
