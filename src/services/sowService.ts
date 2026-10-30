@@ -329,6 +329,8 @@ export type SowSharedItem = {
   id: string;
   ref: string;
   desc: string;
+  display_name?: string;
+  overarching_trade?: string;
   version?: number;
   is_shared?: boolean;
   trades?: SowSharedItemTrade[];
@@ -392,6 +394,16 @@ export function hasSavedSowSplitData(
   );
 }
 
+export const ALLOWED_SOW_EXTENSIONS = ["pdf", "xlsx", "xls", "xlsm"] as const;
+
+export function isAllowedSowFile(file: File | { name?: string }): boolean {
+  if (!file?.name) return false;
+  const parts = file.name.split(".");
+  if (parts.length < 2) return false;
+  const ext = parts.pop()?.toLowerCase() ?? "";
+  return (ALLOWED_SOW_EXTENSIONS as readonly string[]).includes(ext);
+}
+
 /**
  * Submits a schedule-of-works trade split job.
  * POST /sow/split/:job_id (multipart/form-data)
@@ -430,6 +442,9 @@ export async function submitSowSplit(
     }
     formData.append("file_path", filePath);
   } else {
+    if (!isAllowedSowFile(request.file)) {
+      throw new Error("Only PDF and Excel files (.pdf, .xlsx, .xls) are allowed for the schedule of works.");
+    }
     formData.append("file", request.file);
   }
 
@@ -575,6 +590,7 @@ export async function patchSowAllocations(
 
 export type SowSharedItemTradeUpdate = {
   trade_id: string;
+  lead?: boolean;
   scope?: string;
   note?: string;
 };
@@ -609,9 +625,6 @@ export async function patchSowSharedItem(
   if (!API_BASE_URL) {
     throw new Error("API base URL is not configured.");
   }
-  if (!request.trades.length) {
-    throw new Error("At least one trade must remain.");
-  }
 
   const token = getAuthToken();
   const res = await fetch(
@@ -628,7 +641,10 @@ export async function patchSowSharedItem(
   );
 
   if (!res.ok) {
-    throw new Error(await parseSowApiError(res, `Could not update this shared item (${res.status})`));
+    const errorMsg = await parseSowApiError(res, `Could not update this shared item (${res.status})`);
+    const err = new Error(errorMsg) as Error & { status?: number };
+    err.status = res.status;
+    throw err;
   }
 
   const raw = (await res.json()) as SowSharedItemPatchResponse;
@@ -948,6 +964,9 @@ export async function fetchSowSheets(
   formData.append("type", request.type);
 
   if (request.type === "upload") {
+    if (!isAllowedSowFile(request.file)) {
+      throw new Error("Only PDF and Excel files (.pdf, .xlsx, .xls) are allowed for the schedule of works.");
+    }
     formData.append("file", request.file);
     const jobId = request.jobId?.trim();
     if (jobId) formData.append("job_id", jobId);

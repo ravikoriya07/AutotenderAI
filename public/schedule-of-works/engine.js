@@ -7,6 +7,24 @@ function fmtP(n){return n!=null?'\u00a3'+Number(n).toLocaleString('en-GB',{minim
 
 
 function openAllocateModal(ref,desc){
+  var pending = typeof getSchedulePendingCount === 'function' ? getSchedulePendingCount() : 0;
+  if(pending > 0){
+    var msg = 'Please apply or discard pending Full Schedule changes before allocating.';
+    if(typeof sowToast === 'function'){
+      sowToast('warning', msg);
+    }
+    if(typeof showSowDialog === 'function'){
+      showSowDialog({
+        icon: 'warning',
+        title: 'Pending changes',
+        text: msg,
+        confirmButtonText: 'OK'
+      });
+    } else {
+      alert(msg);
+    }
+    return;
+  }
   var ex=document.getElementById('allocate-modal');if(ex)ex.remove();
   var opts=splitTrades.filter(function(t){return t.id!=='unallocated';}).map(function(t){
     return '<option value="'+escQ(t.id)+'">'+esc(t.label)+'</option>';
@@ -61,6 +79,7 @@ var sowScheduleSheetScrollLocked = false;
 var sowSplitResponse = null;
 var SHARED_ITEMS = [];
 var sowSharedItemRemoving = false;
+var sowSharedItemMakingLead = false;
 
 function updateSowEmsSectionStatus(){
   if(splitFile) return;
@@ -474,18 +493,68 @@ function initSplit(){
   // nothing needed on init
 }
 
-function splitHandleFile(event){
-  var f=event.target.files[0];
-  if(f) setSplitFile(f);
+var ALLOWED_SOW_EXTENSIONS = ['pdf', 'xlsx', 'xls', 'xlsm'];
+
+function isAllowedSowFile(f){
+  if(!f || !f.name) return false;
+  var parts = String(f.name).split('.');
+  if(parts.length < 2) return false;
+  var ext = parts.pop().toLowerCase();
+  return ALLOWED_SOW_EXTENSIONS.indexOf(ext) >= 0;
 }
+
+function showInvalidSowFileDialog(f){
+  var ext = f && f.name && f.name.indexOf('.') !== -1 ? ('.' + f.name.split('.').pop().toLowerCase()) : '';
+  var msg = 'Only PDF and Excel files (.pdf, .xlsx, .xls) are allowed.' + (ext ? ' You selected a ' + ext + ' file.' : '');
+  if(typeof sowToast === 'function'){
+    sowToast('error', msg);
+  }
+  sowDialog({
+    icon: 'error',
+    title: 'Unsupported file format',
+    text: msg,
+    confirmButtonText: 'OK'
+  });
+}
+
+function splitHandleFile(event){
+  var input = event && event.target;
+  var f = input && input.files && input.files[0];
+  if(!f) return;
+  if(!isAllowedSowFile(f)){
+    if(input) input.value = '';
+    showInvalidSowFileDialog(f);
+    return;
+  }
+  setSplitFile(f);
+}
+
 function splitHandleDrop(event){
   event.preventDefault();
   var dz=el('split-drop-zone');
-  dz.style.borderColor='var(--border)';dz.style.background='var(--bg)';
-  var f=event.dataTransfer.files[0];
-  if(f) setSplitFile(f);
+  if(dz){
+    dz.style.borderColor='var(--border)';
+    dz.style.background='var(--bg)';
+  }
+  var f = event.dataTransfer && event.dataTransfer.files && event.dataTransfer.files[0];
+  if(!f) return;
+  if(!isAllowedSowFile(f)){
+    var input = el('split-file-input');
+    if(input) input.value = '';
+    showInvalidSowFileDialog(f);
+    return;
+  }
+  setSplitFile(f);
 }
+
 function setSplitFile(f){
+  if(!f) return;
+  if(!isAllowedSowFile(f)){
+    var input = el('split-file-input');
+    if(input) input.value = '';
+    showInvalidSowFileDialog(f);
+    return;
+  }
   splitFile = f;
   clearSplitValidation();
   var ext = f.name.split('.').pop().toLowerCase();
@@ -501,10 +570,10 @@ function setSplitFile(f){
   el('sow-upload-area').style.display = 'none';
   el('sec1-ems-notice').style.display = 'none';
 
-  // Convert button for non-CSV files
+  // Convert button only shown for PDF
   var convertSection = el('convert-section');
   if(convertSection){
-    var showConvert = ['pdf','doc','docx','xlsx','xls','xlsm'].includes(ext);
+    var showConvert = ext === 'pdf';
     convertSection.style.display = showConvert ? 'block' : 'none';
     el('convert-status').textContent = '';
   }
@@ -931,31 +1000,29 @@ function isActiveSharedItem(item){
   if(sharedFlag(item.removed_from_shared) === true) return false;
   var markedShared = sharedFlag(item.marked_shared);
   var isShared = sharedFlag(item.is_shared);
-  // The backend decides: a card it marks shared stays listed even with one trade (or none),
-  // and the session hidden-id memory never overrides it.
+  // Shared cards stay listed even with one trade or zero trades so user can add new trades
   if(markedShared === true || isShared === true){
     forgetHiddenSharedId(item.id);
     return true;
   }
   if(markedShared === false || isShared === false) return false;
-  // No flags from the backend: fall back to the trade-count rule.
-  var trades = Array.isArray(item.trades) ? item.trades : [];
-  var tradeCount = item.trade_count != null && item.trade_count !== '' ? Number(item.trade_count) : null;
-  var onlyOneTrade = trades.length === 1 || (tradeCount != null && !isNaN(tradeCount) && tradeCount < 2);
-  if(onlyOneTrade){
-    rememberHiddenSharedId(item.id);
-    return false;
-  }
-  if(item.id && readHiddenSharedIds().indexOf(item.id) >= 0) return false;
   return true;
 }
 
 function normalizeSharedItem(item){
   if(!item) return null;
+  var displayName = '';
+  if(item.display_name != null && String(item.display_name).trim() !== ''){
+    displayName = String(item.display_name).trim();
+  } else if(item.displayName != null && String(item.displayName).trim() !== ''){
+    displayName = String(item.displayName).trim();
+  }
   return {
     id: item.id || '',
     ref: item.ref || '',
     desc: item.desc || '',
+    display_name: displayName,
+    overarching_trade: item.overarching_trade || item.overarchingTrade || '',
     version: Number.isFinite(Number(item.version)) ? Number(item.version) : 0,
     is_shared: !(item.is_shared === false || item.is_shared === 0 || String(item.is_shared).toLowerCase() === 'false'),
     trade_count: item.trade_count != null && item.trade_count !== '' ? Number(item.trade_count) : (Array.isArray(item.trades) ? item.trades.length : 0),
@@ -1774,11 +1841,12 @@ function renderSharedItems(){
       return '<span style="font-size:11px;padding:2px 8px;border-radius:10px;font-weight:600;background:'+col+'18;color:'+col+';border:1px solid '+col+'28">'+(t.lead?'&#9733; ':'')+esc(t.trade)+'</span>';
     }).join(' ');
 
+    var title = (item.display_name && String(item.display_name).trim()) ? String(item.display_name).trim() : item.desc;
     var hdr=document.createElement('div');
     hdr.style.cssText='padding:13px 18px;background:var(--bg);border-bottom:1px solid var(--border);display:flex;align-items:flex-start;gap:14px';
     hdr.innerHTML='<span style="font-size:11px;font-weight:700;color:var(--text-light);background:var(--white);border:1px solid var(--border);padding:3px 8px;border-radius:4px;flex-shrink:0;margin-top:1px">'+esc(item.ref)+'</span>'+
       '<div style="flex:1">'+
-        '<div style="font-size:13.5px;font-weight:600;color:var(--text);line-height:1.4">'+esc(item.desc)+'</div>'+
+        '<div style="font-size:13.5px;font-weight:600;color:var(--text);line-height:1.4" title="'+esc(item.desc)+'">'+esc(title)+'</div>'+
         '<div style="margin-top:6px;display:flex;gap:6px;align-items:center;flex-wrap:wrap">'+
           '<span style="font-size:11px;font-weight:700;color:var(--amber);background:var(--amber-bg);border:1px solid rgba(196,123,0,.2);padding:2px 8px;border-radius:10px">&#9888; '+item.trades.length+' trade'+(item.trades.length===1?'':'s')+'</span>'+
           tradeBadges+
@@ -1800,21 +1868,36 @@ function renderSharedItems(){
       var row=document.createElement('div');
       row.className='sow-shared-trade'+(isLead?' sow-shared-trade--lead':'');
       var top=document.createElement('div');
-      top.className='sow-shared-trade__head'+(isLead?'':' sow-shared-trade__head--delete');
+      top.className='sow-shared-trade__head'+(isLead?' sow-shared-trade__head--lead-actions':' sow-shared-trade__head--actions');
       top.innerHTML='<span class="sow-shared-trade__badge" style="background:'+col+'18;color:'+col+';border-color:'+col+'28">'+(isLead?'&#9733; LEAD':'SUPPORTING')+'</span>'+
           '<span class="sow-shared-trade__name">'+esc(t.trade)+'</span>'+
           '<span class="sow-shared-trade__code">'+esc(t.nbs)+'</span>';
       row.appendChild(top);
+
+      var actions=document.createElement('div');
+      actions.className='sow-shared-trade__actions';
+
       if(!isLead){
-        var del=document.createElement('button');
-        del.type='button';
-        del.className='sow-shared-delete';
-        del.setAttribute('aria-label', 'Remove '+t.trade);
-        del.title='Remove';
-        del.innerHTML='<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>';
-        del.onclick=function(){ removeSharedItemTrade(item, t, del); };
-        row.appendChild(del);
+        var makeLeadBtn=document.createElement('button');
+        makeLeadBtn.type='button';
+        makeLeadBtn.className='sow-shared-make-lead';
+        makeLeadBtn.setAttribute('aria-label', 'Make '+t.trade+' the lead trade');
+        makeLeadBtn.title='Make lead trade';
+        makeLeadBtn.innerHTML='<span class="sow-shared-make-lead__star">&#9733;</span><span>Make lead</span>';
+        makeLeadBtn.onclick=function(){ makeSharedItemLead(item, t, makeLeadBtn); };
+        actions.appendChild(makeLeadBtn);
       }
+
+      var del=document.createElement('button');
+      del.type='button';
+      del.className='sow-shared-delete';
+      del.setAttribute('aria-label', 'Remove '+t.trade);
+      del.title='Remove';
+      del.innerHTML='<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>';
+      del.onclick=function(){ removeSharedItemTrade(item, t, del); };
+      actions.appendChild(del);
+
+      row.appendChild(actions);
       var scope=document.createElement('div');
       scope.style.cssText='font-size:12.5px;color:var(--text-mid);line-height:1.6;margin-bottom:6px';
       scope.innerHTML='<strong style="color:var(--text)">Scope: </strong>'+esc(t.scope);
@@ -1838,6 +1921,15 @@ function renderSharedItems(){
       row.appendChild(noteWrap);
       card.appendChild(row);
     });
+
+    if(!item.trades || !item.trades.length){
+      var emptyRow=document.createElement('div');
+      emptyRow.className='sow-shared-trade sow-shared-trade--empty';
+      emptyRow.style.cssText='padding:18px 20px;background:rgba(0,0,0,.015);border-bottom:1px solid var(--border);color:var(--text-hint);font-size:12.5px;display:flex;align-items:center;justify-content:space-between;gap:12px';
+      emptyRow.innerHTML='<span>No trades currently assigned. Click <strong>Add</strong> to attach a trade to this shared item.</span>'+
+        '<button class="btn btn-secondary btn-sm" type="button" style="font-size:12px;padding:4px 10px;font-family:DM Sans,sans-serif" onclick="openAddSharedTrade(SHARED_ITEMS.find(function(it){ return it.id === \''+escQ(item.id)+'\'; }))">+ Add trade</button>';
+      card.appendChild(emptyRow);
+    }
 
     panel.appendChild(card);
   });
@@ -1887,8 +1979,110 @@ function applySharedItemPatch(itemId, response){
   renderSharedItems();
 }
 
+async function makeSharedItemLead(item, trade, button){
+  if(!item || !trade || sowSharedItemMakingLead || sowSharedItemRemoving) return;
+  var targetTradeId = sharedTradeId(trade);
+  if(!targetTradeId){
+    await sowDialog({
+      title: 'Cannot change lead trade',
+      text: 'This trade cannot be made lead because its trade id is missing.',
+      icon: 'error',
+      confirmButtonText: 'OK'
+    });
+    return;
+  }
+  if(!sowProjectJobId){
+    window.dispatchEvent(new CustomEvent('sow-needs-project'));
+    await sowDialog({
+      title: 'Select a project',
+      text: 'Select a project before changing the lead trade.',
+      icon: 'warning',
+      confirmButtonText: 'OK'
+    });
+    return;
+  }
+
+  var tradeName = trade.trade || 'Trade';
+  var confirmed = await sowDialog({
+    title: 'Set as lead trade?',
+    text: 'Make ' + tradeName + ' the lead trade for ' + (item.display_name || item.desc || item.ref || 'this shared item') + '?',
+    icon: 'question',
+    showCancelButton: true,
+    confirmButtonText: 'Make Lead',
+    cancelButtonText: 'Cancel'
+  });
+  if(!confirmed || !confirmed.isConfirmed) return;
+
+  var tradesPayload = (item.trades || []).map(function(t){
+    var tid = sharedTradeId(t);
+    var entry = { trade_id: tid };
+    if(tid === targetTradeId){
+      entry.lead = true;
+    }
+    if(t.scope) entry.scope = t.scope;
+    if(t.note) entry.note = t.note;
+    return entry;
+  }).filter(function(t){ return t.trade_id; });
+
+  var hasTarget = tradesPayload.some(function(t){ return t.trade_id === targetTradeId; });
+  if(!hasTarget){
+    await sowDialog({
+      title: 'Cannot change lead trade',
+      text: 'The selected trade could not be found in this shared item.',
+      icon: 'error',
+      confirmButtonText: 'OK'
+    });
+    return;
+  }
+
+  sowSharedItemMakingLead = true;
+  if(button){
+    button.disabled = true;
+    button.classList.add('is-busy');
+  }
+
+  try {
+    if(typeof window.patchSowSharedItem !== 'function'){
+      throw new Error('Shared item service is not ready. Please refresh the page.');
+    }
+    var request = { trades: tradesPayload };
+    if(Number.isFinite(Number(item.version))) request.expected_version = Number(item.version);
+    var response = await window.patchSowSharedItem(sowProjectJobId, item.id, request);
+    applySharedItemPatch(item.id, response);
+    sowToast('success', tradeName + ' is now the lead trade.');
+  } catch(e) {
+    var isConflict = (e && e.status === 409) || (e && String(e.message).indexOf('409') !== -1);
+    if(isConflict){
+      var reloadChoice = await sowDialog({
+        title: 'Shared Item Updated',
+        text: 'This shared item has been updated. Would you like to reload the latest schedule?',
+        icon: 'warning',
+        showCancelButton: true,
+        confirmButtonText: 'Reload',
+        cancelButtonText: 'Cancel'
+      });
+      if(reloadChoice && reloadChoice.isConfirmed && typeof window.runLoadSavedSowSplit === 'function'){
+        window.runLoadSavedSowSplit(sowProjectJobId);
+      }
+    } else {
+      await sowDialog({
+        title: 'Could not change lead trade',
+        text: e && e.message ? e.message : 'Could not change the lead trade.',
+        icon: 'error',
+        confirmButtonText: 'OK'
+      });
+    }
+    if(button){
+      button.disabled = false;
+      button.classList.remove('is-busy');
+    }
+  } finally {
+    sowSharedItemMakingLead = false;
+  }
+}
+
 async function removeSharedItemTrade(item, trade, button){
-  if(!item || !trade || sowSharedItemRemoving) return;
+  if(!item || !trade || sowSharedItemRemoving || sowSharedItemMakingLead) return;
   var tradeId = sharedTradeId(trade);
   if(!tradeId){
     await sowDialog({
@@ -1909,9 +2103,32 @@ async function removeSharedItemTrade(item, trade, button){
     });
     return;
   }
+  var remaining = (item.trades || []).filter(function(t){ return t !== trade; }).map(function(t){
+    var payload = { trade_id: sharedTradeId(t) };
+    if(t.lead) payload.lead = true;
+    if(t.scope) payload.scope = t.scope;
+    if(t.note) payload.note = t.note;
+    return payload;
+  }).filter(function(t){ return t.trade_id; });
+
+  var hasLead = remaining.some(function(t){ return Boolean(t.lead); });
+  var nextLeadTradeObj = null;
+  if(!hasLead && remaining.length > 0){
+    remaining[0].lead = true;
+    nextLeadTradeObj = (item.trades || []).find(function(t){ return sharedTradeId(t) === remaining[0].trade_id; });
+  }
+
+  var tradeName = trade.trade || 'Trade';
+  var itemName = item.display_name || item.desc || item.ref || 'this shared item';
+  var nextLeadName = nextLeadTradeObj ? (nextLeadTradeObj.trade || 'the next trade') : '';
+
+  var confirmText = (trade.lead && nextLeadName)
+    ? 'Remove ' + tradeName + ' from ' + itemName + '? ' + nextLeadName + ' will become the new lead trade.'
+    : 'Remove ' + tradeName + ' from ' + itemName + '?';
+
   var confirmed = await sowDialog({
     title: 'Remove trade?',
-    text: 'Remove '+trade.trade+' from '+(item.desc || item.ref || 'this shared item')+'?',
+    text: confirmText,
     icon: 'warning',
     showCancelButton: true,
     confirmButtonText: 'Remove',
@@ -1919,24 +2136,11 @@ async function removeSharedItemTrade(item, trade, button){
   });
   if(!confirmed || !confirmed.isConfirmed) return;
 
-  var remaining = (item.trades || []).filter(function(t){ return t !== trade; }).map(function(t){
-    return { trade_id: sharedTradeId(t) };
-  }).filter(function(t){ return t.trade_id; });
-  if(!remaining.length){
-    await sowDialog({
-      title: 'Cannot remove trade',
-      text: 'At least one trade must remain.',
-      icon: 'warning',
-      confirmButtonText: 'OK'
-    });
-    return;
-  }
-
   sowSharedItemRemoving = true;
   if(button){
     button.disabled = true;
     button.classList.add('is-busy');
-    button.setAttribute('aria-label', 'Removing '+trade.trade);
+    button.setAttribute('aria-label', 'Removing '+tradeName);
   }
   try {
     if(typeof window.patchSowSharedItem !== 'function'){
@@ -1946,13 +2150,33 @@ async function removeSharedItemTrade(item, trade, button){
     if(Number.isFinite(Number(item.version))) request.expected_version = Number(item.version);
     var response = await window.patchSowSharedItem(sowProjectJobId, item.id, request);
     applySharedItemPatch(item.id, response);
+    if(trade.lead && nextLeadName){
+      sowToast('success', tradeName + ' removed. ' + nextLeadName + ' is now the lead trade.');
+    } else {
+      sowToast('success', tradeName + ' removed.');
+    }
   } catch(e) {
-    await sowDialog({
-      title: 'Could not remove trade',
-      text: e && e.message ? e.message : 'Could not remove this trade.',
-      icon: 'error',
-      confirmButtonText: 'OK'
-    });
+    var isConflict = (e && e.status === 409) || (e && String(e.message).indexOf('409') !== -1);
+    if(isConflict){
+      var reloadChoice = await sowDialog({
+        title: 'Shared Item Updated',
+        text: 'This shared item has been updated. Would you like to reload the latest schedule?',
+        icon: 'warning',
+        showCancelButton: true,
+        confirmButtonText: 'Reload',
+        cancelButtonText: 'Cancel'
+      });
+      if(reloadChoice && reloadChoice.isConfirmed && typeof window.runLoadSavedSowSplit === 'function'){
+        window.runLoadSavedSowSplit(sowProjectJobId);
+      }
+    } else {
+      await sowDialog({
+        title: 'Could not remove trade',
+        text: e && e.message ? e.message : 'Could not remove this trade.',
+        icon: 'error',
+        confirmButtonText: 'OK'
+      });
+    }
     if(button){
       button.disabled = false;
       button.classList.remove('is-busy');
@@ -2200,7 +2424,7 @@ function openAddSharedTrade(item){
 }
 
 async function saveAddedSharedTrade(item, choices, tradePicker, scopePicker, noteInput, save, cancel, status){
-  if(!item || sowSharedItemRemoving) return;
+  if(!item || sowSharedItemRemoving || sowSharedItemMakingLead) return;
   var trade = choices[Number(tradePicker.getValue())];
   var scope = scopePicker.getScope();
   var note = noteInput.value.trim();
@@ -2227,7 +2451,11 @@ async function saveAddedSharedTrade(item, choices, tradePicker, scopePicker, not
   }
 
   var trades = (item.trades || []).map(function(row){
-    return { trade_id: sharedTradeId(row) };
+    var payload = { trade_id: sharedTradeId(row) };
+    if(row.lead) payload.lead = true;
+    if(row.scope) payload.scope = row.scope;
+    if(row.note) payload.note = row.note;
+    return payload;
   });
   var added = { trade_id: String(trade.id), scope: scope };
   if(note) added.note = note;
@@ -2257,20 +2485,36 @@ async function saveAddedSharedTrade(item, choices, tradePicker, scopePicker, not
     closeAddSharedTrade();
     applySharedItemPatch(item.id, response);
   } catch(e) {
-    await sowDialog({
-      title: 'Could not add trade',
-      text: e && e.message ? e.message : 'Could not add this trade.',
-      icon: 'error',
-      confirmButtonText: 'OK'
-    });
-    save.disabled = false;
-    save.classList.remove('is-saving');
-    save.textContent = 'Save';
-    cancel.disabled = false;
-    tradePicker.setDisabled(false);
-    scopePicker.setDisabled(!tradePicker.getValue());
-    noteInput.disabled = false;
-    if(status) status.hidden = true;
+    var isConflict = (e && e.status === 409) || (e && String(e.message).indexOf('409') !== -1);
+    if(isConflict){
+      closeAddSharedTrade();
+      var reloadChoice = await sowDialog({
+        title: 'Shared Item Updated',
+        text: 'This shared item has been updated. Would you like to reload the latest schedule?',
+        icon: 'warning',
+        showCancelButton: true,
+        confirmButtonText: 'Reload',
+        cancelButtonText: 'Cancel'
+      });
+      if(reloadChoice && reloadChoice.isConfirmed && typeof window.runLoadSavedSowSplit === 'function'){
+        window.runLoadSavedSowSplit(sowProjectJobId);
+      }
+    } else {
+      await sowDialog({
+        title: 'Could not add trade',
+        text: e && e.message ? e.message : 'Could not add this trade.',
+        icon: 'error',
+        confirmButtonText: 'OK'
+      });
+      save.disabled = false;
+      save.classList.remove('is-saving');
+      save.textContent = 'Save';
+      cancel.disabled = false;
+      tradePicker.setDisabled(false);
+      scopePicker.setDisabled(!tradePicker.getValue());
+      noteInput.disabled = false;
+      if(status) status.hidden = true;
+    }
   } finally {
     sowSharedItemRemoving = false;
   }
@@ -2525,7 +2769,35 @@ function updateScheduleChangeUi(){
   }
 }
 
+function isNaTrade(tradeId){
+  if(!tradeId) return false;
+  var s = String(tradeId).trim();
+  var upper = s.toUpperCase();
+  if(upper === 'N/A' || upper === 'NA' || upper === 'NOT_APPLICABLE' || upper === 'NOT APPLICABLE') return true;
+  if(/^NA[-_]/i.test(s) || /^N\/A[-_]/i.test(s)) return true;
+  var found = null;
+  if(Array.isArray(splitTrades)){
+    for(var i=0; i<splitTrades.length; i++){
+      var t = splitTrades[i];
+      if(t && String(t.id).trim() === s){
+        found = t;
+        break;
+      }
+    }
+  }
+  if(found){
+    var idU = String(found.id || '').trim().toUpperCase();
+    var lblU = String(found.label || '').trim().toUpperCase();
+    if(idU === 'N/A' || idU === 'NA' || idU === 'NOT_APPLICABLE' || idU === 'NOT APPLICABLE') return true;
+    if(lblU === 'N/A' || lblU === 'NA' || lblU === 'NOT APPLICABLE') return true;
+    if(/^N\/A(\s*[-—–]|$)/i.test(lblU)) return true;
+    if(/^NOT APPLICABLE/i.test(lblU)) return true;
+  }
+  return false;
+}
+
 function tradeOverarchingChoices(tradeId){
+  if(isNaTrade(tradeId)) return ['N/A'];
   var found=null;
   splitTrades.forEach(function(trade){
     if(trade && trade.id===tradeId) found=trade;
@@ -2534,6 +2806,7 @@ function tradeOverarchingChoices(tradeId){
 }
 
 function overarchingAfterTradeChange(newTradeId,currentName,originalTradeId,originalName){
+  if(isNaTrade(newTradeId)) return 'N/A';
   var choices=tradeOverarchingChoices(newTradeId);
   if(currentName && choices.indexOf(currentName)>=0) return currentName;
   if(newTradeId===originalTradeId && originalName && choices.indexOf(originalName)>=0) return originalName;
@@ -2548,8 +2821,13 @@ function scheduleSyncRow(itemKey,tradeId,originalTradeId,overarchingName,origina
   var tradeChanged=tradeId!==originalTradeId;
   var name=overarchingName||'';
   var originalName=originalOverarching||'';
-  if(!tradeChanged && (name===originalName || !name)) delete scheduleOverarchingChanges[itemKey];
-  else scheduleOverarchingChanges[itemKey]=name;
+  if(isNaTrade(tradeId)){
+    delete scheduleOverarchingChanges[itemKey];
+  } else if(!tradeChanged && (name===originalName || !name)){
+    delete scheduleOverarchingChanges[itemKey];
+  } else {
+    scheduleOverarchingChanges[itemKey]=name;
+  }
   updateScheduleChangeUi();
 }
 
@@ -2570,7 +2848,8 @@ function scheduleAllocationPayload(){
     if(scheduleChanges[key]) changes[key]=scheduleChanges[key];
   });
   Object.keys(scheduleOverarchingChanges).forEach(function(key){
-    if(scheduleOverarchingChanges[key]) overarching[key]=scheduleOverarchingChanges[key];
+    var currentTrade = scheduleChanges[key];
+    if(!isNaTrade(currentTrade) && scheduleOverarchingChanges[key]) overarching[key]=scheduleOverarchingChanges[key];
   });
   if(Object.keys(changes).length) request.changes=changes;
   if(Object.keys(overarching).length) request.overarching_changes=overarching;
@@ -2579,6 +2858,20 @@ function scheduleAllocationPayload(){
 }
 
 function fillOverarchingSelect(select,tradeId,selectedName){
+  if(isNaTrade(tradeId)){
+    select.innerHTML='';
+    var opt=document.createElement('option');
+    opt.value='N/A';
+    opt.textContent='N/A';
+    opt.selected=true;
+    select.appendChild(opt);
+    select.value='N/A';
+    select.disabled=true;
+    select.title='N/A';
+    select.setAttribute('data-is-na', 'true');
+    return;
+  }
+  select.removeAttribute('data-is-na');
   var choices=tradeOverarchingChoices(tradeId);
   var selected=selectedName && choices.indexOf(selectedName)>=0 ? selectedName : '';
   select.innerHTML='';
@@ -2649,7 +2942,8 @@ function fillAllocationCells(otCell, tcCell, itemKey, savedTradeId, savedOverarc
   var displayTradeId=scheduleChanges[itemKey]!=null?scheduleChanges[itemKey]:savedTradeId;
   var hasOverarchingEdit=Object.prototype.hasOwnProperty.call(scheduleOverarchingChanges,itemKey);
   var displayOverarching=hasOverarchingEdit?scheduleOverarchingChanges[itemKey]:savedOverarching;
-  if(tradeOverarchingChoices(displayTradeId).indexOf(displayOverarching)<0) displayOverarching='';
+  if(isNaTrade(displayTradeId)) displayOverarching='N/A';
+  else if(tradeOverarchingChoices(displayTradeId).indexOf(displayOverarching)<0) displayOverarching='';
   var col=TRADE_COLOURS[displayTradeId]||{bg:'#F0F0F5',border:'#9BA3BF',text:'#4A5272'};
   var isUnalloc=displayTradeId==='unallocated';
 
@@ -3000,6 +3294,7 @@ function bindScheduleSheetNav(bar){
 
 window.resetScheduleChanges = resetScheduleChanges;
 window.applyScheduleAllocations = applyScheduleAllocations;
+window.openAllocateModal = openAllocateModal;
 
 // ── SUPPORTING FILES (SPEC & DRAWINGS) ───────────────────
 var supportingFiles = { spec: [], dwg: [] };
@@ -3910,17 +4205,40 @@ var revFile = null;
 var revisionResults = null;
 
 function revHandleFile(event){
-  var f = event.target.files[0];
-  if(f) setRevFile(f);
+  var input = event && event.target;
+  var f = input && input.files && input.files[0];
+  if(!f) return;
+  if(!isAllowedSowFile(f)){
+    if(input) input.value = '';
+    showInvalidSowFileDialog(f);
+    return;
+  }
+  setRevFile(f);
 }
 function revHandleDrop(event){
   event.preventDefault();
   var dz = el('rev-drop-zone');
-  dz.style.borderColor='var(--border)'; dz.style.background='var(--bg)';
-  var f = event.dataTransfer.files[0];
-  if(f) setRevFile(f);
+  if(dz){
+    dz.style.borderColor='var(--border)'; dz.style.background='var(--bg)';
+  }
+  var f = event.dataTransfer && event.dataTransfer.files && event.dataTransfer.files[0];
+  if(!f) return;
+  if(!isAllowedSowFile(f)){
+    var input = el('rev-file-input');
+    if(input) input.value = '';
+    showInvalidSowFileDialog(f);
+    return;
+  }
+  setRevFile(f);
 }
 function setRevFile(f){
+  if(!f) return;
+  if(!isAllowedSowFile(f)){
+    var input = el('rev-file-input');
+    if(input) input.value = '';
+    showInvalidSowFileDialog(f);
+    return;
+  }
   revFile = f;
   var ext = f.name.split('.').pop().toLowerCase();
   var kb = Math.round(f.size/1024);
@@ -4261,6 +4579,24 @@ window.refreshSowEngineDom = function(){
 };
 
 function confirmAllocation(ref){
+  var pending = typeof getSchedulePendingCount === 'function' ? getSchedulePendingCount() : 0;
+  if(pending > 0){
+    var msg = 'Please apply or discard pending Full Schedule changes before allocating.';
+    if(typeof sowToast === 'function'){
+      sowToast('warning', msg);
+    }
+    if(typeof showSowDialog === 'function'){
+      showSowDialog({
+        icon: 'warning',
+        title: 'Pending changes',
+        text: msg,
+        confirmButtonText: 'OK'
+      });
+    } else {
+      alert(msg);
+    }
+    return;
+  }
   var tradeId=document.getElementById('allocate-trade-select').value;
   var note=document.getElementById('allocate-note').value;
   var unalloc=splitTrades.find(function(t){return t.id==='unallocated';});

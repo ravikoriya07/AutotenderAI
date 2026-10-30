@@ -448,6 +448,13 @@
   background: #f7f8fb;
 }
 
+.sow-module #schedule-panel .schedule-overarching-select[data-is-na="true"],
+.sow-module #split-preview-panel .schedule-overarching-select[data-is-na="true"] {
+  color: var(--text-mid);
+  font-weight: 500;
+  background: #f7f8fb;
+}
+
 .sow-module #schedule-panel .schedule-cell--trade {
   gap: 6px;
   padding: 6px 8px;
@@ -842,8 +849,90 @@
   flex-wrap: wrap;
 }
 
-.sow-module .sow-shared-trade__head--delete {
-  padding-right: 40px;
+.sow-module .sow-shared-trade__head--delete,
+.sow-module .sow-shared-trade__head--lead-actions {
+  padding-right: 50px;
+}
+
+.sow-module .sow-shared-trade__head--actions {
+  padding-right: 155px;
+}
+
+.sow-module .sow-shared-trade__actions {
+  position: absolute;
+  top: 12px;
+  right: 14px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  z-index: 2;
+}
+
+.sow-module .sow-shared-make-lead {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  height: 32px;
+  padding: 0 11px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--white);
+  color: var(--text-mid);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+.sow-module .sow-shared-make-lead__star {
+  font-size: 13px;
+  color: var(--amber);
+  line-height: 1;
+}
+
+.sow-module .sow-shared-make-lead:hover {
+  background: var(--amber-bg);
+  border-color: rgba(196, 123, 0, 0.35);
+  color: var(--amber);
+}
+
+.sow-module .sow-shared-make-lead:disabled {
+  opacity: 0.5;
+  cursor: default;
+  pointer-events: none;
+}
+
+.sow-module .sow-shared-make-lead.is-busy {
+  color: transparent !important;
+  position: relative;
+  pointer-events: none;
+}
+
+.sow-module .sow-shared-make-lead.is-busy .sow-shared-make-lead__star {
+  opacity: 0;
+}
+
+.sow-module .sow-shared-make-lead.is-busy::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 13px;
+  height: 13px;
+  border: 2px solid rgba(196, 123, 0, 0.25);
+  border-top-color: var(--amber);
+  border-radius: 50%;
+  animation: sow-shared-spin 0.7s linear infinite;
+}
+
+.sow-module .sow-shared-trade__actions .sow-shared-delete {
+  position: static;
+  top: auto;
+  right: auto;
 }
 
 .sow-module .sow-shared-trade__badge {
@@ -1500,6 +1589,17 @@
 }
 
 @media (max-width: 640px) {
+  .sow-module .sow-shared-trade__actions {
+    position: static;
+    margin-bottom: 8px;
+    justify-content: flex-end;
+  }
+
+  .sow-module .sow-shared-trade__head--actions,
+  .sow-module .sow-shared-trade__head--lead-actions {
+    padding-right: 0;
+  }
+
   .sow-module #schedule-panel .schedule-sheet-tabs {
     padding: 6px 10px;
   }
