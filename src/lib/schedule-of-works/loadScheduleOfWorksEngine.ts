@@ -16,7 +16,7 @@ import type {
   SowRevisionResponse,
 } from "@/services/sowService";
 
-const ENGINE_VERSION = "63";
+const ENGINE_VERSION = "64";
 const ENGINE_SRC = `/schedule-of-works/engine.js?v=${ENGINE_VERSION}`;
 const LOADED_FLAG = `__sowEngineLoaded_${ENGINE_VERSION}`;
 

@@ -6,55 +6,6 @@ function escQ(s){return s?String(s).replace(/\\/g,'\\\\').replace(/'/g,"\\'"):''
 function fmtP(n){return n!=null?'\u00a3'+Number(n).toLocaleString('en-GB',{minimumFractionDigits:2}):'--'; }
 
 
-function openAllocateModal(ref,desc){
-  var pending = typeof getSchedulePendingCount === 'function' ? getSchedulePendingCount() : 0;
-  if(pending > 0){
-    var msg = 'Please apply or discard pending Full Schedule changes before allocating.';
-    if(typeof sowToast === 'function'){
-      sowToast('warning', msg);
-    }
-    if(typeof showSowDialog === 'function'){
-      showSowDialog({
-        icon: 'warning',
-        title: 'Pending changes',
-        text: msg,
-        confirmButtonText: 'OK'
-      });
-    } else {
-      alert(msg);
-    }
-    return;
-  }
-  var ex=document.getElementById('allocate-modal');if(ex)ex.remove();
-  var opts=splitTrades.filter(function(t){return t.id!=='unallocated';}).map(function(t){
-    return '<option value="'+escQ(t.id)+'">'+esc(t.label)+'</option>';
-  }).join('');
-  var modal=document.createElement('div');
-  modal.id='allocate-modal';
-  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;z-index:1000';
-  modal.innerHTML='<div style="background:#fff;border-radius:10px;width:480px;max-width:90vw;box-shadow:0 8px 32px rgba(0,0,0,.2);overflow:hidden">'+
-    '<div style="padding:16px 20px;background:var(--navy);display:flex;justify-content:space-between;align-items:center">'+
-      '<div style="font-size:14px;font-weight:700;color:#fff">Manual Trade Allocation</div>'+
-      '<button onclick="document.getElementById(\'allocate-modal\').remove()" style="background:transparent;border:none;color:rgba(255,255,255,.7);font-size:20px;cursor:pointer;line-height:1">&times;</button>'+
-    '</div>'+
-    '<div style="padding:20px">'+
-      '<div style="background:var(--red-bg);border:1px solid rgba(196,43,28,.2);border-radius:6px;padding:11px 14px;margin-bottom:16px">'+
-        '<div style="font-size:11px;font-weight:700;color:var(--red);text-transform:uppercase;margin-bottom:4px">Item '+esc(ref)+'</div>'+
-        '<div style="font-size:13px;color:var(--text);line-height:1.5">'+esc(desc)+'</div>'+
-      '</div>'+
-      '<div style="margin-bottom:14px"><label style="display:block;font-size:12px;font-weight:600;color:var(--text-mid);margin-bottom:5px">Allocate to trade</label>'+
-        '<select id="allocate-trade-select" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:4px;font-size:13px">'+opts+'</select></div>'+
-      '<div style="margin-bottom:16px"><label style="display:block;font-size:12px;font-weight:600;color:var(--text-mid);margin-bottom:5px">Note (optional)</label>'+
-        '<input type="text" id="allocate-note" placeholder="e.g. Mechanical \u2014 plumbing element only" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:4px;font-size:13px"></div>'+
-      '<div style="display:flex;gap:10px;justify-content:flex-end">'+
-        '<button onclick="document.getElementById(\'allocate-modal\').remove()" style="padding:8px 16px;background:var(--white);border:1px solid var(--border);border-radius:4px;font-size:13px;font-weight:600;cursor:pointer;color:var(--text-mid);font-family:DM Sans,sans-serif">Cancel</button>'+
-        '<button id="confirm-alloc-btn" style="padding:8px 18px;background:var(--navy);border:none;border-radius:4px;font-size:13px;font-weight:600;cursor:pointer;color:#fff;font-family:DM Sans,sans-serif">Confirm Allocation</button>'+
-      '</div>'+
-    '</div>'+
-  '</div>';
-  document.body.appendChild(modal);
-  document.getElementById('confirm-alloc-btn').onclick=function(){confirmAllocation(ref);};
-}
 // ══════════════════════════════════════════════════════════
 // SCHEDULE SPLITTER MODULE
 // ══════════════════════════════════════════════════════════
@@ -2725,15 +2676,6 @@ function switchResultTab(tab){
   if(tab==='compliance')renderComplianceView();
 }
 
-// ── MAKE ALLOC BTN HELPER ─────────────────────────────────
-function makeAllocBtn(ref,desc){
-  var b=document.createElement('button');
-  b.style.cssText='padding:2px 7px;background:transparent;border:1px solid var(--red);border-radius:4px;font-size:10px;font-weight:600;color:var(--red);cursor:pointer;font-family:DM Sans,sans-serif';
-  b.textContent='Allocate';
-  b.setAttribute('data-ref',ref);b.setAttribute('data-desc',desc);
-  b.onclick=function(){openAllocateModal(this.getAttribute('data-ref'),this.getAttribute('data-desc'));};
-  return b.outerHTML;
-}
 
 // ── SCHEDULE VIEW ─────────────────────────────────────────
 var scheduleChanges={};
@@ -3294,7 +3236,6 @@ function bindScheduleSheetNav(bar){
 
 window.resetScheduleChanges = resetScheduleChanges;
 window.applyScheduleAllocations = applyScheduleAllocations;
-window.openAllocateModal = openAllocateModal;
 
 // ── SUPPORTING FILES (SPEC & DRAWINGS) ───────────────────
 var supportingFiles = { spec: [], dwg: [] };
@@ -4572,40 +4513,3 @@ window.refreshSowEngineDom = function(){
   initWorkbookTemplateControls();
 };
 
-function confirmAllocation(ref){
-  var pending = typeof getSchedulePendingCount === 'function' ? getSchedulePendingCount() : 0;
-  if(pending > 0){
-    var msg = 'Please apply or discard pending Full Schedule changes before allocating.';
-    if(typeof sowToast === 'function'){
-      sowToast('warning', msg);
-    }
-    if(typeof showSowDialog === 'function'){
-      showSowDialog({
-        icon: 'warning',
-        title: 'Pending changes',
-        text: msg,
-        confirmButtonText: 'OK'
-      });
-    } else {
-      alert(msg);
-    }
-    return;
-  }
-  var tradeId=document.getElementById('allocate-trade-select').value;
-  var note=document.getElementById('allocate-note').value;
-  var unalloc=splitTrades.find(function(t){return t.id==='unallocated';});
-  var target=splitTrades.find(function(t){return t.id===tradeId;});
-  if(!unalloc||!target)return;
-  var idx=unalloc.items.findIndex(function(i){return i.ref===ref;});
-  if(idx>-1){
-    var item=unalloc.items.splice(idx,1)[0];
-    if(note)item.note=note;
-    target.items.push(item);
-    target.lineCount=target.items.length;
-    unalloc.lineCount=unalloc.items.length;
-  }
-  document.getElementById('allocate-modal').remove();
-  renderSplitTradeList();
-  if(splitActiveTrade)renderSplitPreview(splitActiveTrade);
-  renderScheduleView();
-}
