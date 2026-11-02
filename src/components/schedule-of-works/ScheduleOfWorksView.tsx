@@ -14,6 +14,7 @@ import {
   registerSowDialog,
   registerSowSharedItemPatch,
   registerSowDownloadExport,
+  registerSowRevisionSubmit,
   registerSowSplitLoad,
   registerSowSplitSubmit,
   registerSowSheetsFetch,
@@ -41,6 +42,7 @@ import {
   fetchSowSheets,
   fetchSowSupportingDocuments,
   patchSowAllocations,
+  submitSowRevision,
   patchSowSharedItem,
   submitSowSplit,
   submitSowWorkbook,
@@ -274,6 +276,13 @@ export function ScheduleOfWorksView() {
     if (!engineReady) return;
     return registerSowSharedItemPatch((jobId, itemId, request, signal) =>
       patchSowSharedItem(jobId, itemId, request, signal)
+    );
+  }, [engineReady]);
+
+  useEffect(() => {
+    if (!engineReady) return;
+    return registerSowRevisionSubmit((jobId, revisedFile, signal) =>
+      submitSowRevision(jobId, revisedFile, signal)
     );
   }, [engineReady]);
 

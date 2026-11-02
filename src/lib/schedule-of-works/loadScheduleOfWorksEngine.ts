@@ -13,9 +13,10 @@ import type {
   SowAllocationsResponse,
   SowSharedItemPatchRequest,
   SowSharedItemPatchResponse,
+  SowRevisionResponse,
 } from "@/services/sowService";
 
-const ENGINE_VERSION = "59";
+const ENGINE_VERSION = "63";
 const ENGINE_SRC = `/schedule-of-works/engine.js?v=${ENGINE_VERSION}`;
 const LOADED_FLAG = `__sowEngineLoaded_${ENGINE_VERSION}`;
 
@@ -230,6 +231,25 @@ export type SowSplitLoadHandler = (
   signal?: AbortSignal
 ) => Promise<SowSplitResponse | null>;
 
+export type SowRevisionSubmitHandler = (
+  jobId: string,
+  revisedFile: File,
+  signal?: AbortSignal
+) => Promise<SowRevisionResponse>;
+
+export function registerSowRevisionSubmit(
+  handler: SowRevisionSubmitHandler
+): () => void {
+  if (typeof window === "undefined") return () => undefined;
+  const win = window as Window & {
+    submitSowRevision?: SowRevisionSubmitHandler;
+  };
+  win.submitSowRevision = handler;
+  return () => {
+    delete win.submitSowRevision;
+  };
+}
+
 export function registerSowSplitLoad(
   handler: SowSplitLoadHandler
 ): () => void {
@@ -340,10 +360,11 @@ export type SowDialogHandler = (
 
 export function registerSowDialog(handler: SowDialogHandler): () => void {
   if (typeof window === "undefined") return () => undefined;
-  const win = window as Window & { sowDialog?: SowDialogHandler };
-  win.sowDialog = handler;
+  // Not window.sowDialog: engine.js declares a global sowDialog() function, and a window property with that name cannot be deleted.
+  const win = window as Window & { sowDialogBridge?: SowDialogHandler };
+  win.sowDialogBridge = handler;
   return () => {
-    delete win.sowDialog;
+    delete win.sowDialogBridge;
   };
 }
 
@@ -353,10 +374,11 @@ export type SowToastHandler = (type: SowToastType, message: string) => void;
 
 export function registerSowToast(handler: SowToastHandler): () => void {
   if (typeof window === "undefined") return () => undefined;
-  const win = window as Window & { sowToast?: SowToastHandler };
-  win.sowToast = handler;
+  // Not window.sowToast: engine.js declares a global sowToast() function, and a window property with that name cannot be deleted.
+  const win = window as Window & { sowNotify?: SowToastHandler };
+  win.sowNotify = handler;
   return () => {
-    delete win.sowToast;
+    delete win.sowNotify;
   };
 }
 

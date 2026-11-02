@@ -588,6 +588,76 @@ export async function patchSowAllocations(
   };
 }
 
+export type SowRevisionResponse = {
+  status: string;
+  job_id?: string;
+  compared_against?: string;
+  revised_file?: string;
+  revision_diff?: SowRevisionDiff;
+};
+
+const REVISION_ERROR_MESSAGES: Record<number, string> = {
+  403: "You do not have access to this project.",
+  404: "Run the AI Trade Split for this project first, then compare.",
+  409: "This project was split before revision compare was available. Run the split again once, then compare.",
+  422: "Upload a revised schedule file.",
+  500: "The comparison failed. Please try again.",
+};
+
+/**
+ * Compares a revised schedule workbook with the schedule the job was last split from.
+ * POST /sow/revision/:job_id (multipart). Sends only the file; no trade split is run.
+ */
+export async function submitSowRevision(
+  jobId: string,
+  revisedFile: File,
+  signal?: AbortSignal
+): Promise<SowRevisionResponse> {
+  const trimmed = jobId.trim();
+  if (!trimmed) {
+    throw new Error("Invalid job id.");
+  }
+  if (!API_BASE_URL) {
+    throw new Error("API base URL is not configured.");
+  }
+  if (!/\.xlsx$/i.test(revisedFile.name)) {
+    throw new Error("Only Excel (.xlsx) files can be compared.");
+  }
+
+  const formData = new FormData();
+  formData.append("revised_file", revisedFile);
+
+  const token = getAuthToken();
+  const res = await fetch(
+    `${API_BASE_URL}/sow/revision/${encodeURIComponent(trimmed)}`,
+    {
+      method: "POST",
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      body: formData,
+      signal,
+    }
+  );
+
+  if (!res.ok) {
+    const fallback = REVISION_ERROR_MESSAGES[res.status];
+    if (res.status === 400) {
+      throw new Error(await parseSowApiError(res, "Please upload a valid .xlsx file."));
+    }
+    throw new Error(
+      fallback ?? (await parseSowApiError(res, `Revision compare failed (${res.status}).`))
+    );
+  }
+
+  const raw = (await res.json()) as SowRevisionResponse;
+  return {
+    status: String(raw.status ?? "success"),
+    job_id: raw.job_id,
+    compared_against: raw.compared_against,
+    revised_file: raw.revised_file,
+    revision_diff: raw.revision_diff,
+  };
+}
+
 export type SowSharedItemTradeUpdate = {
   trade_id: string;
   lead?: boolean;

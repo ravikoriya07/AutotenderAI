@@ -1936,7 +1936,7 @@ function renderSharedItems(){
 }
 
 function sowDialog(options){
-  if(typeof window.sowDialog === 'function') return window.sowDialog(options);
+  if(typeof window.sowDialogBridge === 'function') return window.sowDialogBridge(options);
   if(options && options.showCancelButton){
     return Promise.resolve({ isConfirmed: confirm(options.text || options.title || '') });
   }
@@ -1945,7 +1945,7 @@ function sowDialog(options){
 }
 
 function sowToast(type, message){
-  if(typeof window.sowToast === 'function') window.sowToast(type, message);
+  if(typeof window.sowNotify === 'function') window.sowNotify(type, message);
 }
 
 function sharedTradeId(trade){
@@ -4204,138 +4204,137 @@ window.runCreateWorkbook = runCreateWorkbook;
 var revFile = null;
 var revisionResults = null;
 
+var revCompareRunning = false;
+
+function revShowError(message){
+  var errEl = el('rev-tab-error');
+  if(errEl){
+    errEl.textContent = message;
+    errEl.style.display = 'block';
+  }
+  sowToast('error', message);
+}
+
+function revClearError(){
+  var errEl = el('rev-tab-error');
+  if(errEl){
+    errEl.textContent = '';
+    errEl.style.display = 'none';
+  }
+}
+
+function isRevisionXlsx(f){
+  return /\.xlsx$/i.test(String(f && f.name || ''));
+}
+
 function revHandleFile(event){
   var input = event && event.target;
   var f = input && input.files && input.files[0];
-  if(!f) return;
-  if(!isAllowedSowFile(f)){
-    if(input) input.value = '';
-    showInvalidSowFileDialog(f);
-    return;
-  }
-  setRevFile(f);
+  if(input) input.value = '';
+  if(f) setRevFile(f);
 }
+
 function revHandleDrop(event){
   event.preventDefault();
-  var dz = el('rev-drop-zone');
-  if(dz){
-    dz.style.borderColor='var(--border)'; dz.style.background='var(--bg)';
+  var zone = event.currentTarget;
+  if(zone){
+    zone.style.borderColor = 'var(--border)';
+    zone.style.background = 'var(--bg)';
   }
-  var f = event.dataTransfer && event.dataTransfer.files && event.dataTransfer.files[0];
+  var files = event.dataTransfer && event.dataTransfer.files;
+  var f = files && files[0];
   if(!f) return;
-  if(!isAllowedSowFile(f)){
-    var input = el('rev-file-input');
-    if(input) input.value = '';
-    showInvalidSowFileDialog(f);
+  if(files.length > 1){
+    revShowError('Please drop only one revised schedule file.');
     return;
   }
   setRevFile(f);
 }
+
 function setRevFile(f){
+  revClearError();
   if(!f) return;
-  if(!isAllowedSowFile(f)){
-    var input = el('rev-file-input');
-    if(input) input.value = '';
-    showInvalidSowFileDialog(f);
+  if(!isRevisionXlsx(f)){
+    var ext = (f.name.split('.').pop() || '').toUpperCase();
+    revShowError('Only Excel (.xlsx) files can be compared. You selected a '+ext+' file.');
     return;
   }
   revFile = f;
-  var ext = f.name.split('.').pop().toLowerCase();
   var kb = Math.round(f.size/1024);
-  el('rev-file-name').textContent = f.name;
-  el('rev-file-meta').textContent = (kb>1024?(kb/1024).toFixed(1)+' MB':kb+' KB')+' · '+ext.toUpperCase();
-  el('rev-file-pill').style.display = 'block';
-  el('rev-upload-area').style.display = 'none';
-  el('sec5-num').className = 'section-num done';
-  el('sec5-status').textContent = f.name.length>18 ? f.name.substring(0,16)+'…' : f.name;
+  var meta = (kb>1024?(kb/1024).toFixed(1)+' MB':kb+' KB')+' · XLSX';
+  el('rev-tab-name').textContent = f.name;
+  el('rev-tab-meta').textContent = meta;
+  el('rev-tab-pill').style.display = 'block';
+  el('rev-tab-area').style.display = 'none';
   updateRevBtn();
 }
+
 function clearRevFile(){
   revFile = null;
-  el('rev-file-pill').style.display = 'none';
-  el('rev-upload-area').style.display = 'block';
-  el('sec5-num').className = 'section-num optional';
-  el('sec5-status').textContent = 'optional';
+  revClearError();
+  var pill = el('rev-tab-pill');
+  var area = el('rev-tab-area');
+  var input = el('rev-tab-input');
+  if(pill) pill.style.display = 'none';
+  if(area) area.style.display = 'block';
+  if(input) input.value = '';
   updateRevBtn();
 }
+
 function updateRevBtn(){
-  var btn = el('rev-compare-btn');
+  var btn = el('rev-tab-compare-btn');
   if(!btn) return;
-  var source = getSowSplitSource();
-  btn.disabled = !(revFile && splitTrades.length > 0 && source && sowProjectJobId);
+  btn.disabled = !revFile || !sowProjectJobId || revCompareRunning;
 }
 
 async function runRevisionCompare(){
-  if(!revFile){
-    alert('Please upload a revised schedule first.');
-    return;
-  }
-  if(!splitTrades.length){
-    alert('Run the AI Trade Split first so there is a current schedule to compare against.');
-    return;
-  }
+  if(revCompareRunning) return;
   if(!sowProjectJobId){
     window.dispatchEvent(new CustomEvent('sow-needs-project'));
-    alert('Select a project before comparing revisions.');
+    revShowError('Select a project before comparing a revised schedule.');
     return;
   }
-  var source = getSowSplitSource();
-  if(!source){
-    alert('Please ensure the original schedule source is still available in Step 1.');
+  if(!revFile){
+    revShowError('Upload a revised schedule (.xlsx) first.');
     return;
   }
-  if(!sowSheetsReadyForRun()) return;
 
-  var btn = el('rev-compare-btn');
-  btn.disabled = true;
-  btn.innerHTML = '<span style="animation:spin .8s linear infinite;display:inline-block">&#8635;</span> Comparing...';
-
-  el('split-empty').style.display = 'none';
-  el('split-results').style.display = 'flex';
-  switchResultTab('revision');
-  var revEx = el('revision-example');
-  if(revEx) revEx.style.display = 'none';
-  var prevLive = el('revision-panel').querySelector('#revision-live-results');
-  if(prevLive) prevLive.remove();
-  var loadDiv = document.createElement('div');
-  loadDiv.id = 'revision-live-results';
-  loadDiv.innerHTML =
-    '<div style="padding:40px;text-align:center;color:var(--text-light)">'+
-    '<div style="font-size:32px;margin-bottom:12px;animation:spin 1s linear infinite;display:inline-block">&#8635;</div>'+
-    '<div style="font-size:14px;font-weight:600;margin-bottom:6px">Comparing revisions...</div>'+
-    '<div style="font-size:12.5px;color:var(--text-hint)">Identifying new, amended and deleted items against the current schedule</div>'+
-    '</div>';
-  el('revision-panel').appendChild(loadDiv);
+  var btn = el('rev-tab-compare-btn');
+  var status = el('rev-tab-status');
+  revCompareRunning = true;
+  revClearError();
+  if(btn) btn.innerHTML = '<span style="animation:spin .8s linear infinite;display:inline-block">&#8635;</span> Comparing…';
+  if(status) status.textContent = 'Comparing against the current schedule…';
+  updateRevBtn();
 
   try {
-    if(typeof window.submitSowSplit !== 'function'){
-      throw new Error('Split service is not ready. Please refresh the page.');
+    if(typeof window.submitSowRevision !== 'function'){
+      throw new Error('Revision compare service is not ready. Please refresh the page.');
     }
-    var request = buildSplitRequest(source);
-    request.revised_file = revFile;
-    var response = await window.submitSowSplit(sowProjectJobId, request);
-    if(!applySowSplitResponse(response)){
-      throw new Error('Revision compare did not return trade documents.');
+    var requestJobId = sowProjectJobId;
+    var response = await window.submitSowRevision(requestJobId, revFile);
+    if(requestJobId !== sowProjectJobId) return;
+    if(!response || !response.revision_diff){
+      throw new Error('Revision compare did not return a result.');
     }
-    updateSplitResultSummary();
-    renderSplitTradeList();
-    if(splitActiveTrade) renderSplitPreview(splitActiveTrade);
-    updateSharedCountBadge();
-    setWorkbookTabVisible(true);
-    renderRevisionPanel();
+    applyRevisionDiffFromResponse(response.revision_diff);
+    el('split-empty').style.display = 'none';
+    el('split-results').style.display = 'flex';
     switchResultTab('revision');
+    renderRevisionPanel();
+    var summary = revisionResults.summary;
+    var changed = summary.new + summary.amended + summary.deleted;
+    sowToast('success', changed
+      ? changed+' change'+(changed===1?'':'s')+' found in the revised schedule.'
+      : 'No changes found in the revised schedule.');
   } catch(e) {
-    var errPrev = el('revision-panel').querySelector('#revision-live-results');
-    if(errPrev) errPrev.remove();
-    var errDiv2 = document.createElement('div');
-    errDiv2.id = 'revision-live-results';
-    errDiv2.innerHTML = '<div style="padding:32px;background:var(--red-bg);border:1px solid rgba(196,43,28,.2);border-radius:8px;color:var(--red)"><strong>Comparison failed:</strong> '+esc(e && e.message ? e.message : 'Please try again.')+'</div>';
-    el('revision-panel').appendChild(errDiv2);
+    revShowError(e && e.message ? e.message : 'Revision compare failed. Please try again.');
+  } finally {
+    revCompareRunning = false;
+    if(status) status.textContent = '';
+    if(btn) btn.innerHTML = '&#128260; Compare Revision';
+    updateRevBtn();
   }
-
-  btn.disabled = false;
-  btn.innerHTML = '&#128260; Compare &amp; Update Trade Documents';
-  updateRevBtn();
 }
 
 function revisionQtyDelta(oldQty, newQty){
@@ -4363,29 +4362,24 @@ function renderRevisionPanel(){
   var panel = el('revision-panel');
   if(!panel) return;
   var ex = el('revision-example');
+  if(ex) ex.style.display = 'none';
   if(!revisionResults){
     var emptyPrev = panel.querySelector('#revision-live-results');
     if(emptyPrev) emptyPrev.remove();
     var emptyState = panel.querySelector('#revision-empty-state');
     if(emptyState) emptyState.remove();
-    if(splitTrades.length){
-      if(ex) ex.style.display = 'none';
-      var wrap = document.createElement('div');
-      wrap.id = 'revision-empty-state';
-      wrap.innerHTML = sowTabEmptyStateHtml(
-        '&#128260;',
-        'No revision comparison available',
-        'No revision diff was returned for this project. Upload a revised schedule in Section 3 and run a comparison, or re-run AI Trade Split if a revision should be included automatically.'
-      );
-      panel.appendChild(wrap);
-    } else if(ex){
-      ex.style.display = 'block';
-    }
+    var wrap = document.createElement('div');
+    wrap.id = 'revision-empty-state';
+    wrap.innerHTML = sowTabEmptyStateHtml(
+      '&#128260;',
+      'No revision comparison yet',
+      'Upload the revised schedule above and press Compare Revision. The comparison lists new, amended and deleted items. Trade documents are not changed.'
+    );
+    panel.appendChild(wrap);
     return;
   }
   var emptyState = panel.querySelector('#revision-empty-state');
   if(emptyState) emptyState.remove();
-  if(ex) ex.style.display = 'none';
 
   var r = revisionResults;
   var s = r.summary || {};
@@ -4406,7 +4400,7 @@ function renderRevisionPanel(){
     '<div style="font-size:28px;line-height:1">&#128260;</div>'+
     '<div style="flex:1;min-width:200px">'+
       '<div style="font-size:16px;font-weight:700;color:var(--text)">'+esc(titleText)+'</div>'+
-      '<div style="font-size:12.5px;color:var(--text-light);margin-top:4px;line-height:1.5">Trade documents have been automatically updated from the revised schedule. Review the changes below.</div>'+
+      '<div style="font-size:12.5px;color:var(--text-light);margin-top:4px;line-height:1.5">Compared against the current schedule. Trade documents and the Full Schedule are not changed.</div>'+
     '</div>'+
     (r.revisionDate ? '<span style="background:var(--purple-bg);color:var(--purple);border:1px solid rgba(91,61,168,.2);padding:4px 12px;border-radius:12px;font-size:11.5px;font-weight:700;white-space:nowrap">'+esc(r.revisionRef || 'Rev')+' issued '+esc(r.revisionDate)+'</span>' : '')+
     '<button class="btn btn-secondary btn-sm" onclick="downloadRevisionReport()">&#8681; Export Report</button>'+
