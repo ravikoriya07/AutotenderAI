@@ -444,7 +444,7 @@ function initSplit(){
   // nothing needed on init
 }
 
-var ALLOWED_SOW_EXTENSIONS = ['pdf', 'xlsx', 'xls', 'xlsm'];
+var ALLOWED_SOW_EXTENSIONS = ['pdf', 'xlsx', 'xls', 'xlsm', 'docx'];
 
 function isAllowedSowFile(f){
   if(!f || !f.name) return false;
@@ -456,7 +456,7 @@ function isAllowedSowFile(f){
 
 function showInvalidSowFileDialog(f){
   var ext = f && f.name && f.name.indexOf('.') !== -1 ? ('.' + f.name.split('.').pop().toLowerCase()) : '';
-  var msg = 'Only PDF and Excel files (.pdf, .xlsx, .xls) are allowed.' + (ext ? ' You selected a ' + ext + ' file.' : '');
+  var msg = 'Only PDF, Excel and Word files (.pdf, .xlsx, .xls, .docx) are allowed.' + (ext ? ' You selected a ' + ext + ' file.' : '');
   if(typeof sowToast === 'function'){
     sowToast('error', msg);
   }

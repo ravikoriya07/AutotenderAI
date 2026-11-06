@@ -394,7 +394,7 @@ export function hasSavedSowSplitData(
   );
 }
 
-export const ALLOWED_SOW_EXTENSIONS = ["pdf", "xlsx", "xls", "xlsm"] as const;
+export const ALLOWED_SOW_EXTENSIONS = ["pdf", "xlsx", "xls", "xlsm", "docx"] as const;
 
 export function isAllowedSowFile(file: File | { name?: string }): boolean {
   if (!file?.name) return false;
@@ -443,7 +443,7 @@ export async function submitSowSplit(
     formData.append("file_path", filePath);
   } else {
     if (!isAllowedSowFile(request.file)) {
-      throw new Error("Only PDF and Excel files (.pdf, .xlsx, .xls) are allowed for the schedule of works.");
+      throw new Error("Only PDF, Excel and Word files (.pdf, .xlsx, .xls, .docx) are allowed for the schedule of works.");
     }
     formData.append("file", request.file);
   }
@@ -1035,7 +1035,7 @@ export async function fetchSowSheets(
 
   if (request.type === "upload") {
     if (!isAllowedSowFile(request.file)) {
-      throw new Error("Only PDF and Excel files (.pdf, .xlsx, .xls) are allowed for the schedule of works.");
+      throw new Error("Only PDF, Excel and Word files (.pdf, .xlsx, .xls, .docx) are allowed for the schedule of works.");
     }
     formData.append("file", request.file);
     const jobId = request.jobId?.trim();
